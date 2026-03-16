@@ -1,0 +1,74 @@
+[
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SF_001",
+    "scenario_name": "G1001列车设备故障",
+    "description": "G1001次列车在天津西站发生设备故障",
+    "injected_delays": [
+      {
+        "train_id": "G1001",
+        "location": {
+          "location_type": "station",
+          "station_code": "TJG",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 2400,
+        "timestamp": "2024-01-15T08:30:00Z"
+      }
+    ],
+    "affected_trains": ["G1001"],
+    "scenario_params": {
+      "failure_type": "vehicle_breakdown",
+      "estimated_repair_time": 60,
+      "failure_location": "TJG"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SF_002",
+    "scenario_name": "G1002列车区间故障",
+    "description": "G1002次列车在区间发生故障",
+    "injected_delays": [
+      {
+        "train_id": "G1002",
+        "location": {
+          "location_type": "section",
+          "section_id": "S2",
+          "position": "between TJG and JNZ"
+        },
+        "initial_delay_seconds": 3600,
+        "timestamp": "2024-01-15T08:45:00Z"
+      }
+    ],
+    "affected_trains": ["G1002", "G1003"],
+    "scenario_params": {
+      "failure_type": "vehicle_breakdown",
+      "estimated_repair_time": 90,
+      "failure_location": "TJG->JNZ"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SF_003",
+    "scenario_name": "G1003列车轻微故障",
+    "description": "G1003次列车在济南西站轻微故障，小延误",
+    "injected_delays": [
+      {
+        "train_id": "G1003",
+        "location": {
+          "location_type": "station",
+          "station_code": "JNZ",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T09:40:00Z"
+      }
+    ],
+    "affected_trains": ["G1003"],
+    "scenario_params": {
+      "failure_type": "vehicle_breakdown",
+      "estimated_repair_time": 30,
+      "failure_location": "JNZ"
+    }
+  }
+]

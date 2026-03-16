@@ -1,0 +1,97 @@
+[
+  {
+    "train_id": "G1001",
+    "train_type": "高速动车组",
+    "speed_level": 350,
+    "schedule": {
+      "stops": [
+        {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:00:00", "departure_time": "08:10:00", "platform": "1"},
+        {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:25:00", "departure_time": "08:30:00", "platform": "1"},
+        {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:10:00", "departure_time": "09:15:00", "platform": "1"},
+        {"station_code": "NJH", "station_name": "南京南", "arrival_time": "10:25:00", "departure_time": "10:30:00", "platform": "1"},
+        {"station_code": "SHH", "station_name": "上海虹桥", "arrival_time": "11:30:00", "departure_time": "11:45:00", "platform": "1"}
+      ]
+    },
+    "slack_time": {
+      "max_station_slack": 120,
+      "max_section_slack": 60,
+      "total_slack": 180
+    }
+  },
+  {
+    "train_id": "G1002",
+    "train_type": "高速动车组",
+    "speed_level": 350,
+    "schedule": {
+      "stops": [
+        {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:15:00", "departure_time": "08:25:00", "platform": "2"},
+        {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:40:00", "departure_time": "08:45:00", "platform": "2"},
+        {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:25:00", "departure_time": "09:30:00", "platform": "2"},
+        {"station_code": "NJH", "station_name": "南京南", "arrival_time": "10:40:00", "departure_time": "10:45:00", "platform": "2"},
+        {"station_code": "SHH", "station_name": "上海虹桥", "arrival_time": "11:45:00", "departure_time": "12:00:00", "platform": "2"}
+      ]
+    },
+    "slack_time": {
+      "max_station_slack": 120,
+      "max_section_slack": 60,
+      "total_slack": 180
+    }
+  },
+  {
+    "train_id": "G1003",
+    "train_type": "高速动车组",
+    "speed_level": 350,
+    "schedule": {
+      "stops": [
+        {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:30:00", "departure_time": "08:40:00", "platform": "3"},
+        {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:55:00", "departure_time": "09:00:00", "platform": "3"},
+        {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:40:00", "departure_time": "09:45:00", "platform": "3"},
+        {"station_code": "NJH", "station_name": "南京南", "arrival_time": "10:55:00", "departure_time": "11:00:00", "platform": "3"},
+        {"station_code": "SHH", "station_name": "上海虹桥", "arrival_time": "12:00:00", "departure_time": "12:15:00", "platform": "3"}
+      ]
+    },
+    "slack_time": {
+      "max_station_slack": 120,
+      "max_section_slack": 60,
+      "total_slack": 180
+    }
+  },
+  {
+    "train_id": "G1004",
+    "train_type": "高速动车组",
+    "speed_level": 350,
+    "schedule": {
+      "stops": [
+        {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:45:00", "departure_time": "08:55:00", "platform": "4"},
+        {"station_code": "TJG", "station_name": "天津西", "arrival_time": "09:10:00", "departure_time": "09:15:00", "platform": "4"},
+        {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:55:00", "departure_time": "10:00:00", "platform": "4"},
+        {"station_code": "NJH", "station_name": "南京南", "arrival_time": "11:10:00", "departure_time": "11:15:00", "platform": "4"},
+        {"station_code": "SHH", "station_name": "上海虹桥", "arrival_time": "12:15:00", "departure_time": "12:30:00", "platform": "4"}
+      ]
+    },
+    "slack_time": {
+      "max_station_slack": 120,
+      "max_section_slack": 60,
+      "total_slack": 180
+    }
+  },
+  {
+    "train_id": "G1005",
+    "train_type": "高速动车组",
+    "speed_level": 350,
+    "schedule": {
+      "stops": [
+        {"station_code": "BJP", "station_name": "北京西", "arrival_time": "09:00:00", "departure_time": "09:10:00", "platform": "5"},
+        {"station_code": "TJG", "station_name": "天津西", "arrival_time": "09:25:00", "departure_time": "09:30:00", "platform": "5"},
+        {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "10:10:00", "departure_time": "10:15:00", "platform": "5"},
+        {"station_code": "NJH", "station_name": "南京南", "arrival_time": "11:25:00", "departure_time": "11:30:00", "platform": "5"},
+        {"station_code": "SHH", "station_name": "上海虹桥", "arrival_time": "12:30:00", "departure_time": "12:45:00", "platform": "5"}
+      ]
+    },
+    "slack_time": {
+      "max_station_slack": 120,
+      "max_section_slack": 60,
+      "total_slack": 180
+    }
+  }
+]

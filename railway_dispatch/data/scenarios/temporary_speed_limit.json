@@ -1,0 +1,84 @@
+[
+  {
+    "scenario_type": "temporary_speed_limit",
+    "scenario_id": "SC_TSL_001",
+    "scenario_name": "天津西站临时限速",
+    "description": "天津西站区间临时限速，影响多列列车",
+    "injected_delays": [
+      {
+        "train_id": "G1001",
+        "location": {
+          "location_type": "station",
+          "station_code": "TJG",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 600,
+        "timestamp": "2024-01-15T08:25:00Z"
+      },
+      {
+        "train_id": "G1002",
+        "location": {
+          "location_type": "station",
+          "station_code": "TJG",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T08:40:00Z"
+      }
+    ],
+    "affected_trains": ["G1001", "G1002", "G1003"],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 120,
+      "affected_section": "TJG -> JNZ"
+    }
+  },
+  {
+    "scenario_type": "temporary_speed_limit",
+    "scenario_id": "SC_TSL_002",
+    "scenario_name": "济南西站临时限速",
+    "description": "济南西站区间临时限速，中等延误",
+    "injected_delays": [
+      {
+        "train_id": "G1001",
+        "location": {
+          "location_type": "station",
+          "station_code": "JNZ",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T09:10:00Z"
+      }
+    ],
+    "affected_trains": ["G1001", "G1002"],
+    "scenario_params": {
+      "limit_speed_kmh": 180,
+      "duration_minutes": 90,
+      "affected_section": "JNZ -> NJH"
+    }
+  },
+  {
+    "scenario_type": "temporary_speed_limit",
+    "scenario_id": "SC_TSL_003",
+    "scenario_name": "北京西站轻微延误",
+    "description": "北京西站出发轻微延误，微小延误等级",
+    "injected_delays": [
+      {
+        "train_id": "G1001",
+        "location": {
+          "location_type": "station",
+          "station_code": "BJP",
+          "position": "platform"
+        },
+        "initial_delay_seconds": 180,
+        "timestamp": "2024-01-15T08:00:00Z"
+      }
+    ],
+    "affected_trains": ["G1001"],
+    "scenario_params": {
+      "limit_speed_kmh": 300,
+      "duration_minutes": 30,
+      "affected_section": "BJP -> TJG"
+    }
+  }
+]
