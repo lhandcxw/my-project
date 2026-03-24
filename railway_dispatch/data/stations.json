@@ -1,129 +1,464 @@
 [
   {
-    "station_code": "BJP",
+    "station_code": "北京西",
     "station_name": "北京西",
-    "track_count": 15,
+    "track_count": 7,
     "platforms": [
-      {"platform_id": "1", "track_id": "I", "capacity": 1},
-      {"platform_id": "2", "track_id": "II", "capacity": 1},
-      {"platform_id": "3", "track_id": "III", "capacity": 1},
-      {"platform_id": "4", "track_id": "IV", "capacity": 1},
-      {"platform_id": "5", "track_id": "V", "capacity": 1},
-      {"platform_id": "6", "track_id": "VI", "capacity": 1},
-      {"platform_id": "7", "track_id": "VII", "capacity": 1},
-      {"platform_id": "8", "track_id": "VIII", "capacity": 1},
-      {"platform_id": "9", "track_id": "IX", "capacity": 1},
-      {"platform_id": "10", "track_id": "X", "capacity": 1},
-      {"platform_id": "11", "track_id": "XI", "capacity": 1},
-      {"platform_id": "12", "track_id": "XII", "capacity": 1},
-      {"platform_id": "13", "track_id": "XIII", "capacity": 1},
-      {"platform_id": "14", "track_id": "XIV", "capacity": 1},
-      {"platform_id": "15", "track_id": "XV", "capacity": 1}
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      },
+      {
+        "platform_id": "5",
+        "track_id": "5",
+        "capacity": 1
+      },
+      {
+        "platform_id": "6",
+        "track_id": "6",
+        "capacity": 1
+      },
+      {
+        "platform_id": "7",
+        "track_id": "7",
+        "capacity": 1
+      }
     ],
     "throat_zones": [],
-    "connection_sections": [
-      {"section_id": "S1", "to_station": "TJG", "distance_km": 115}
-    ]
+    "connection_sections": []
   },
   {
-    "station_code": "TJG",
-    "station_name": "天津西",
-    "track_count": 13,
+    "station_code": "杜家坎",
+    "station_name": "杜家坎线路所",
+    "track_count": 4,
     "platforms": [
-      {"platform_id": "1", "track_id": "I", "capacity": 1},
-      {"platform_id": "2", "track_id": "II", "capacity": 1},
-      {"platform_id": "3", "track_id": "III", "capacity": 1},
-      {"platform_id": "4", "track_id": "IV", "capacity": 1},
-      {"platform_id": "5", "track_id": "V", "capacity": 1},
-      {"platform_id": "6", "track_id": "VI", "capacity": 1},
-      {"platform_id": "7", "track_id": "VII", "capacity": 1},
-      {"platform_id": "8", "track_id": "VIII", "capacity": 1},
-      {"platform_id": "9", "track_id": "IX", "capacity": 1},
-      {"platform_id": "10", "track_id": "X", "capacity": 1},
-      {"platform_id": "11", "track_id": "XI", "capacity": 1},
-      {"platform_id": "12", "track_id": "XII", "capacity": 1},
-      {"platform_id": "13", "track_id": "XIII", "capacity": 1}
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
     ],
     "throat_zones": [],
-    "connection_sections": [
-      {"section_id": "S1", "to_station": "BJP", "distance_km": 115},
-      {"section_id": "S2", "to_station": "JNZ", "distance_km": 360}
-    ]
+    "connection_sections": []
   },
   {
-    "station_code": "JNZ",
-    "station_name": "济南西",
+    "station_code": "涿州东",
+    "station_name": "涿州东",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "高碑店",
+    "station_name": "高碑店东",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "徐水东",
+    "station_name": "徐水东",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "保定东",
+    "station_name": "保定东",
+    "track_count": 6,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      },
+      {
+        "platform_id": "5",
+        "track_id": "5",
+        "capacity": 1
+      },
+      {
+        "platform_id": "6",
+        "track_id": "6",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "定州东",
+    "station_name": "定州东",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "正定机",
+    "station_name": "正定机场",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "石家庄",
+    "station_name": "石家庄",
     "track_count": 11,
     "platforms": [
-      {"platform_id": "1", "track_id": "I", "capacity": 1},
-      {"platform_id": "2", "track_id": "II", "capacity": 1},
-      {"platform_id": "3", "track_id": "III", "capacity": 1},
-      {"platform_id": "4", "track_id": "IV", "capacity": 1},
-      {"platform_id": "5", "track_id": "V", "capacity": 1},
-      {"platform_id": "6", "track_id": "VI", "capacity": 1},
-      {"platform_id": "7", "track_id": "VII", "capacity": 1},
-      {"platform_id": "8", "track_id": "VIII", "capacity": 1},
-      {"platform_id": "9", "track_id": "IX", "capacity": 1},
-      {"platform_id": "10", "track_id": "X", "capacity": 1},
-      {"platform_id": "11", "track_id": "XI", "capacity": 1}
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      },
+      {
+        "platform_id": "5",
+        "track_id": "5",
+        "capacity": 1
+      },
+      {
+        "platform_id": "6",
+        "track_id": "6",
+        "capacity": 1
+      },
+      {
+        "platform_id": "7",
+        "track_id": "7",
+        "capacity": 1
+      },
+      {
+        "platform_id": "8",
+        "track_id": "8",
+        "capacity": 1
+      },
+      {
+        "platform_id": "9",
+        "track_id": "9",
+        "capacity": 1
+      },
+      {
+        "platform_id": "10",
+        "track_id": "10",
+        "capacity": 1
+      },
+      {
+        "platform_id": "11",
+        "track_id": "11",
+        "capacity": 1
+      }
     ],
     "throat_zones": [],
-    "connection_sections": [
-      {"section_id": "S2", "to_station": "TJG", "distance_km": 360},
-      {"section_id": "S3", "to_station": "NJH", "distance_km": 650}
-    ]
+    "connection_sections": []
   },
   {
-    "station_code": "NJH",
-    "station_name": "南京南",
-    "track_count": 15,
+    "station_code": "高邑西",
+    "station_name": "高邑西",
+    "track_count": 4,
     "platforms": [
-      {"platform_id": "1", "track_id": "I", "capacity": 1},
-      {"platform_id": "2", "track_id": "II", "capacity": 1},
-      {"platform_id": "3", "track_id": "III", "capacity": 1},
-      {"platform_id": "4", "track_id": "IV", "capacity": 1},
-      {"platform_id": "5", "track_id": "V", "capacity": 1},
-      {"platform_id": "6", "track_id": "VI", "capacity": 1},
-      {"platform_id": "7", "track_id": "VII", "capacity": 1},
-      {"platform_id": "8", "track_id": "VIII", "capacity": 1},
-      {"platform_id": "9", "track_id": "IX", "capacity": 1},
-      {"platform_id": "10", "track_id": "X", "capacity": 1},
-      {"platform_id": "11", "track_id": "XI", "capacity": 1},
-      {"platform_id": "12", "track_id": "XII", "capacity": 1},
-      {"platform_id": "13", "track_id": "XIII", "capacity": 1},
-      {"platform_id": "14", "track_id": "XIV", "capacity": 1},
-      {"platform_id": "15", "track_id": "XV", "capacity": 1}
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
     ],
     "throat_zones": [],
-    "connection_sections": [
-      {"section_id": "S3", "to_station": "JNZ", "distance_km": 650},
-      {"section_id": "S4", "to_station": "SHH", "distance_km": 295}
-    ]
+    "connection_sections": []
   },
   {
-    "station_code": "SHH",
-    "station_name": "上海虹桥",
-    "track_count": 15,
+    "station_code": "邢台东",
+    "station_name": "邢台东",
+    "track_count": 6,
     "platforms": [
-      {"platform_id": "1", "track_id": "I", "capacity": 1},
-      {"platform_id": "2", "track_id": "II", "capacity": 1},
-      {"platform_id": "3", "track_id": "III", "capacity": 1},
-      {"platform_id": "4", "track_id": "IV", "capacity": 1},
-      {"platform_id": "5", "track_id": "V", "capacity": 1},
-      {"platform_id": "6", "track_id": "VI", "capacity": 1},
-      {"platform_id": "7", "track_id": "VII", "capacity": 1},
-      {"platform_id": "8", "track_id": "VIII", "capacity": 1},
-      {"platform_id": "9", "track_id": "IX", "capacity": 1},
-      {"platform_id": "10", "track_id": "X", "capacity": 1},
-      {"platform_id": "11", "track_id": "XI", "capacity": 1},
-      {"platform_id": "12", "track_id": "XII", "capacity": 1},
-      {"platform_id": "13", "track_id": "XIII", "capacity": 1},
-      {"platform_id": "14", "track_id": "XIV", "capacity": 1},
-      {"platform_id": "15", "track_id": "XV", "capacity": 1}
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      },
+      {
+        "platform_id": "5",
+        "track_id": "5",
+        "capacity": 1
+      },
+      {
+        "platform_id": "6",
+        "track_id": "6",
+        "capacity": 1
+      }
     ],
     "throat_zones": [],
-    "connection_sections": [
-      {"section_id": "S4", "to_station": "NJH", "distance_km": 295}
-    ]
+    "connection_sections": []
+  },
+  {
+    "station_code": "邯郸东",
+    "station_name": "邯郸东",
+    "track_count": 7,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      },
+      {
+        "platform_id": "5",
+        "track_id": "5",
+        "capacity": 1
+      },
+      {
+        "platform_id": "6",
+        "track_id": "6",
+        "capacity": 1
+      },
+      {
+        "platform_id": "7",
+        "track_id": "7",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
+  },
+  {
+    "station_code": "安阳东",
+    "station_name": "安阳东",
+    "track_count": 4,
+    "platforms": [
+      {
+        "platform_id": "1",
+        "track_id": "1",
+        "capacity": 1
+      },
+      {
+        "platform_id": "2",
+        "track_id": "2",
+        "capacity": 1
+      },
+      {
+        "platform_id": "3",
+        "track_id": "3",
+        "capacity": 1
+      },
+      {
+        "platform_id": "4",
+        "track_id": "4",
+        "capacity": 1
+      }
+    ],
+    "throat_zones": [],
+    "connection_sections": []
   }
 ]

@@ -39,9 +39,10 @@ class MIPScheduler:
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 600,  # 追踪间隔时间(秒) - 10分钟，紧追踪
+        headway_time: int = 120,  # 最小发车间隔时间(秒) - 2分钟，安全间隔
         min_section_time: int = 900,  # 最小区间运行时间(秒) - 15分钟
-        platform_occupancy_time: int = 300  # 站台占用时间(秒) - 5分钟
+        platform_occupancy_time: int = 300,  # 站台占用时间(秒) - 5分钟
+        min_headway_time: int = 120  # 最小安全时间间隔(秒) - 2分钟
     ):
         """
         初始化调度器
@@ -49,20 +50,28 @@ class MIPScheduler:
         Args:
             trains: 列车列表
             stations: 车站列表
-            headway_time: 追踪间隔时间(秒)，默认3分钟
-            min_section_time: 最小区间运行时间(秒)，默认5分钟
-            platform_occupancy_time: 站台占用时间(秒)，默认10分钟
+            headway_time: 追踪间隔时间(秒)，默认2分钟（最小安全间隔）
+            min_section_time: 最小区间运行时间(秒)，默认15分钟
+            platform_occupancy_time: 站台占用时间(秒)，默认5分钟
+            min_headway_time: 最小发车间隔(秒)，默认2分钟
         """
         self.trains = trains
         self.stations = stations
         self.headway_time = headway_time
         self.min_section_time = min_section_time
         self.platform_occupancy_time = platform_occupancy_time
+        self.min_headway_time = min_headway_time
 
         # 建立车站索引映射
         self.station_codes = [s.station_code for s in stations]
         self.station_names = {s.station_code: s.station_name for s in stations}
         self.train_ids = [t.train_id for t in trains]
+
+        # 建立车站股道数量映射
+        self.station_track_count = {s.station_code: s.track_count for s in stations}
+
+        # 加载真实数据的区间最小运行时间
+        self.min_running_times = self._load_min_running_times()
 
     def _get_station_index(self, station_code: str) -> int:
         """获取车站索引"""
@@ -73,8 +82,13 @@ class MIPScheduler:
         return [stop.station_code for stop in train.schedule.stops]
 
     def _time_to_seconds(self, time_str: str) -> int:
-        """时间字符串转秒数"""
-        h, m, s = map(int, time_str.split(':'))
+        """时间字符串转秒数，支持 HH:MM:SS 或 HH:MM 格式"""
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            h, m = map(int, parts)
+            s = 0
+        else:
+            h, m, s = map(int, parts)
         return h * 3600 + m * 60 + s
 
     def _seconds_to_time(self, seconds: int) -> str:
@@ -84,6 +98,69 @@ class MIPScheduler:
         s = seconds % 60
         return f"{h:02d}:{m:02d}:{s:02d}"
 
+    def _load_min_running_times(self) -> Dict[Tuple[str, str], int]:
+        """
+        从真实数据加载区间最小运行时间
+        Returns:
+            Dict[(from_station, to_station)] = min_time_seconds
+        """
+        try:
+            from models.data_loader import is_using_real_data, load_real_min_running_time, load_real_stations
+
+            # 检查是否使用真实数据
+            if not is_using_real_data():
+                # 使用预设数据时，从列车时刻表计算区间运行时间
+                return self._calculate_section_times_from_schedule()
+
+            min_times_min = load_real_min_running_time()
+            stations = load_real_stations()
+
+            # 建立车站顺序
+            station_names = [s["station_name"] for s in stations]
+
+            # 构建区间 -> 最小运行时间映射
+            section_times = {}
+            for i in range(len(station_names) - 1):
+                from_station = station_names[i]
+                to_station = station_names[i + 1]
+                if i < len(min_times_min):
+                    # 转换为秒
+                    section_times[(from_station, to_station)] = min_times_min[i] * 60
+
+            return section_times
+        except Exception as e:
+            print(f"警告: 加载真实区间运行时间失败: {e}")
+            # 返回空的dict，后续会使用默认值
+            return {}
+
+    def _calculate_section_times_from_schedule(self) -> Dict[Tuple[str, str], int]:
+        """
+        从预设列车时刻表计算区间运行时间
+        Returns:
+            Dict[(from_station, to_station)] = min_time_seconds
+        """
+        # 收集所有区间的运行时间
+        section_times = {}
+
+        for train in self.trains:
+            stops = train.schedule.stops
+            for i in range(len(stops) - 1):
+                from_station = stops[i].station_code
+                to_station = stops[i + 1].station_code
+
+                from_dep = self._time_to_seconds(stops[i].departure_time)
+                to_arr = self._time_to_seconds(stops[i + 1].arrival_time)
+
+                # 运行时间 = 到达时间 - 发车时间
+                running_time = to_arr - from_dep
+
+                # 存储最小的运行时间作为参考
+                key = (from_station, to_station)
+                if key not in section_times or running_time < section_times[key]:
+                    section_times[key] = running_time
+
+        return section_times
+
     def _calculate_section_time(
         self,
         from_station: str,
@@ -92,7 +169,15 @@ class MIPScheduler:
     ) -> int:
         """
         计算标准区间运行时间（秒）
+        优先从真实数据中获取，如果没有则使用默认值
         """
+        # 优先使用真实数据的最小运行时间作为标准（加一定缓冲）
+        if (from_station, to_station) in self.min_running_times:
+            min_time = self.min_running_times[(from_station, to_station)]
+            # 标准时间 = 最小运行时间 * 1.1 (增加10%缓冲)
+            return int(min_time * 1.1)
+
+        # 旧版本的硬编码默认值（保留作为后备）
         section_times = {
             ("BJP", "TJG"): 900,   # 15分钟
             ("TJG", "JNZ"): 2400,  # 40分钟
@@ -108,8 +193,14 @@ class MIPScheduler:
         speed_level: int = 350
     ) -> int:
         """
-        计算最小区间运行时间 = 标准时间的90%
+        计算最小区间运行时间
+        优先从真实数据中获取
         """
+        # 直接使用真实数据的最小运行时间
+        if (from_station, to_station) in self.min_running_times:
+            return self.min_running_times[(from_station, to_station)]
+
+        # 后备：标准时间的90%
         standard = self._calculate_section_time(from_station, to_station, speed_level)
         return int(standard * 0.9)
 
@@ -250,7 +341,35 @@ class MIPScheduler:
                 # t2的发车时间 >= t1的发车时间 + 追踪间隔
                 prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
 
-        # 3.5 初始到达时间约束 - 确保第一站的到达时间正确
+        # 3.5 车站股道容量约束（简化版）
+        # 通过发车间隔约束来间接保证：当track_count=1时，确保到发时间不重叠
+        for s in self.stations:
+            station_code = s.station_code
+            track_count = self.station_track_count.get(station_code, 1)
+
+            if track_count <= 1:
+                # 单股道时，使用更严格的到发间隔约束
+                trains_at_station = [
+                    t for t in self.trains
+                    if station_code in self._get_stations_for_train(t)
+                ]
+                # 按计划发车时间排序
+                trains_with_time = []
+                for t in trains_at_station:
+                    for stop in t.schedule.stops:
+                        if stop.station_code == station_code:
+                            trains_with_time.append((t, self._time_to_seconds(stop.departure_time)))
+                            break
+                trains_with_time.sort(key=lambda x: x[1])
+
+                # 相邻列车的到达-发车间隔约束
+                for i in range(len(trains_with_time) - 1):
+                    t1, _ = trains_with_time[i]
+                    t2, _ = trains_with_time[i + 1]
+                    # t2的到达时间 >= t1的发车时间 + 最小安全间隔
+                    prob += arrival[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.min_headway_time
+
+        # 3.6 初始到达时间约束 - 确保第一站的到达时间正确
         for t in self.trains:
             train_stations = self._get_stations_for_train(t)
             if train_stations:
@@ -280,13 +399,25 @@ class MIPScheduler:
                 # 发车时间 >= 计划发车时间（可延迟，不可提前）
                 prob += departure[t.train_id, station_code] >= scheduled_dep
 
+        # 6.5 到达时间约束 - 不得提前到达
+        for t in self.trains:
+            for stop in t.schedule.stops:
+                station_code = stop.station_code
+                scheduled_arr = self._time_to_seconds(stop.arrival_time)
+                # 到达时间 >= 计划到达时间（可延迟，不可提前）
+                prob += arrival[t.train_id, station_code] >= scheduled_arr
+
         # 7. 延误计算约束
+        # 找出所有受影响的列车（在injected_delays中出现的）
+        affected_train_ids = set(injected.train_id for injected in delay_injection.injected_delays)
+
         for t in self.trains:
             for stop in t.schedule.stops:
                 station_code = stop.station_code
                 scheduled_dep = self._time_to_seconds(stop.departure_time)
 
-                # 延误 = 实际发车 - 计划发车
+                # 如果不是受影响列车的第一个停靠站，延误可以为0
+                # 只有当实际发车晚于计划发车时才有延误
                 prob += delay[t.train_id, station_code] >= departure[t.train_id, station_code] - scheduled_dep
                 prob += delay[t.train_id, station_code] >= 0
 

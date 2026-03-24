@@ -358,30 +358,50 @@ Agent总耗时: {result.computation_time:.2f}秒
 
 
 # ============================================
-# 工厂函数
+# 模型配置
 # ============================================
 
+# 默认模型配置
+# 使用 ModelScope Hub 的模型 ID 或本地模型路径
+# 示例：
+#   - "Qwen/Qwen2.5-0.5B" (从 ModelScope 下载)
+#   - "Qwen/Qwen2.5-1.8B" (从 ModelScope 下载)
+#   - "models/qwen3.5-4b/base" (本地路径)
+DEFAULT_MODEL_PATH = ""  # 留空则不使用大模型（使用规则引擎）
+
+
 def create_qwen_agent(
-    model_path: str = "/Users/chenshuai18/.cache/modelscope/hub/models/Qwen/Qwen3___5-0___8B",
+    model_path: str = None,
     trains = None,
     stations = None
 ) -> QwenAgent:
     """
     创建Qwen Agent实例
-    
+
     Args:
-        model_path: 模型路径
+        model_path: 模型路径或ModelScope模型ID
+                   例如: "Qwen/Qwen2.5-0.5B" 或 "models/qwen3.5-4b/base"
+                   如果为None，则使用 DEFAULT_MODEL_PATH
         trains: 列车列表（可选，默认使用示例数据）
         stations: 车站列表（可选，默认使用示例数据）
-        
+
     Returns:
         QwenAgent: Agent实例
     """
+    # 使用默认配置
+    if model_path is None:
+        model_path = DEFAULT_MODEL_PATH
+
+    # 如果模型路径为空，返回None（不使用大模型）
+    if not model_path:
+        print("未配置模型路径，Agent将使用规则引擎模式")
+        return None
+
     if trains is None or stations is None:
         from models.data_models import create_sample_trains, create_sample_stations
         trains = create_sample_trains()
         stations = create_sample_stations()
-    
+
     scheduler = MIPScheduler(trains, stations)
     return QwenAgent(model_path, scheduler)
 
