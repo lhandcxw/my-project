@@ -1,74 +1,1133 @@
 [
   {
     "scenario_type": "sudden_failure",
-    "scenario_id": "SC_SF_001",
-    "scenario_name": "G1001列车设备故障",
-    "description": "G1001次列车在天津西站发生设备故障",
+    "scenario_id": "SC_SUDDEN_FAILURE_001",
+    "scenario_name": "北京西至杜家坎线路所其他原因",
+    "description": "调度汇报：G561次列车计划于16:53:00自北京西开出，17:04:00到达杜家坎线路所。北京西至杜家坎线路所区间发生预计晚点，预计晚点15分钟。",
     "injected_delays": [
       {
-        "train_id": "G1001",
-        "location": {
-          "location_type": "station",
-          "station_code": "TJG",
-          "position": "platform"
-        },
-        "initial_delay_seconds": 2400,
-        "timestamp": "2024-01-15T08:30:00Z"
-      }
-    ],
-    "affected_trains": ["G1001"],
-    "scenario_params": {
-      "failure_type": "vehicle_breakdown",
-      "estimated_repair_time": 60,
-      "failure_location": "TJG"
-    }
-  },
-  {
-    "scenario_type": "sudden_failure",
-    "scenario_id": "SC_SF_002",
-    "scenario_name": "G1002列车区间故障",
-    "description": "G1002次列车在区间发生故障",
-    "injected_delays": [
-      {
-        "train_id": "G1002",
+        "train_id": "G561",
         "location": {
           "location_type": "section",
-          "section_id": "S2",
-          "position": "between TJG and JNZ"
+          "station_code": "北京西",
+          "section_from": "北京西",
+          "section_to": "杜家坎线路所",
+          "position": "北京西至杜家坎线路所区间"
         },
-        "initial_delay_seconds": 3600,
-        "timestamp": "2024-01-15T08:45:00Z"
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
       }
     ],
-    "affected_trains": ["G1002", "G1003"],
+    "affected_trains": [
+      "G561"
+    ],
     "scenario_params": {
-      "failure_type": "vehicle_breakdown",
-      "estimated_repair_time": 90,
-      "failure_location": "TJG->JNZ"
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "北京西 -> 杜家坎线路所",
+      "reason": "其他原因"
     }
   },
   {
     "scenario_type": "sudden_failure",
-    "scenario_id": "SC_SF_003",
-    "scenario_name": "G1003列车轻微故障",
-    "description": "G1003次列车在济南西站轻微故障，小延误",
+    "scenario_id": "SC_SUDDEN_FAILURE_002",
+    "scenario_name": "G561列车晚点",
+    "description": "最新情况，G561在北京西至杜家坎线路所区间这段，按计划16:53:00开、17:04:00到。因为预计晚点，所以预计晚点15分钟。",
     "injected_delays": [
       {
-        "train_id": "G1003",
+        "train_id": "G561",
         "location": {
-          "location_type": "station",
-          "station_code": "JNZ",
-          "position": "platform"
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
         },
         "initial_delay_seconds": 900,
-        "timestamp": "2024-01-15T09:40:00Z"
+        "timestamp": "2024-01-15T00:00:00Z"
       }
     ],
-    "affected_trains": ["G1003"],
+    "affected_trains": [
+      "G561"
+    ],
     "scenario_params": {
-      "failure_type": "vehicle_breakdown",
-      "estimated_repair_time": 30,
-      "failure_location": "JNZ"
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_003",
+    "scenario_name": "北京西至杜家坎线路所其他原因",
+    "description": "车次=G561；区段=北京西至杜家坎线路所区间；计划开点=16:53:00；计划到点=17:04:00；原因=预计晚点；影响=预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G561",
+        "location": {
+          "location_type": "section",
+          "station_code": "北京西",
+          "section_from": "北京西",
+          "section_to": "杜家坎线路所",
+          "position": "北京西至杜家坎线路所区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G561"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "北京西 -> 杜家坎线路所",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_007",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "调度汇报：G487次列车计划于11:30:00自保定东开出，11:43:00到达定州东。保定东至定州东区间发生自动降弓，预计晚点5分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G487",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 300,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G487"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 10,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_008",
+    "scenario_name": "G487列车晚点",
+    "description": "刚刚确认，G487在保定东至定州东区间这段，按计划11:30:00开、11:43:00到。因为自动降弓，所以预计晚点5分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G487",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 300,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G487"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 10,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_009",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "车次=G487；区段=保定东至定州东区间；计划开点=11:30:00；计划到点=11:43:00；原因=自动降弓；影响=预计晚点5分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G487",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 300,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G487"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 10,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_016",
+    "scenario_name": "邯郸东至安阳东其他原因",
+    "description": "调度汇报：G691次列车计划于19:13:00自邯郸东开出，19:30:00到达安阳东。邯郸东至安阳东区间发生在站等待会让，预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G691",
+        "location": {
+          "location_type": "section",
+          "station_code": "邯郸东",
+          "section_from": "邯郸东",
+          "section_to": "安阳东",
+          "position": "邯郸东至安阳东区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G691"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "邯郸东 -> 安阳东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_017",
+    "scenario_name": "G691列车晚点",
+    "description": "刚刚确认，G691在邯郸东至安阳东区间这段，按计划19:13:00开、19:30:00到。因为在站等待会让，所以预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G691",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G691"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_018",
+    "scenario_name": "邯郸东至安阳东其他原因",
+    "description": "车次=G691；区段=邯郸东至安阳东区间；计划开点=19:13:00；计划到点=19:30:00；原因=在站等待会让；影响=预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G691",
+        "location": {
+          "location_type": "section",
+          "station_code": "邯郸东",
+          "section_from": "邯郸东",
+          "section_to": "安阳东",
+          "position": "邯郸东至安阳东区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G691"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "邯郸东 -> 安阳东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_019",
+    "scenario_name": "邢台东至邯郸东其他原因",
+    "description": "调度汇报：G587次列车计划于16:48:00自邢台东开出，17:01:00到达邯郸东。邢台东至邯郸东区间发生风速报警，按45 km/h运行，预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "邢台东",
+          "section_from": "邢台东",
+          "section_to": "邯郸东",
+          "position": "邢台东至邯郸东区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 45,
+      "duration_minutes": 40,
+      "affected_section": "邢台东 -> 邯郸东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_020",
+    "scenario_name": "G587列车晚点",
+    "description": "最新情况，G587在邢台东至邯郸东区间这段，按计划16:48:00开、17:01:00到。因为风速报警，按45 km/h运行，所以预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 45,
+      "duration_minutes": 40,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_021",
+    "scenario_name": "邢台东至邯郸东其他原因",
+    "description": "车次=G587；区段=邢台东至邯郸东区间；计划开点=16:48:00；计划到点=17:01:00；原因=风速报警，按45 km/h运行；影响=预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "邢台东",
+          "section_from": "邢台东",
+          "section_to": "邯郸东",
+          "position": "邢台东至邯郸东区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 45,
+      "duration_minutes": 40,
+      "affected_section": "邢台东 -> 邯郸东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_037",
+    "scenario_name": "正定机场至石家庄线路封锁",
+    "description": "调度汇报：G1563次列车计划于18:48:00自正定机场开出，19:02:00到达石家庄。正定机场至石家庄区间发生线路封锁，预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1563",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄",
+          "position": "正定机场至石家庄区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1563"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "正定机场 -> 石家庄",
+      "reason": "线路封锁"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_038",
+    "scenario_name": "G1563列车晚点",
+    "description": "现在，G1563在正定机场至石家庄区间这段，按计划18:48:00开、19:02:00到。因为线路封锁，所以预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1563",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1563"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "",
+      "reason": "线路封锁"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_039",
+    "scenario_name": "正定机场至石家庄线路封锁",
+    "description": "车次=G1563；区段=正定机场至石家庄区间；计划开点=18:48:00；计划到点=19:02:00；原因=线路封锁；影响=预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1563",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄",
+          "position": "正定机场至石家庄区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1563"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "正定机场 -> 石家庄",
+      "reason": "线路封锁"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_040",
+    "scenario_name": "正定机场至石家庄其他原因",
+    "description": "调度汇报：G363次列车计划于09:24:00自正定机场开出，09:36:00到达石家庄。正定机场至石家庄区间发生暴雨，预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G363",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄",
+          "position": "正定机场至石家庄区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G363"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 40,
+      "affected_section": "正定机场 -> 石家庄",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_041",
+    "scenario_name": "G363列车晚点",
+    "description": "最新情况，G363在正定机场至石家庄区间这段，按计划09:24:00开、09:36:00到。因为暴雨，所以预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G363",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G363"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 40,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_042",
+    "scenario_name": "正定机场至石家庄其他原因",
+    "description": "车次=G363；区段=正定机场至石家庄区间；计划开点=09:24:00；计划到点=09:36:00；原因=暴雨；影响=预计晚点20分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G363",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄",
+          "position": "正定机场至石家庄区间"
+        },
+        "initial_delay_seconds": 1200,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G363"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 40,
+      "affected_section": "正定机场 -> 石家庄",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_049",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "调度汇报：G533次列车计划于13:37:00自保定东开出，13:50:00到达定州东。保定东至定州东区间发生降雪区段，预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G533",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G533"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_050",
+    "scenario_name": "G533列车晚点",
+    "description": "现在，G533在保定东至定州东区间这段，按计划13:37:00开、13:50:00到。因为降雪区段，所以预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G533",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G533"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_051",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "车次=G533；区段=保定东至定州东区间；计划开点=13:37:00；计划到点=13:50:00；原因=降雪区段；影响=预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G533",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G533"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_052",
+    "scenario_name": "正定机场至石家庄区间发生其他原因",
+    "description": "调度汇报：G523次列车计划于17:38:00自正定机场开出，17:50:00到达石家庄。正定机场至石家庄区间发生区间中断，预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G523",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄区间发生",
+          "position": "正定机场至石家庄区间发生区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G523"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "正定机场 -> 石家庄区间发生",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_053",
+    "scenario_name": "G523列车晚点",
+    "description": "目前，G523在正定机场至石家庄区间这段，按计划17:38:00开、17:50:00到。因为区间中断，所以预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G523",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G523"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_054",
+    "scenario_name": "正定机场至石家庄其他原因",
+    "description": "车次=G523；区段=正定机场至石家庄区间；计划开点=17:38:00；计划到点=17:50:00；原因=区间中断；影响=预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G523",
+        "location": {
+          "location_type": "section",
+          "station_code": "正定机场",
+          "section_from": "正定机场",
+          "section_to": "石家庄",
+          "position": "正定机场至石家庄区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G523"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "正定机场 -> 石家庄",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_055",
+    "scenario_name": "石家庄至高邑西设备故障",
+    "description": "调度汇报：G365次列车计划于16:47:00自石家庄开出，16:59:00到达高邑西。石家庄至高邑西区间发生设备故障封锁，预计晚点10分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G365",
+        "location": {
+          "location_type": "section",
+          "station_code": "石家庄",
+          "section_from": "石家庄",
+          "section_to": "高邑西",
+          "position": "石家庄至高邑西区间"
+        },
+        "initial_delay_seconds": 600,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G365"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 20,
+      "affected_section": "石家庄 -> 高邑西",
+      "reason": "设备故障"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_056",
+    "scenario_name": "G365列车晚点",
+    "description": "刚刚确认，G365在石家庄至高邑西区间这段，按计划16:47:00开、16:59:00到。因为设备故障封锁，所以预计晚点10分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G365",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 600,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G365"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 20,
+      "affected_section": "",
+      "reason": "设备故障"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_057",
+    "scenario_name": "石家庄至高邑西设备故障",
+    "description": "车次=G365；区段=石家庄至高邑西区间；计划开点=16:47:00；计划到点=16:59:00；原因=设备故障封锁；影响=预计晚点10分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G365",
+        "location": {
+          "location_type": "section",
+          "station_code": "石家庄",
+          "section_from": "石家庄",
+          "section_to": "高邑西",
+          "position": "石家庄至高邑西区间"
+        },
+        "initial_delay_seconds": 600,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G365"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 20,
+      "affected_section": "石家庄 -> 高邑西",
+      "reason": "设备故障"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_064",
+    "scenario_name": "徐水东至保定东其他原因",
+    "description": "调度汇报：G507次列车计划于07:15:00自徐水东开出，07:21:00到达保定东。徐水东至保定东区间发生冰雪影响，预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G507",
+        "location": {
+          "location_type": "section",
+          "station_code": "徐水东",
+          "section_from": "徐水东",
+          "section_to": "保定东",
+          "position": "徐水东至保定东区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G507"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "徐水东 -> 保定东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_065",
+    "scenario_name": "G507列车晚点",
+    "description": "现在，G507在徐水东至保定东区间这段，按计划07:15:00开、07:21:00到。因为冰雪影响，所以预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G507",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G507"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_066",
+    "scenario_name": "徐水东至保定东其他原因",
+    "description": "车次=G507；区段=徐水东至保定东区间；计划开点=07:15:00；计划到点=07:21:00；原因=冰雪影响；影响=预计晚点15分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G507",
+        "location": {
+          "location_type": "section",
+          "station_code": "徐水东",
+          "section_from": "徐水东",
+          "section_to": "保定东",
+          "position": "徐水东至保定东区间"
+        },
+        "initial_delay_seconds": 900,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G507"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 30,
+      "affected_section": "徐水东 -> 保定东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_070",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "调度汇报：G1297次列车计划于19:05:00自保定东开出，19:20:00到达定州东。保定东至定州东区间发生调度待避，预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1297",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1297"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_071",
+    "scenario_name": "G1297列车晚点",
+    "description": "目前，G1297在保定东至定州东区间这段，按计划19:05:00开、19:20:00到。因为调度待避，所以预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1297",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1297"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_072",
+    "scenario_name": "保定东至定州东其他原因",
+    "description": "车次=G1297；区段=保定东至定州东区间；计划开点=19:05:00；计划到点=19:20:00；原因=调度待避；影响=预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1297",
+        "location": {
+          "location_type": "section",
+          "station_code": "保定东",
+          "section_from": "保定东",
+          "section_to": "定州东",
+          "position": "保定东至定州东区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1297"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 90,
+      "affected_section": "保定东 -> 定州东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_079",
+    "scenario_name": "邯郸东至安阳东其他原因",
+    "description": "调度汇报：G587次列车计划于17:01:00自邯郸东开出，17:16:00到达安阳东。邯郸东至安阳东区间发生冰雪天气，按80 km/h运行，预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "邯郸东",
+          "section_from": "邯郸东",
+          "section_to": "安阳东",
+          "position": "邯郸东至安阳东区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 80,
+      "duration_minutes": 90,
+      "affected_section": "邯郸东 -> 安阳东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_080",
+    "scenario_name": "G587列车晚点",
+    "description": "目前，G587在邯郸东至安阳东区间这段，按计划17:01:00开、17:16:00到。因为冰雪天气，按80 km/h运行，所以预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 80,
+      "duration_minutes": 90,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_081",
+    "scenario_name": "邯郸东至安阳东其他原因",
+    "description": "车次=G587；区段=邯郸东至安阳东区间；计划开点=17:01:00；计划到点=17:16:00；原因=冰雪天气，按80 km/h运行；影响=预计晚点45分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G587",
+        "location": {
+          "location_type": "section",
+          "station_code": "邯郸东",
+          "section_from": "邯郸东",
+          "section_to": "安阳东",
+          "position": "邯郸东至安阳东区间"
+        },
+        "initial_delay_seconds": 2700,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G587"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 80,
+      "duration_minutes": 90,
+      "affected_section": "邯郸东 -> 安阳东",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_082",
+    "scenario_name": "定州东至正定机场区间发生其他原因",
+    "description": "调度汇报：G1289次列车计划于16:10:00自定州东开出，16:21:00到达正定机场。定州东至正定机场区间发生区间封锁，预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1289",
+        "location": {
+          "location_type": "section",
+          "station_code": "定州东",
+          "section_from": "定州东",
+          "section_to": "正定机场区间发生",
+          "position": "定州东至正定机场区间发生区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1289"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "定州东 -> 正定机场区间发生",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_083",
+    "scenario_name": "G1289列车晚点",
+    "description": "最新情况，G1289在定州东至正定机场区间这段，按计划16:10:00开、16:21:00到。因为区间封锁，所以预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1289",
+        "location": {
+          "location_type": "section",
+          "station_code": "",
+          "section_from": "",
+          "section_to": "",
+          "position": "区间区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1289"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "",
+      "reason": "其他原因"
+    }
+  },
+  {
+    "scenario_type": "sudden_failure",
+    "scenario_id": "SC_SUDDEN_FAILURE_084",
+    "scenario_name": "定州东至正定机场其他原因",
+    "description": "车次=G1289；区段=定州东至正定机场区间；计划开点=16:10:00；计划到点=16:21:00；原因=区间封锁；影响=预计晚点30分钟。",
+    "injected_delays": [
+      {
+        "train_id": "G1289",
+        "location": {
+          "location_type": "section",
+          "station_code": "定州东",
+          "section_from": "定州东",
+          "section_to": "正定机场",
+          "position": "定州东至正定机场区间"
+        },
+        "initial_delay_seconds": 1800,
+        "timestamp": "2024-01-15T00:00:00Z"
+      }
+    ],
+    "affected_trains": [
+      "G1289"
+    ],
+    "scenario_params": {
+      "limit_speed_kmh": 200,
+      "duration_minutes": 60,
+      "affected_section": "定州东 -> 正定机场",
+      "reason": "其他原因"
     }
   }
 ]

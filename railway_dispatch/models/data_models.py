@@ -236,12 +236,22 @@ class DelayPredictionTable(BaseModel):
 def create_sample_trains() -> List[Train]:
     """
     创建示例列车数据
-    设计原则：
-    - 5列车5车站
-    - 紧密追踪间隔（10-15分钟），前车延误会影响后续车
-    - 最小冗余，让延误传播明显
-    - 时刻表紧密衔接，需通过调度优化调整
+    优先使用真实数据，如果没有则使用示例数据
     """
+    # 尝试从data_loader加载真实数据
+    try:
+        from models.data_loader import get_trains_pydantic, is_using_real_data
+        if is_using_real_data():
+            return get_trains_pydantic()
+    except Exception:
+        pass
+
+    # 如果没有启用真实数据或加载失败，使用示例数据
+    # 设计原则：
+    # - 5列车5车站
+    # - 紧密追踪间隔（10-15分钟），前车延误会影响后续车
+    # - 最小冗余，让延误传播明显
+    # - 时刻表紧密衔接，需通过调度优化调整
     # 基础时间：08:00:00
     # 追踪间隔：10-15分钟
     return [
@@ -310,7 +320,19 @@ def create_sample_trains() -> List[Train]:
 
 
 def create_sample_stations() -> List[Station]:
-    """创建示例车站数据"""
+    """
+    创建示例车站数据
+    优先使用真实数据，如果没有则使用示例数据
+    """
+    # 尝试从data_loader加载真实数据
+    try:
+        from models.data_loader import get_stations_pydantic, is_using_real_data
+        if is_using_real_data():
+            return get_stations_pydantic()
+    except Exception:
+        pass
+
+    # 如果没有启用真实数据或加载失败，使用示例数据
     return [
         Station(
             station_code="BJP",

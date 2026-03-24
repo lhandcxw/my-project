@@ -13,7 +13,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_models import Train, Station, DelayInjection, ScenarioType
-from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids
+from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data
 from solver.mip_scheduler import MIPScheduler
 from skills.dispatch_skills import create_skills, execute_skill
 from evaluation.evaluator import Evaluator
@@ -35,6 +35,10 @@ from qwen.tool_registry import ToolRegistry
 
 app = Flask(__name__)
 
+# 启用真实数据
+use_real_data(True)
+print("已启用真实数据模式")
+
 # 全局数据 - 从 centralized data loader 加载
 trains = get_trains_pydantic()
 stations = get_stations_pydantic()
@@ -49,7 +53,14 @@ evaluator = Evaluator()
 
 # Qwen Agent (延迟加载)
 qwen_agent = None
-USE_QWEN_AGENT = True  # 设置为False可禁用Qwen Agent
+# 设置为 False 可禁用 Qwen Agent
+# 设置为 True 但不设置 DEFAULT_MODEL_PATH 将使用规则引擎模式
+USE_QWEN_AGENT = True
+
+# 模型配置: 设置为 ModelScope 模型 ID 或本地路径
+# 例如: "Qwen/Qwen2.5-0.5B" 或 "Qwen/Qwen2.5-1.8B"
+# 留空则不使用大模型
+MODEL_PATH = "Qwen/Qwen2.5-0.5B"  # 使用 0.5B 小模型，适合 CPU 运行
 
 def get_qwen_agent():
     """获取或创建Qwen Agent实例"""
@@ -57,8 +68,11 @@ def get_qwen_agent():
     if qwen_agent is None and USE_QWEN_AGENT:
         try:
             print("正在初始化Qwen Agent...")
-            qwen_agent = create_qwen_agent(trains=trains, stations=stations)
-            print("Qwen Agent 初始化完成")
+            qwen_agent = create_qwen_agent(model_path=MODEL_PATH, trains=trains, stations=stations)
+            if qwen_agent is None:
+                print("未配置模型路径，使用规则引擎模式")
+            else:
+                print("Qwen Agent 初始化完成")
         except Exception as e:
             print(f"Qwen Agent 初始化失败: {e}")
             return None
@@ -543,16 +557,17 @@ HTML_TEMPLATE = '''
                 document.getElementById('dispatchLoading').style.display = 'none';
 
                 if (result.success) {
-                    // 转换为统一格式
+                    // 转换为统一格式，添加空值检查
+                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
                     const unified = {
                         success: true,
-                        recognized_scenario: result.planner.recognized_scenario,
-                        selected_skill: result.skill_result.message.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
+                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
+                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
                         reasoning: '基于表单输入执行调度优化',
-                        delay_statistics: result.skill_result.delay_statistics,
-                        message: result.skill_result.message,
-                        computation_time: result.skill_result.computation_time,
-                        optimized_schedule: result.skill_result.optimized_schedule,
+                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
+                        message: skillMessage,
+                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
+                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
                         original_schedule: result.original_schedule
                     };
                     showDispatchResult(unified);
@@ -678,6 +693,7 @@ def dispatch():
                         "confidence": 0.9
                     },
                     "skill_result": {
+                        "message": skill_result.message,
                         "optimized_schedule": skill_result.optimized_schedule,
                         "delay_statistics": skill_result.delay_statistics,
                         "computation_time": skill_result.computation_time
@@ -707,6 +723,7 @@ def dispatch():
                 "confidence": 0.9
             },
             "skill_result": {
+                "message": skill_result.message,
                 "optimized_schedule": skill_result.optimized_schedule,
                 "delay_statistics": skill_result.delay_statistics,
                 "computation_time": skill_result.computation_time

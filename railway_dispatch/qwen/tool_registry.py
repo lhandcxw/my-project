@@ -4,7 +4,7 @@
 管理可用的Skills工具，提供JSON Schema定义和执行接口
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import json
 
@@ -288,7 +288,7 @@ def parse_tool_call(response_text: str) -> Optional[ToolCall]:
     return None
 
 
-def validate_tool_call(tool_call: ToolCall, registry: ToolRegistry) -> tuple[bool, str]:
+def validate_tool_call(tool_call: ToolCall, registry: ToolRegistry) -> Tuple[bool, str]:
     """
     验证工具调用是否有效
     
@@ -297,7 +297,7 @@ def validate_tool_call(tool_call: ToolCall, registry: ToolRegistry) -> tuple[boo
         registry: 工具注册表
         
     Returns:
-        tuple[bool, str]: (是否有效, 错误信息)
+        Tuple[bool, str]: (是否有效, 错误信息)
     """
     # 检查工具是否存在
     if not registry.has_tool(tool_call.tool_name):

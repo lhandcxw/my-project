@@ -4,7 +4,7 @@
 对应架构文档第7节：评估系统设计
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 import json
 
@@ -295,7 +295,7 @@ class Evaluator:
         self,
         results: Dict[str, EvaluationResult],
         objective: str = "max_delay"
-    ) -> tuple[str, EvaluationResult]:
+    ) -> Tuple[str, EvaluationResult]:
         """
         选择最佳方案
 
