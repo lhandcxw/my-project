@@ -100,38 +100,13 @@ class MIPScheduler:
 
     def _load_min_running_times(self) -> Dict[Tuple[str, str], int]:
         """
-        从真实数据加载区间最小运行时间
+        从列车时刻表计算区间运行时间
+        无论使用真实数据还是预设数据，都从列车时刻表计算以保证一致性
         Returns:
             Dict[(from_station, to_station)] = min_time_seconds
         """
-        try:
-            from models.data_loader import is_using_real_data, load_real_min_running_time, load_real_stations
-
-            # 检查是否使用真实数据
-            if not is_using_real_data():
-                # 使用预设数据时，从列车时刻表计算区间运行时间
-                return self._calculate_section_times_from_schedule()
-
-            min_times_min = load_real_min_running_time()
-            stations = load_real_stations()
-
-            # 建立车站顺序
-            station_names = [s["station_name"] for s in stations]
-
-            # 构建区间 -> 最小运行时间映射
-            section_times = {}
-            for i in range(len(station_names) - 1):
-                from_station = station_names[i]
-                to_station = station_names[i + 1]
-                if i < len(min_times_min):
-                    # 转换为秒
-                    section_times[(from_station, to_station)] = min_times_min[i] * 60
-
-            return section_times
-        except Exception as e:
-            print(f"警告: 加载真实区间运行时间失败: {e}")
-            # 返回空的dict，后续会使用默认值
-            return {}
+        # 始终从列车时刻表计算区间运行时间，保证与实际列车停靠点一致
+        return self._calculate_section_times_from_schedule()
 
     def _calculate_section_times_from_schedule(self) -> Dict[Tuple[str, str], int]:
         """
@@ -289,9 +264,19 @@ class MIPScheduler:
             station_code = injected.location.station_code or "TJG"
             initial_delay = injected.initial_delay_seconds
 
+            # 检查列车是否在调度范围内
+            train = None
+            for t in self.trains:
+                if t.train_id == train_id:
+                    train = t
+                    break
+
+            if train is None:
+                # 列车不在调度范围内，跳过此延误注入
+                continue
+
             if station_code in self.station_codes:
                 # 获取计划的原始到发时间
-                train = next(t for t in self.trains if t.train_id == train_id)
                 for stop in train.schedule.stops:
                     if stop.station_code == station_code:
                         scheduled_arr = self._time_to_seconds(stop.arrival_time)
@@ -303,18 +288,29 @@ class MIPScheduler:
                         prob += delay[train_id, station_code] >= initial_delay
 
         # 2. 区间运行时间约束
-        # 约束：最小区间运行时间(标准90%) <= 运行时间 <= 标准运行时间
+        # 约束：最小区间运行时间 <= 运行时间 <= 计划运行时间 + 缓冲
         for t in self.trains:
             train_stations = self._get_stations_for_train(t)
             for i in range(len(train_stations) - 1):
                 from_station = train_stations[i]
                 to_station = train_stations[i + 1]
-                standard_time = self._calculate_section_time(from_station, to_station, t.speed_level)
-                min_time = self._calculate_min_section_time(from_station, to_station, t.speed_level)
 
-                # 运行时间可以压缩到最小值(标准90%)，但不能超过标准值
+                # 获取该列车在当前区间的计划运行时间
+                from_stop = t.schedule.stops[i]
+                to_stop = t.schedule.stops[i + 1]
+                scheduled_from_dep = self._time_to_seconds(from_stop.departure_time)
+                scheduled_to_arr = self._time_to_seconds(to_stop.arrival_time)
+                scheduled_section_time = scheduled_to_arr - scheduled_from_dep
+
+                # 最小区间运行时间
+                min_time = self._calculate_min_section_time(from_station, to_station, 350)
+
+                # 运行时间不能小于最小时间，但可以略超过计划时间（留出缓冲）
+                # 使用计划时间的1.2倍作为上限，给予一定灵活性
+                max_time = int(scheduled_section_time * 1.2)
+
                 prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] >= min_time
-                prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] <= standard_time
+                prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] <= max_time
 
         # 3. 追踪间隔约束（同车站相邻列车）
         # 关键约束：确保后续列车的发车时间受前车影响
@@ -412,17 +408,32 @@ class MIPScheduler:
         affected_train_ids = set(injected.train_id for injected in delay_injection.injected_delays)
 
         for t in self.trains:
+            train_id = t.train_id
+            is_affected = train_id in affected_train_ids
+
             for stop in t.schedule.stops:
                 station_code = stop.station_code
                 scheduled_dep = self._time_to_seconds(stop.departure_time)
 
-                # 如果不是受影响列车的第一个停靠站，延误可以为0
-                # 只有当实际发车晚于计划发车时才有延误
-                prob += delay[t.train_id, station_code] >= departure[t.train_id, station_code] - scheduled_dep
-                prob += delay[t.train_id, station_code] >= 0
+                # 延误 = 实际发车 - 计划发车（如果为正）
+                prob += delay[train_id, station_code] >= departure[train_id, station_code] - scheduled_dep
+                prob += delay[train_id, station_code] >= 0
 
                 # 最大延误约束
-                prob += max_delay >= delay[t.train_id, station_code]
+                prob += max_delay >= delay[train_id, station_code]
+
+                # 如果列车不受影响且该站不是注入了延误的站点，添加约束让延误为0
+                # 这样可以避免不必要的延误传播
+                if not is_affected:
+                    # 检查是否是注入了延误的站点
+                    is_injected_station = any(
+                        injected.train_id == train_id and
+                        (injected.location.station_code is None or injected.location.station_code == station_code)
+                        for injected in delay_injection.injected_delays
+                    )
+                    if not is_injected_station:
+                        # 未受影响的列车在非延误站点，延误应为0
+                        prob += delay[train_id, station_code] <= 0
 
         # 求解
         prob.solve()
@@ -521,22 +532,24 @@ def create_scheduler(trains: List[Train], stations: List[Station]) -> MIPSchedul
 
 # 测试代码
 if __name__ == "__main__":
-    from models.data_models import create_sample_trains, create_sample_stations, DelayInjection
+    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
 
-    # 加载数据
-    trains = create_sample_trains()
-    stations = create_sample_stations()
+    # 使用真实数据
+    use_real_data(True)
+    trains = get_trains_pydantic()[:10]  # 只取前10列用于测试
+    stations = get_stations_pydantic()
 
     # 创建延误注入（临时限速场景）
+    first_train = trains[0].train_id if trains else "G1215"
+    first_station = trains[0].schedule.stops[0].station_code if trains and trains[0].schedule.stops else "XSD"
     delay_injection = DelayInjection.create_temporary_speed_limit(
         scenario_id="TEST_001",
         train_delays=[
-            {"train_id": "G1001", "delay_seconds": 600, "station_code": "TJG"},
-            {"train_id": "G1003", "delay_seconds": 900, "station_code": "TJG"}
+            {"train_id": first_train, "delay_seconds": 600, "station_code": first_station},
         ],
         limit_speed=200,
         duration=120,
-        affected_section="TJG -> JNZ"
+        affected_section=f"{first_station} -> BDD"
     )
 
     # 求解

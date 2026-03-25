@@ -9,11 +9,11 @@ from models.data_loader import use_real_data, get_trains_pydantic, get_stations_
 from solver.mip_scheduler import MIPScheduler
 from models.data_models import DelayInjection, InjectedDelay, DelayLocation, ScenarioType
 
-# 使用预设数据
-use_real_data(False)
+# 使用真实数据
+use_real_data(True)
 
 # 加载数据
-trains = get_trains_pydantic()
+trains = get_trains_pydantic()[:20]  # 限制数量以保证MIP可行
 stations = get_stations_pydantic()
 
 print(f"加载了 {len(trains)} 趟列车, {len(stations)} 个车站")

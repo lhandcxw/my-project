@@ -15,11 +15,11 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from solver.mip_scheduler import MIPScheduler
-from skills.dispatch_skills import DispatchSkillOutput
-from qwen.tool_registry import (
+from railway_agent.dispatch_skills import DispatchSkillOutput
+from railway_agent.tool_registry import (
     ToolRegistry, ToolCall, parse_tool_call, validate_tool_call
 )
-from qwen.prompts import (
+from railway_agent.prompts import (
     build_messages, format_scenario_info,
     RESULT_SUMMARY_PROMPT, SYSTEM_PROMPT
 )
@@ -341,7 +341,7 @@ def create_ollama_agent(
         OllamaAgent实例
     """
     from railway_dispatch.solver.mip_scheduler import create_scheduler
-    from railway_dispatch.skills import create_skills
+    from railway_agent.dispatch_skills import create_skills
 
     # 创建调度器
     scheduler = create_scheduler()

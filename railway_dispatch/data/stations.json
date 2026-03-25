@@ -1,464 +1,67 @@
 [
   {
-    "station_code": "北京西",
+    "station_code": "BJX",
     "station_name": "北京西",
-    "track_count": 7,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      },
-      {
-        "platform_id": "5",
-        "track_id": "5",
-        "capacity": 1
-      },
-      {
-        "platform_id": "6",
-        "track_id": "6",
-        "capacity": 1
-      },
-      {
-        "platform_id": "7",
-        "track_id": "7",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 7
   },
   {
-    "station_code": "杜家坎",
+    "station_code": "DJK",
     "station_name": "杜家坎线路所",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "涿州东",
+    "station_code": "ZBD",
     "station_name": "涿州东",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "高碑店",
+    "station_code": "GBD",
     "station_name": "高碑店东",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "徐水东",
+    "station_code": "XSD",
     "station_name": "徐水东",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "保定东",
+    "station_code": "BDD",
     "station_name": "保定东",
-    "track_count": 6,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      },
-      {
-        "platform_id": "5",
-        "track_id": "5",
-        "capacity": 1
-      },
-      {
-        "platform_id": "6",
-        "track_id": "6",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 6
   },
   {
-    "station_code": "定州东",
+    "station_code": "DZD",
     "station_name": "定州东",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "正定机",
+    "station_code": "ZDJ",
     "station_name": "正定机场",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "石家庄",
+    "station_code": "SJP",
     "station_name": "石家庄",
-    "track_count": 11,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      },
-      {
-        "platform_id": "5",
-        "track_id": "5",
-        "capacity": 1
-      },
-      {
-        "platform_id": "6",
-        "track_id": "6",
-        "capacity": 1
-      },
-      {
-        "platform_id": "7",
-        "track_id": "7",
-        "capacity": 1
-      },
-      {
-        "platform_id": "8",
-        "track_id": "8",
-        "capacity": 1
-      },
-      {
-        "platform_id": "9",
-        "track_id": "9",
-        "capacity": 1
-      },
-      {
-        "platform_id": "10",
-        "track_id": "10",
-        "capacity": 1
-      },
-      {
-        "platform_id": "11",
-        "track_id": "11",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 11
   },
   {
-    "station_code": "高邑西",
+    "station_code": "GYX",
     "station_name": "高邑西",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   },
   {
-    "station_code": "邢台东",
+    "station_code": "XTD",
     "station_name": "邢台东",
-    "track_count": 6,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      },
-      {
-        "platform_id": "5",
-        "track_id": "5",
-        "capacity": 1
-      },
-      {
-        "platform_id": "6",
-        "track_id": "6",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 6
   },
   {
-    "station_code": "邯郸东",
+    "station_code": "HDD",
     "station_name": "邯郸东",
-    "track_count": 7,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      },
-      {
-        "platform_id": "5",
-        "track_id": "5",
-        "capacity": 1
-      },
-      {
-        "platform_id": "6",
-        "track_id": "6",
-        "capacity": 1
-      },
-      {
-        "platform_id": "7",
-        "track_id": "7",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 7
   },
   {
-    "station_code": "安阳东",
+    "station_code": "AYD",
     "station_name": "安阳东",
-    "track_count": 4,
-    "platforms": [
-      {
-        "platform_id": "1",
-        "track_id": "1",
-        "capacity": 1
-      },
-      {
-        "platform_id": "2",
-        "track_id": "2",
-        "capacity": 1
-      },
-      {
-        "platform_id": "3",
-        "track_id": "3",
-        "capacity": 1
-      },
-      {
-        "platform_id": "4",
-        "track_id": "4",
-        "capacity": 1
-      }
-    ],
-    "throat_zones": [],
-    "connection_sections": []
+    "track_count": 4
   }
 ]

@@ -17,12 +17,12 @@ from modelscope import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 from solver.mip_scheduler import MIPScheduler
-from skills.dispatch_skills import DispatchSkillOutput
-from qwen.tool_registry import (
+from railway_agent.dispatch_skills import DispatchSkillOutput
+from railway_agent.tool_registry import (
     ToolRegistry, ToolCall, parse_tool_call, validate_tool_call
 )
-from qwen.prompts import (
-    build_messages, format_scenario_info, 
+from railway_agent.prompts import (
+    build_messages, format_scenario_info,
     RESULT_SUMMARY_PROMPT, SYSTEM_PROMPT
 )
 
@@ -398,9 +398,10 @@ def create_qwen_agent(
         return None
 
     if trains is None or stations is None:
-        from models.data_models import create_sample_trains, create_sample_stations
-        trains = create_sample_trains()
-        stations = create_sample_stations()
+        from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
+        use_real_data(True)
+        trains = get_trains_pydantic()[:20]
+        stations = get_stations_pydantic()
 
     scheduler = MIPScheduler(trains, stations)
     return QwenAgent(model_path, scheduler)
@@ -411,72 +412,87 @@ def create_qwen_agent(
 # ============================================
 
 if __name__ == "__main__":
-    from models.data_models import create_sample_trains, create_sample_stations
-    
+    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
+
     print("=" * 60)
     print("Qwen Agent 测试")
     print("=" * 60)
-    
-    # 创建Agent
-    trains = create_sample_trains()
-    stations = create_sample_stations()
+
+    # 使用真实数据
+    use_real_data(True)
+    trains = get_trains_pydantic()[:20]
+    stations = get_stations_pydantic()
+
+    # 创建Agent（注意：如果没有配置模型路径，会返回None）
     agent = create_qwen_agent(trains=trains, stations=stations)
-    
+    if agent is None:
+        print("警告：Agent创建失败，可能是未配置模型路径")
+
     # 测试场景1：临时限速
     print("\n" + "=" * 60)
     print("测试场景1: 临时限速")
     print("=" * 60)
-    
+
+    if trains:
+        first_train = trains[0].train_id
+        first_station = trains[0].schedule.stops[0].station_code
+    else:
+        first_train = "G1215"
+        first_station = "XSD"
+
     delay_injection_1 = {
         "scenario_type": "temporary_speed_limit",
         "scenario_id": "TEST_001",
         "injected_delays": [
             {
-                "train_id": "G1001",
-                "location": {"location_type": "station", "station_code": "TJG"},
+                "train_id": first_train,
+                "location": {"location_type": "station", "station_code": first_station},
                 "initial_delay_seconds": 600,
-                "timestamp": "2024-01-15T10:00:00Z"
-            },
-            {
-                "train_id": "G1003",
-                "location": {"location_type": "station", "station_code": "TJG"},
-                "initial_delay_seconds": 900,
                 "timestamp": "2024-01-15T10:00:00Z"
             }
         ],
-        "affected_trains": ["G1001", "G1003"],
+        "affected_trains": [first_train],
         "scenario_params": {
             "limit_speed_kmh": 200,
             "duration_minutes": 120,
-            "affected_section": "TJG -> JNZ"
+            "affected_section": f"{first_station} -> BDD"
         }
     }
-    
-    result1 = agent.analyze(delay_injection_1)
-    print(agent.summarize_result(result1))
-    
+
+    if agent:
+        result1 = agent.analyze(delay_injection_1)
+        print(agent.summarize_result(result1))
+
     # 测试场景2：突发故障
     print("\n" + "=" * 60)
     print("测试场景2: 突发故障")
     print("=" * 60)
-    
+
+    if len(trains) > 1:
+        second_train = trains[1].train_id
+        second_station = trains[1].schedule.stops[0].station_code
+    else:
+        second_train = "G1239"
+        second_station = "XSD"
+
     delay_injection_2 = {
         "scenario_type": "sudden_failure",
         "scenario_id": "TEST_002",
         "injected_delays": [
             {
-                "train_id": "G1005",
-                "location": {"location_type": "station", "station_code": "TJG"},
-                "initial_delay_seconds": 2400,
+                "train_id": second_train,
+                "location": {"location_type": "station", "station_code": second_station},
+                "initial_delay_seconds": 1800,
                 "timestamp": "2024-01-15T11:00:00Z"
             }
         ],
-        "affected_trains": ["G1005"],
+        "affected_trains": [second_train],
         "scenario_params": {
             "failure_type": "vehicle_breakdown",
             "estimated_repair_time": 60
         }
     }
-    
-    result2 = agent.analyze(delay_injection_2)
-    print(agent.summarize_result(result2))
+
+    if agent:
+        result2 = agent.analyze(delay_injection_2)
+        print(agent.summarize_result(result2))

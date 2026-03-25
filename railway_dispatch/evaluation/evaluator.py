@@ -322,37 +322,49 @@ class Evaluator:
 
 # 测试代码
 if __name__ == "__main__":
-    # 示例数据
-    original = {
-        "G1001": [
-            {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:00:00", "departure_time": "08:10:00", "delay_seconds": 0},
-            {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:35:00", "departure_time": "08:40:00", "delay_seconds": 600},
-            {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:45:00", "departure_time": "09:50:00", "delay_seconds": 600},
-        ],
-        "G1003": [
-            {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:20:00", "departure_time": "08:30:00", "delay_seconds": 0},
-            {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:55:00", "departure_time": "09:00:00", "delay_seconds": 900},
-            {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "10:05:00", "departure_time": "10:10:00", "delay_seconds": 900},
-        ]
-    }
+    # 使用真实数据
+    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data, get_original_schedule
 
-    optimized = {
-        "G1001": [
-            {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:00:00", "departure_time": "08:10:00", "delay_seconds": 0},
-            {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:35:00", "departure_time": "08:50:00", "delay_seconds": 600},
-            {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "09:55:00", "departure_time": "10:00:00", "delay_seconds": 600},
-        ],
-        "G1003": [
-            {"station_code": "BJP", "station_name": "北京西", "arrival_time": "08:20:00", "departure_time": "08:30:00", "delay_seconds": 0},
-            {"station_code": "TJG", "station_name": "天津西", "arrival_time": "08:55:00", "departure_time": "09:15:00", "delay_seconds": 900},
-            {"station_code": "JNZ", "station_name": "济南西", "arrival_time": "10:20:00", "departure_time": "10:25:00", "delay_seconds": 900},
-        ]
-    }
+    use_real_data(True)
+    trains = get_trains_pydantic()[:5]
+    stations = get_stations_pydantic()
 
+    # 获取原始时刻表作为示例
+    original = {}
+    for train in trains:
+        stops = []
+        for stop in train.schedule.stops:
+            stops.append({
+                "station_code": stop.station_code,
+                "station_name": stop.station_name,
+                "arrival_time": stop.arrival_time,
+                "departure_time": stop.departure_time,
+                "delay_seconds": 0
+            })
+        original[train.train_id] = stops
+
+    # 创建一个简单的优化结果示例（模拟延误传播）
+    optimized = {}
+    for train in trains:
+        stops = []
+        for stop in train.schedule.stops:
+            # 简单模拟：假设每站都有传播的延误
+            delay = 300 if stop.station_code != trains[0].schedule.stops[0].station_code else 0
+            stops.append({
+                "station_code": stop.station_code,
+                "station_name": stop.station_name,
+                "arrival_time": stop.arrival_time,
+                "departure_time": stop.departure_time,
+                "delay_seconds": delay
+            })
+        optimized[train.train_id] = stops
+
+    # 延误注入信息
+    first_train = trains[0].train_id if trains else "G1215"
+    first_station = trains[0].schedule.stops[0].station_code if trains and trains[0].schedule.stops else "XSD"
     delay_injection = {
         "injected_delays": [
-            {"train_id": "G1001", "location": {"station_code": "TJG"}, "initial_delay_seconds": 600},
-            {"train_id": "G1003", "location": {"station_code": "TJG"}, "initial_delay_seconds": 900}
+            {"train_id": first_train, "location": {"station_code": first_station}, "initial_delay_seconds": 600}
         ]
     }
 

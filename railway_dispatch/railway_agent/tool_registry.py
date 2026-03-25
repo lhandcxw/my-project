@@ -12,7 +12,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from skills.dispatch_skills import (
+from railway_agent.dispatch_skills import (
     create_skills,
     execute_skill,
     DispatchSkillOutput,
@@ -320,12 +320,13 @@ def validate_tool_call(tool_call: ToolCall, registry: ToolRegistry) -> Tuple[boo
 # ============================================
 
 if __name__ == "__main__":
-    from models.data_models import create_sample_trains, create_sample_stations
+    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
     from solver.mip_scheduler import create_scheduler
-    
-    # 创建测试数据
-    trains = create_sample_trains()
-    stations = create_sample_stations()
+
+    # 使用真实数据
+    use_real_data(True)
+    trains = get_trains_pydantic()[:10]
+    stations = get_stations_pydantic()
     scheduler = create_scheduler(trains, stations)
     
     # 创建Tool注册表

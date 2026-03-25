@@ -317,11 +317,12 @@ def execute_skill(
 
 # 测试代码
 if __name__ == "__main__":
-    from models.data_models import create_sample_trains, create_sample_stations
+    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
 
-    # 加载数据
-    trains = create_sample_trains()
-    stations = create_sample_stations()
+    # 使用真实数据
+    use_real_data(True)
+    trains = get_trains_pydantic()[:10]
+    stations = get_stations_pydantic()
 
     # 创建调度器
     from solver.mip_scheduler import create_scheduler
@@ -332,24 +333,20 @@ if __name__ == "__main__":
 
     # 测试临时限速场景
     print("=== 测试临时限速场景 ===")
+    first_train = trains[0].train_id if trains else "G1215"
+    first_station = trains[0].schedule.stops[0].station_code if trains and trains[0].schedule.stops else "XSD"
     delay_injection = {
         "scenario_type": "temporary_speed_limit",
         "scenario_id": "TEST_001",
         "injected_delays": [
             {
-                "train_id": "G1001",
-                "location": {"location_type": "station", "station_code": "TJG"},
+                "train_id": first_train,
+                "location": {"location_type": "station", "station_code": first_station},
                 "initial_delay_seconds": 600,
-                "timestamp": "2024-01-15T10:00:00Z"
-            },
-            {
-                "train_id": "G1003",
-                "location": {"location_type": "station", "station_code": "TJG"},
-                "initial_delay_seconds": 900,
                 "timestamp": "2024-01-15T10:00:00Z"
             }
         ],
-        "affected_trains": ["G1001", "G1003"],
+        "affected_trains": [first_train],
         "scenario_params": {
             "limit_speed_kmh": 200,
             "duration_minutes": 120,
@@ -357,11 +354,14 @@ if __name__ == "__main__":
         }
     }
 
+    # 使用真实数据的站点编码
+    station_codes = [s.station_code for s in stations] if stations else ["XSD", "BDD", "DZD", "ZDJ", "SJP"]
+
     result = execute_skill(
         skill_name="temporary_speed_limit_skill",
         skills=skills,
-        train_ids=["G1001", "G1003"],
-        station_codes=["BJP", "TJG", "JNZ", "NJH", "SHH"],
+        train_ids=[first_train],
+        station_codes=station_codes,
         delay_injection=delay_injection
     )
 

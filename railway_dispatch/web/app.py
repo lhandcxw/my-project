@@ -13,9 +13,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_models import Train, Station, DelayInjection, ScenarioType
-from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data
+from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
 from solver.mip_scheduler import MIPScheduler
-from skills.dispatch_skills import create_skills, execute_skill
+from railway_agent.dispatch_skills import create_skills, execute_skill
 from evaluation.evaluator import Evaluator
 
 # 导入运行图生成模块
@@ -29,18 +29,22 @@ sys.path.insert(0, project_root)
 # 导入运行图生成模块（经典铁路运行图风格：横轴时间，纵轴车站）
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
-# 导入Qwen Agent
-from qwen.qwen_agent import QwenAgent, create_qwen_agent
-from qwen.tool_registry import ToolRegistry
+# 导入Agent
+from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
+from railway_agent.tool_registry import ToolRegistry
 
 app = Flask(__name__)
 
 # 启用真实数据
+# 使用真实数据，避免示例数据混淆
 use_real_data(True)
 print("已启用真实数据模式")
 
 # 全局数据 - 从 centralized data loader 加载
-trains = get_trains_pydantic()
+# 注意：使用真实数据时，MIP求解器对列车数量有限制（约60列内可行）
+# 这里只加载前50列列车以保证求解器可以正常工作
+all_trains = get_trains_pydantic()
+trains = all_trains[:50]  # 限制列车数量
 stations = get_stations_pydantic()
 station_codes = get_station_codes()
 station_names = get_station_names()
@@ -661,19 +665,45 @@ def dispatch():
         delay_config = data.get('delay_config', [])
         
         if scenario_type == 'temporary_speed_limit':
+            # 使用有效的站点（preset数据中列车从XSD出发，真实数据从BJX出发）
+            first_station = "XSD" if not is_using_real_data() else station_codes[0]
+            second_station = "BDD" if not is_using_real_data() else station_codes[1]
+            affected_section = f"{first_station} -> {second_station}"
+
             delay_injection = DelayInjection.create_temporary_speed_limit(
                 scenario_id="WEB_SC_001",
                 train_delays=delay_config,
                 limit_speed=data.get('limit_speed', 200),
                 duration=data.get('duration', 120),
-                affected_section="TJG -> JNZ"
+                affected_section=affected_section
             )
         else:
+            # 获取有效的站点编码 - 必须确保站点是所选列车实际停靠的站点
+            default_station = "XSD" if not is_using_real_data() else station_codes[0]
+            delay_station = delay_config[0].get('station_code') if delay_config else default_station
+
+            # 确保站点编码有效：如果不存在于当前数据中，或者不是所选列车的停靠站，使用列车实际停靠的第一站
+            if delay_station not in station_codes or (selected_trains and len(selected_trains) > 0):
+                # 找到所选列车的停靠站列表
+                valid_stations_for_train = []
+                if selected_trains:
+                    for train in trains:
+                        if train.train_id == selected_trains[0]:
+                            valid_stations_for_train = [s.station_code for s in train.schedule.stops]
+                            break
+
+                # 如果选择的站点不在列车的停靠列表中，使用第一站
+                if valid_stations_for_train and delay_station not in valid_stations_for_train:
+                    delay_station = valid_stations_for_train[0] if valid_stations_for_train else default_station
+            # 如果仍然不在station_codes中，使用默认
+            if delay_station not in station_codes:
+                delay_station = default_station
+
             delay_injection = DelayInjection.create_sudden_failure(
                 scenario_id="WEB_SC_001",
-                train_id=selected_trains[0] if selected_trains else "G1001",
-                delay_seconds=delay_config[0]['delay_seconds'] if delay_config else 600,
-                station_code=delay_config[0]['station_code'] if delay_config else "TJG",
+                train_id=selected_trains[0] if selected_trains else "G1215",
+                delay_seconds=delay_config[0].get('delay_seconds', 1800) if delay_config else 1800,
+                station_code=delay_station,
                 failure_type="vehicle_breakdown",
                 repair_time=60
             )

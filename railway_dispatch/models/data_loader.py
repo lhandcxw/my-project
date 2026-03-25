@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 铁路调度系统 - 数据加载模块
-统一读取preset数据，所有程序都从这里读取数据
+统一读取真实数据(trains.json, stations.json)，所有程序都从这里读取数据
+
+注意：
+- data/ 目录包含处理后的真实列车和车站数据
+- real_data/ 目录包含原始数据文件
 """
 
 import json
@@ -91,32 +95,34 @@ def load_real_stations() -> List[Dict[str, Any]]:
         content = content.replace('，', ',')
         real_stations = json.loads(content)
 
-    # 转换格式
+    # 标准站码映射
+    station_code_map = {
+        '北京西': 'BJX',
+        '杜家坎线路所': 'DJK',
+        '涿州东': 'ZBD',
+        '高碑店东': 'GBD',
+        '徐水东': 'XSD',
+        '保定东': 'BDD',
+        '定州东': 'DZD',
+        '正定机场': 'ZDJ',
+        '石家庄': 'SJP',
+        '高邑西': 'GYX',
+        '邢台东': 'XTD',
+        '邯郸东': 'HDD',
+        '安阳东': 'AYD'
+    }
+
+    # 转换格式 - 使用简化的车站数据（无platforms等字段）
     stations = []
     for s in real_stations:
-        station_code = s["station_name"].replace("站", "")[:3] if "站" in s["station_name"] else s["station_name"]
-        # 生成股道和站台信息
+        station_name = s["station_name"]
+        station_code = station_code_map.get(station_name, station_name[:3])
         track_count = s.get("track_count", 4) or 4
 
-        platforms = []
-        for i in range(1, min(track_count + 1, 16)):
-            platforms.append({
-                "platform_id": str(i),
-                "track_id": str(i),
-                "capacity": 1
-            })
-
-        # 获取相邻车站构建连接区间
-        connection_sections = []
-        station_idx = s.get("station_idx", 0)
-
         station = {
-            "station_code": s["station_name"][:3] if s["station_name"] else station_code,
-            "station_name": s["station_name"],
-            "track_count": track_count,
-            "platforms": platforms,
-            "throat_zones": [],
-            "connection_sections": connection_sections
+            "station_code": station_code,
+            "station_name": station_name,
+            "track_count": track_count
         }
         stations.append(station)
 
@@ -136,6 +142,8 @@ def load_real_trains() -> List[Dict[str, Any]]:
     # 加载车站数据以获取车站信息
     stations = load_real_stations()
     station_names = [s["station_name"] for s in stations]
+    # 创建站名到站码的映射
+    station_code_map = {s["station_name"]: s["station_code"] for s in stations}
 
     # 加载列车ID映射
     train_mapping_file = REAL_DATA_DIR / "train_id_mapping.csv"
@@ -153,8 +161,10 @@ def load_real_trains() -> List[Dict[str, Any]]:
             if "train_id" in row and "train_no" in row:
                 train_no_map[row["train_id"]] = row["train_no"]
 
-    # 加载时刻表
+    # 加载时刻表 - 尝试多个可能的文件名
     timetable_file = REAL_DATA_DIR / "plan_timetable (2).csv"
+    if not timetable_file.exists():
+        timetable_file = REAL_DATA_DIR / "plan_timetable.csv"
     if not timetable_file.exists():
         raise FileNotFoundError(f"真实时刻表文件不存在: {timetable_file}")
 
@@ -181,25 +191,18 @@ def load_real_trains() -> List[Dict[str, Any]]:
 
                 if arrival_time or departure_time:
                     stops.append({
-                        "station_code": station_name[:3],
+                        "station_code": station_code_map.get(station_name, station_name[:3]),
                         "station_name": station_name,
                         "arrival_time": arrival_time if arrival_time else departure_time,
-                        "departure_time": departure_time if departure_time else arrival_time,
-                        "platform": str(i)
+                        "departure_time": departure_time if departure_time else arrival_time
                     })
 
             if stops:
                 trains.append({
                     "train_id": train_no,
                     "train_type": "高速动车组",
-                    "speed_level": 350,
                     "schedule": {
                         "stops": stops
-                    },
-                    "slack_time": {
-                        "max_station_slack": 300,
-                        "max_section_slack": 180,
-                        "total_slack": 480
                     }
                 })
 
@@ -217,6 +220,8 @@ def load_real_min_running_time() -> List[int]:
         return _cache["real_min_running_time"]
 
     min_time_file = REAL_DATA_DIR / "min_running_time_matrix (2).csv"
+    if not min_time_file.exists():
+        min_time_file = REAL_DATA_DIR / "min_running_time_matrix.csv"
     if not min_time_file.exists():
         raise FileNotFoundError(f"真实最小运行时间文件不存在: {min_time_file}")
 
@@ -252,20 +257,68 @@ def get_real_data():
 def use_real_data(enable: bool = True):
     """
     设置是否使用真实数据
+    注意：此函数保留用于向后兼容，实际Always使用真实数据
     Args:
-        enable: True使用真实数据，False使用预设数据
+        enable: True使用真实数据（当前忽略此参数，始终使用真实数据）
     """
-    # 先保存当前设置
-    current_setting = enable
-    # 清除缓存
+    # 始终使用真实数据
     clear_cache()
-    # 恢复设置
-    _cache["use_real_data"] = current_setting
+    _cache["use_real_data"] = True
 
 
 def is_using_real_data() -> bool:
     """检查是否正在使用真实数据"""
     return _cache.get("use_real_data", False)
+
+
+def _convert_scenario_station_names_to_codes(scenarios: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    将场景中的车站名称转换为车站编码
+    """
+    # 获取站名到站码的映射
+    stations = load_stations()
+    station_name_to_code = {s["station_name"]: s["station_code"] for s in stations}
+
+    # 也添加一些常见的站名映射（处理"XX站"的情况）
+    for name, code in list(station_name_to_code.items()):
+        station_name_to_code[name + "站"] = code
+
+    converted_scenarios = []
+    for scenario in scenarios:
+        scenario = scenario.copy()
+        if "injected_delays" in scenario:
+            for delay in scenario["injected_delays"]:
+                if "location" in delay:
+                    loc = delay["location"]
+                    # 转换 station_code
+                    if loc.get("station_code") and loc["station_code"] in station_name_to_code:
+                        loc["station_code"] = station_name_to_code[loc["station_code"]]
+                    # 转换 section_from
+                    if loc.get("section_from") and loc["section_from"] in station_name_to_code:
+                        loc["section_from"] = station_name_to_code[loc["section_from"]]
+                    # 转换 section_to
+                    if loc.get("section_to") and loc["section_to"] in station_name_to_code:
+                        loc["section_to"] = station_name_to_code[loc["section_to"]]
+
+        # 转换 scenario_params 中的 affected_section
+        if "scenario_params" in scenario:
+            params = scenario["scenario_params"]
+            if "affected_section" in params:
+                section = params["affected_section"]
+                if section and " -> " in section:
+                    parts = section.split(" -> ")
+                    new_parts = []
+                    for part in parts:
+                        part = part.strip()
+                        if part in station_name_to_code:
+                            new_parts.append(station_name_to_code[part])
+                        else:
+                            new_parts.append(part)
+                    params["affected_section"] = " -> ".join(new_parts)
+
+        converted_scenarios.append(scenario)
+
+    return converted_scenarios
 
 
 def load_scenarios(scenario_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -297,6 +350,9 @@ def load_scenarios(scenario_type: Optional[str] = None) -> List[Dict[str, Any]]:
             with open(scenario_file, "r", encoding="utf-8") as f:
                 scenarios = json.load(f)
                 all_scenarios.extend(scenarios)
+
+    # 转换站名到站码
+    all_scenarios = _convert_scenario_station_names_to_codes(all_scenarios)
 
     return all_scenarios
 
@@ -374,7 +430,7 @@ def get_trains_pydantic():
     Returns:
         List of Train objects
     """
-    from models.data_models import Train, SlackTime, TrainSchedule, TrainStop
+    from models.data_models import Train, TrainSchedule, TrainStop
 
     trains_data = load_trains()
     trains = []
@@ -385,19 +441,15 @@ def get_trains_pydantic():
                 station_code=s["station_code"],
                 station_name=s["station_name"],
                 arrival_time=s["arrival_time"],
-                departure_time=s["departure_time"],
-                platform=s["platform"]
+                departure_time=s["departure_time"]
             )
             for s in t["schedule"]["stops"]
         ]
-        slack = SlackTime(**t.get("slack_time", {}))
 
         train = Train(
             train_id=t["train_id"],
             train_type=t.get("train_type", "高速动车组"),
-            speed_level=t.get("speed_level", 350),
-            schedule=TrainSchedule(stops=stops),
-            slack_time=slack
+            schedule=TrainSchedule(stops=stops)
         )
         trains.append(train)
 
@@ -410,21 +462,16 @@ def get_stations_pydantic():
     Returns:
         List of Station objects
     """
-    from models.data_models import Station, Platform, ConnectionSection
+    from models.data_models import Station
 
     stations_data = load_stations()
     stations = []
 
     for s in stations_data:
-        platforms = [Platform(**p) for p in s.get("platforms", [])]
-        connections = [ConnectionSection(**c) for c in s.get("connection_sections", [])]
-
         station = Station(
             station_code=s["station_code"],
             station_name=s["station_name"],
-            track_count=s.get("track_count", 1),
-            platforms=platforms,
-            connection_sections=connections
+            track_count=s.get("track_count", 1)
         )
         stations.append(station)
 
