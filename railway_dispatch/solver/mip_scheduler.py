@@ -466,11 +466,15 @@ class MIPScheduler:
                 dep_time = value(departure.get(dep_key))
                 delay_val = value(delay.get(del_key))
 
-                # 如果变量不存在，使用原始计划时间
-                if arr_time is None:
-                    arr_time = self._time_to_seconds(stop.arrival_time)
-                if dep_time is None:
-                    dep_time = self._time_to_seconds(stop.departure_time)
+# 如果变量不存在，使用原始计划时间
+                if arr_time is None or dep_time is None:
+                    return SolveResult(
+                        success=False,
+                        optimized_schedule={},
+                        delay_statistics={},
+                        computation_time=time.time() - start_time,
+                        message=f"求解变量缺失：列车{t.train_id}在站{station_code}"
+                    )
                 if delay_val is None:
                     delay_val = 0
 

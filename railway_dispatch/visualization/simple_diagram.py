@@ -4,6 +4,23 @@
 纵轴：车站序列（从下到上）
 """
 
+# 正确的车站顺序（从下到上）
+STATION_ORDER = [
+    'BJX',  # 北京西
+    'DJK',  # 杜家坎线路所
+    'ZBD',  # 涿州东
+    'GBD',  # 高碑店东
+    'XSD',  # 徐水东
+    'BDD',  # 保定东
+    'DZD',  # 定州东
+    'ZDJ',  # 正定机场
+    'SJP',  # 石家庄
+    'GYX',  # 高邑西
+    'XTD',  # 邢台东
+    'HDD',  # 邯郸东
+    'AYD'   # 安阳东
+]
+
 import matplotlib
 matplotlib.use('Agg')  # 非交互式后端
 import matplotlib.pyplot as plt
@@ -44,8 +61,10 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
             if stop['station_code'] not in station_codes:
                 station_codes.append(stop['station_code'])
 
-    # 按出现顺序排列（从上到下是反向的）
-    print(f"车站列表: {station_codes}")
+    # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
+    # 只保留实际出现的车站，但按正确顺序排列
+    station_codes = [code for code in STATION_ORDER if code in station_codes]
+    print(f"车站列表（已排序）: {station_codes}")
 
     # ========== 2. 确定时间范围 ==========
     all_times = []
@@ -252,6 +271,10 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
         for stop in train['schedule']['stops']:
             if stop['station_code'] not in station_codes:
                 station_codes.append(stop['station_code'])
+                
+    # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
+    # 只保留实际出现的车站，但按正确顺序排列
+    station_codes = [code for code in STATION_ORDER if code in station_codes]
 
     # ========== 2. 确定时间范围 ==========
     all_times = []

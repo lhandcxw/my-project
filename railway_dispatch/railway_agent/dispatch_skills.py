@@ -206,10 +206,22 @@ class SuddenFailureSkill(BaseDispatchSkill):
         else:
             propagation = {}
 
-        # Step 3: MIP求解
+# Step 3: MIP求解
         result = self.scheduler.solve(delay_obj, optimization_objective)
 
         computation_time = time.time() - start_time
+
+        # 调试输出
+        if not result.success:
+            print(f"⚠️ 调度失败：{result.message}")
+        else:
+            print("✅ 优化成功，变化如下：")
+            for train_id, stops in result.optimized_schedule.items():
+                changes = [s for s in stops if s['delay_seconds'] > 0]
+                print(f"列车{train_id}：{len(changes)}个站点时刻变化")
+                for stop in stops:
+                    if stop['delay_seconds'] > 0:
+                        print(f"  车站{stop['station_code']}: {stop['original_arrival']} → {stop['arrival_time']} (延误{stop['delay_seconds']}秒)")
 
         return DispatchSkillOutput(
             optimized_schedule=result.optimized_schedule,
