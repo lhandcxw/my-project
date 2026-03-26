@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import json
 import time
+import logging
 
 import sys
 import os
@@ -25,6 +26,9 @@ from railway_agent.prompts import (
     build_messages, format_scenario_info,
     RESULT_SUMMARY_PROMPT, SYSTEM_PROMPT
 )
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -75,17 +79,17 @@ class QwenAgent:
         self.model_path = model_path
         self.scheduler = scheduler
         self.device = device
-        
+
         # 加载模型
-        print(f"正在加载模型: {model_path}")
+        logger.info(f"正在加载模型: {model_path}")
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype="auto",
             device_map=device
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        print("模型加载完成")
-        
+        logger.info("模型加载完成")
+
         # 初始化Tool注册表
         self.tool_registry = ToolRegistry(scheduler)
     
@@ -394,7 +398,7 @@ def create_qwen_agent(
 
     # 如果模型路径为空，返回None（不使用大模型）
     if not model_path:
-        print("未配置模型路径，Agent将使用规则引擎模式")
+        logger.warning("未配置模型路径，Agent将使用规则引擎模式")
         return None
 
     if trains is None or stations is None:

@@ -5,8 +5,10 @@
 """
 
 from flask import Flask, render_template_string, request, jsonify, Response
+from flask_cors import CORS
 import json
 import base64
+import logging
 
 import sys
 import os
@@ -17,6 +19,10 @@ from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_s
 from solver.mip_scheduler import MIPScheduler
 from railway_agent.dispatch_skills import create_skills, execute_skill
 from evaluation.evaluator import Evaluator
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 导入运行图生成模块
 import sys
@@ -34,11 +40,12 @@ from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
 from railway_agent.tool_registry import ToolRegistry
 
 app = Flask(__name__)
+CORS(app)  # 启用跨域支持
 
 # 启用真实数据
 # 使用真实数据，避免示例数据混淆
 use_real_data(True)
-print("已启用真实数据模式")
+logger.info("已启用真实数据模式")
 
 # 全局数据 - 从 centralized data loader 加载
 # 注意：使用真实数据时，MIP求解器对列车数量有限制（约60列内可行）
@@ -64,21 +71,25 @@ USE_QWEN_AGENT = True
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
 # 例如: "Qwen/Qwen2.5-0.5B" 或 "Qwen/Qwen2.5-1.8B"
 # 留空则不使用大模型
-MODEL_PATH = "Qwen/Qwen2.5-0.5B"  # 使用 0.5B 小模型，适合 CPU 运行
+MODEL_PATH = "/data/wls/test-agent/Qwen3.5-4B"  # 使用本地 Qwen3.5-4B 模型
+
+# ModelScope API Key 配置
+import os
+os.environ['MODELSCOPE_API_TOKEN'] = 'ms-4e02888f-95d6-4fd1-b07c-4897386cf13c'
 
 def get_qwen_agent():
     """获取或创建Qwen Agent实例"""
     global qwen_agent
     if qwen_agent is None and USE_QWEN_AGENT:
         try:
-            print("正在初始化Qwen Agent...")
+            logger.info("正在初始化Qwen Agent...")
             qwen_agent = create_qwen_agent(model_path=MODEL_PATH, trains=trains, stations=stations)
             if qwen_agent is None:
-                print("未配置模型路径，使用规则引擎模式")
+                logger.warning("未配置模型路径，使用规则引擎模式")
             else:
-                print("Qwen Agent 初始化完成")
+                logger.info("Qwen Agent 初始化完成")
         except Exception as e:
-            print(f"Qwen Agent 初始化失败: {e}")
+            logger.error(f"Qwen Agent 初始化失败: {e}")
             return None
     return qwen_agent
 
@@ -508,7 +519,12 @@ HTML_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({prompt: prompt})
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP错误! 状态码: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(result => {
                 document.getElementById('dispatchLoading').style.display = 'none';
 
@@ -520,70 +536,77 @@ HTML_TEMPLATE = '''
             })
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
-                alert('请求失败: ' + error);
+                console.error('请求失败:', error);
+                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
         // 发送表单调度
-        function runFormDispatch() {
-            const selectedTrains = Array.from(document.getElementById('selectedTrains').selectedOptions).map(o => o.value);
-            if (selectedTrains.length === 0) {
-                alert('请至少选择一列列车');
-                return;
-            }
-
-            const scenarioType = document.getElementById('scenarioType').value;
-            const objective = document.getElementById('objective').value;
-            const delayStation = document.getElementById('delayStation').value;
-            const delaySeconds = parseInt(document.getElementById('delaySeconds').value);
-
-            const data = {
-                scenario_type: scenarioType,
-                objective: objective,
-                selected_trains: selectedTrains,
-                delay_config: [{
-                    train_id: selectedTrains[0],
-                    delay_seconds: delaySeconds,
-                    station_code: delayStation
-                }]
-            };
-
-            document.getElementById('dispatchLoading').style.display = 'block';
-            document.getElementById('dispatchResult').style.display = 'none';
-
-            fetch('/api/dispatch', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            })
-            .then(response => response.json())
-            .then(result => {
-                document.getElementById('dispatchLoading').style.display = 'none';
-
-                if (result.success) {
-                    // 转换为统一格式，添加空值检查
-                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
-                    const unified = {
-                        success: true,
-                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
-                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
-                        reasoning: '基于表单输入执行调度优化',
-                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
-                        message: skillMessage,
-                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
-                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
-                        original_schedule: result.original_schedule
-                    };
-                    showDispatchResult(unified);
-                } else {
-                    alert('执行失败: ' + result.message);
+            function runFormDispatch() {
+                const selectedTrains = Array.from(document.getElementById('selectedTrains').selectedOptions).map(o => o.value);
+                if (selectedTrains.length === 0) {
+                    alert('请至少选择一列列车');
+                    return;
                 }
-            })
-            .catch(error => {
-                document.getElementById('dispatchLoading').style.display = 'none';
-                alert('请求失败: ' + error);
-            });
-        }
+
+                const scenarioType = document.getElementById('scenarioType').value;
+                const objective = document.getElementById('objective').value;
+                const delayStation = document.getElementById('delayStation').value;
+                const delaySeconds = parseInt(document.getElementById('delaySeconds').value);
+
+                const data = {
+                    scenario_type: scenarioType,
+                    objective: objective,
+                    selected_trains: selectedTrains,
+                    delay_config: [{
+                        train_id: selectedTrains[0],
+                        delay_seconds: delaySeconds,
+                        station_code: delayStation
+                    }]
+                };
+
+                document.getElementById('dispatchLoading').style.display = 'block';
+                document.getElementById('dispatchResult').style.display = 'none';
+
+                fetch('/api/dispatch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP错误! 状态码: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    document.getElementById('dispatchLoading').style.display = 'none';
+
+                    if (result.success) {
+                        // 转换为统一格式，添加空值检查
+                        const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                        const unified = {
+                            success: true,
+                            recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
+                            selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
+                            reasoning: '基于表单输入执行调度优化',
+                            delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
+                            message: skillMessage,
+                            computation_time: result.skill_result ? result.skill_result.computation_time : 0,
+                            optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
+                            original_schedule: result.original_schedule
+                        };
+                        showDispatchResult(unified);
+                    } else {
+                        alert('执行失败: ' + result.message);
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('dispatchLoading').style.display = 'none';
+                    console.error('请求失败:', error);
+                    alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                });
+            }
 
         // 显示调度结果
         function showDispatchResult(result) {
@@ -658,6 +681,7 @@ def index():
 def dispatch():
     try:
         data = request.json
+        logger.info(f"收到dispatch请求，scenario_type: {data.get('scenario_type')}")
         
         # 构建延误注入
         scenario_type = data.get('scenario_type', 'temporary_speed_limit')
@@ -713,8 +737,12 @@ def dispatch():
         if agent:
             # 使用Qwen Agent
             result = agent.analyze(delay_injection.model_dump())
+            logger.info(f"Agent分析结果: success={result.success}, dispatch_result={result.dispatch_result is not None}")
+
             if result.success and result.dispatch_result:
                 skill_result = result.dispatch_result
+                logger.info(f"Skill结果: message={skill_result.message}, optimized_schedule keys={list(skill_result.optimized_schedule.keys()) if skill_result.optimized_schedule else 'None'}")
+
                 return jsonify({
                     "success": True,
                     "planner": {
@@ -730,9 +758,13 @@ def dispatch():
                     },
                     "original_schedule": get_original_schedule()
                 })
+            else:
+                logger.error(f"Agent调用失败: success={result.success}, error={result.error_message}")
 
         # 兜底：直接执行Skill
         skill_name = "temporary_speed_limit_skill" if scenario_type == "temporary_speed_limit" else "sudden_failure_skill"
+        logger.info(f"使用兜底模式，执行skill: {skill_name}")
+
         skill_result = execute_skill(
             skill_name=skill_name,
             skills=skills,
@@ -741,6 +773,9 @@ def dispatch():
             delay_injection=delay_injection.model_dump(),
             optimization_objective=data.get('objective', 'min_max_delay')
         )
+
+        logger.info(f"Skill执行结果: success={skill_result.success}, message={skill_result.message}")
+        logger.info(f"Optimized schedule keys: {list(skill_result.optimized_schedule.keys()) if skill_result.optimized_schedule else 'None'}")
 
         # 返回结果
         original_schedule = get_original_schedule()
@@ -834,14 +869,18 @@ def agent_chat():
         prompt = data.get('prompt', '')
 
         if not prompt:
+            logger.warning("收到空prompt请求")
             return jsonify({
                 "success": False,
                 "message": "请输入调度需求"
             })
 
+        logger.info(f"收到agent_chat请求，prompt: {prompt[:50]}...")
+
         # 获取Qwen Agent
         agent = get_qwen_agent()
         if agent is None:
+            logger.error("Qwen Agent未初始化")
             return jsonify({
                 "success": False,
                 "message": "Qwen Agent未初始化，请检查模型配置"
@@ -850,6 +889,7 @@ def agent_chat():
         # 解析用户输入，构建DelayInjection
         # 尝试从输入中提取场景信息
         delay_injection = parse_user_prompt(prompt)
+        logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
 
         # 调用Agent分析
         result = agent.analyze(delay_injection)
@@ -860,6 +900,7 @@ def agent_chat():
             # 获取原始时刻表
             original_schedule = get_original_schedule()
 
+            logger.info("Agent分析成功，返回结果")
             return jsonify({
                 "success": True,
                 "recognized_scenario": result.recognized_scenario,
@@ -872,12 +913,14 @@ def agent_chat():
                 "original_schedule": original_schedule
             })
         else:
+            logger.error(f"Agent分析失败: {result.error_message}")
             return jsonify({
                 "success": False,
                 "message": result.error_message or "Agent执行失败"
             })
 
     except Exception as e:
+        logger.exception(f"agent_chat处理异常: {str(e)}")
         return jsonify({
             "success": False,
             "message": str(e)
@@ -949,9 +992,11 @@ def parse_user_prompt(prompt: str) -> dict:
     prompt_lower = prompt.lower()
 
     # 检测场景类型
-    if '限速' in prompt:
+    # 临时限速场景关键字：限速、大风、暴雨、降雪、冰雪、雨量、风速等天气原因
+    if '限速' in prompt or '大风' in prompt or '暴雨' in prompt or '降雪' in prompt or '冰雪' in prompt or '雨量' in prompt or '风速' in prompt or '天气' in prompt:
         scenario_type = 'temporary_speed_limit'
-    elif '故障' in prompt or '设备故障' in prompt:
+    # 突发故障场景关键字：故障、中断、封锁、设备故障、降弓、线路故障等
+    elif '故障' in prompt or '中断' in prompt or '封锁' in prompt or '设备故障' in prompt or '降弓' in prompt or '线路' in prompt or '设备' in prompt:
         scenario_type = 'sudden_failure'
     else:
         scenario_type = 'temporary_speed_limit'  # 默认
@@ -970,14 +1015,60 @@ def parse_user_prompt(prompt: str) -> dict:
     if not delays:
         delays = ['600']
 
+    # 提取车站信息
+    # 车站名称到代码的映射
+    station_name_to_code = {
+        "北京西": "BJX", "bjx": "BJX",
+        "杜家坎线路所": "DJK", "djk": "DJK",
+        "涿州东": "ZBD", "zbd": "ZBD",
+        "高碑店东": "GBD", "gbd": "GBD",
+        "徐水东": "XSD", "xsd": "XSD",
+        "保定东": "BDD", "bdd": "BDD",
+        "定州东": "DZD", "dzd": "DZD",
+        "正定机场": "ZDJ", "zdj": "ZDJ",
+        "石家庄": "SJP", "sjp": "SJP",
+        "高邑西": "GYX", "gyx": "GYX",
+        "邢台东": "XTD", "xtd": "XTD",
+        "邯郸东": "HDD", "hdd": "HDD",
+        "安阳东": "AYD", "ayd": "AYD"
+    }
+
+    # 尝试从输入中提取车站
+    detected_station_code = None
+    for name, code in station_name_to_code.items():
+        if name in prompt:
+            detected_station_code = code
+            break
+
+    # 如果没有检测到车站，使用默认第一个车站
+    if detected_station_code is None:
+        detected_station_code = "BJX"  # 使用北京西作为默认车站
+
     # 构建DelayInjection
     injected_delays = []
     for i, train_id in enumerate(train_ids):
         delay_seconds = int(delays[i]) * 60 if i < len(delays) else 600
 
+        # 验证列车是否停靠在选定的车站
+        # 如果不停靠，使用列车的第一个停靠站
+        train = None
+        for t in trains:
+            if t.train_id == train_id:
+                train = t
+                break
+
+        actual_station_code = detected_station_code
+        if train:
+            # 检查列车是否停靠在选定车站
+            train_stations = [stop.station_code for stop in train.schedule.stops]
+            if detected_station_code not in train_stations:
+                # 使用列车的第一个停靠站
+                actual_station_code = train.schedule.stops[0].station_code
+                logger.warning(f"列车 {train_id} 不停靠在 {detected_station_code}，使用 {actual_station_code} 作为延误车站")
+
         injected_delays.append({
             "train_id": train_id,
-            "location": {"location_type": "station", "station_code": "TJG"},
+            "location": {"location_type": "station", "station_code": actual_station_code},
             "initial_delay_seconds": delay_seconds,
             "timestamp": "2024-01-15T10:00:00Z"
         })
@@ -992,7 +1083,7 @@ def parse_user_prompt(prompt: str) -> dict:
             "scenario_params": {
                 "limit_speed_kmh": 200,
                 "duration_minutes": 120,
-                "affected_section": "TJG -> JNZ"
+                "affected_section": f"{detected_station_code} -> {detected_station_code}"
             }
         }
     else:  # sudden_failure
@@ -1009,10 +1100,10 @@ def parse_user_prompt(prompt: str) -> dict:
 
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("铁路调度Agent系统 v1.0")
-    print("=" * 50)
-    print("访问地址: http://localhost:8080")
-    print("按 Ctrl+C 停止服务")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("铁路调度Agent系统 v1.0")
+    logger.info("=" * 50)
+    logger.info("访问地址: http://localhost:8080")
+    logger.info("按 Ctrl+C 停止服务")
+    logger.info("=" * 50)
     app.run(host='0.0.0.0', port=8080, debug=True)
