@@ -47,7 +47,7 @@ class AgentResult:
 # ============================================
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:0.5b"
+DEFAULT_MODEL = "qwen3.5:4b"
 
 
 class OllamaClient:

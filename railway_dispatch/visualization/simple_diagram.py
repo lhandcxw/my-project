@@ -29,6 +29,10 @@ import numpy as np
 from typing import List, Dict, Tuple
 import base64
 import io
+import logging
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 def time_to_minutes(time_str: str) -> int:
@@ -54,17 +58,18 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
         如果return_base64=True，返回base64编码的图片字符串
     """
 
-    # ========== 1. 提取车站列表 ==========
-    station_codes = []
-    for train in trains:
-        for stop in train['schedule']['stops']:
-            if stop['station_code'] not in station_codes:
-                station_codes.append(stop['station_code'])
+    # ========== 1. 使用固定车站顺序（从BJX开始，从下到上） ==========
+    # 车站顺序：BJX在最下面，AYD在最上面
+    station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
 
+<<<<<<< HEAD
     # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
     # 只保留实际出现的车站，但按正确顺序排列
     station_codes = [code for code in STATION_ORDER if code in station_codes]
     print(f"车站列表（已排序）: {station_codes}")
+=======
+    logger.debug(f"车站列表: {station_codes}")
+>>>>>>> 860e9e3d031984e9febd5d412e3f4e6a48ca0914
 
     # ========== 2. 确定时间范围 ==========
     all_times = []
@@ -105,6 +110,9 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
 
         for stop in stops:
             station = stop['station_code']
+            # 如果车站不在固定列表中，跳过
+            if station not in station_codes:
+                continue
             station_idx = station_codes.index(station)
 
             arrival_time = time_to_minutes(stop['arrival_time'])
@@ -130,21 +138,22 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
             y_points.append(station_idx)
 
         # 绘制运行线（红色，2px宽）
-        ax.plot(x_points, y_points, color='red', linewidth=2, marker='o',
-                markersize=6, markerfacecolor='red', markeredgecolor='white',
-                markeredgewidth=1.5, zorder=3, label=train_id)
+        if x_points and y_points:
+            ax.plot(x_points, y_points, color='red', linewidth=2, marker='o',
+                    markersize=6, markerfacecolor='red', markeredgecolor='white',
+                    markeredgewidth=1.5, zorder=3, label=train_id)
 
-        # 添加车次标签（在第一条线旁边）
-        if len(x_points) >= 2:
-            # 找到中间位置
-            mid_idx = len(x_points) // 2
-            label_x = (x_points[mid_idx] + x_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(x_points) else x_points[0]
-            label_y = (y_points[mid_idx] + y_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(y_points) else y_points[0]
+            # 添加车次标签（在第一条线旁边）
+            if len(x_points) >= 2:
+                # 找到中间位置
+                mid_idx = len(x_points) // 2
+                label_x = (x_points[mid_idx] + x_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(x_points) else x_points[0]
+                label_y = (y_points[mid_idx] + y_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(y_points) else y_points[0]
 
-            ax.annotate(train_id, xy=(label_x, label_y),
-                       xytext=(label_x + 3, label_y + 0.15),
-                       fontsize=10, fontweight='bold', color='darkred',
-                       zorder=4)
+                ax.annotate(train_id, xy=(label_x, label_y),
+                           xytext=(label_x + 3, label_y + 0.15),
+                           fontsize=10, fontweight='bold', color='darkred',
+                           zorder=4)
 
     # ========== 6. 添加标注（箭头） ==========
     # 运行时间标注
@@ -154,43 +163,46 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
         stop1 = first_train['schedule']['stops'][0]
         stop2 = first_train['schedule']['stops'][1]
 
-        station1_idx = station_codes.index(stop1['station_code'])
-        station2_idx = station_codes.index(stop2['station_code'])
-        time1 = time_to_minutes(stop1['departure_time'])
-        time2 = time_to_minutes(stop2['arrival_time'])
+        if stop1['station_code'] in station_codes and stop2['station_code'] in station_codes:
+            station1_idx = station_codes.index(stop1['station_code'])
+            station2_idx = station_codes.index(stop2['station_code'])
+            time1 = time_to_minutes(stop1['departure_time'])
+            time2 = time_to_minutes(stop2['arrival_time'])
 
-        # 运行时间箭头（在对角线方向）
-        mid_x = (time1 + time2) / 2
-        mid_y = (station1_idx + station2_idx) / 2
+            # 运行时间箭头（在对角线方向）
+            mid_x = (time1 + time2) / 2
+            mid_y = (station1_idx + station2_idx) / 2
 
-        # 绘制运行时间标注
-        ax.annotate('Running Time',
-                   xy=(mid_x, mid_y),
-                   xytext=(mid_x + 15, mid_y + 0.8),
-                   fontsize=9,
-                   color='black',
-                   arrowprops=dict(arrowstyle='->', color='black', lw=1.5),
-                   zorder=5)
+            # 绘制运行时间标注
+            ax.annotate('Running Time',
+                       xy=(mid_x, mid_y),
+                       xytext=(mid_x + 15, mid_y + 0.8),
+                       fontsize=9,
+                       color='black',
+                       arrowprops=dict(arrowstyle='->', color='black', lw=1.5),
+                       zorder=5)
 
     # 停站时间标注
     if len(trains) > 0:
         first_train = trains[0]
         first_stop = first_train['schedule']['stops'][0]
-        station_idx = station_codes.index(first_stop['station_code'])
-        arrival = time_to_minutes(first_stop['arrival_time'])
-        departure = time_to_minutes(first_stop['departure_time'])
 
-        mid_x = (arrival + departure) / 2
+        if first_stop['station_code'] in station_codes:
+            station_idx = station_codes.index(first_stop['station_code'])
+            arrival = time_to_minutes(first_stop['arrival_time'])
+            departure = time_to_minutes(first_stop['departure_time'])
 
-        # 绘制停站时间标注
-        ax.annotate('Stop Time',
-                   xy=(mid_x, station_idx),
-                   xytext=(mid_x, station_idx - 0.8),
-                   fontsize=9,
-                   color='black',
-                   arrowprops=dict(arrowstyle='->', color='black', lw=1.5),
-                   ha='center',
-                   zorder=5)
+            mid_x = (arrival + departure) / 2
+
+            # 绘制停站时间标注
+            ax.annotate('Stop Time',
+                       xy=(mid_x, station_idx),
+                       xytext=(mid_x, station_idx - 0.8),
+                       fontsize=9,
+                       color='black',
+                       arrowprops=dict(arrowstyle='->', color='black', lw=1.5),
+                       ha='center',
+                       zorder=5)
 
     # ========== 7. 设置坐标轴 ==========
     # X轴 - 时间
@@ -202,7 +214,7 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
     ax.set_xticklabels(time_labels, rotation=45, ha='right', fontsize=10)
     ax.set_xlabel('Time', fontsize=12, fontweight='bold')
 
-    # Y轴 - 车站
+    # Y轴 - 车站（从下到上：BJX在最下面，AYD在最上面）
     ax.set_ylim(-0.5, len(station_codes) - 0.5)
     ax.set_yticks(range(len(station_codes)))
     ax.set_yticklabels(station_codes, fontsize=12, fontweight='bold')
@@ -230,7 +242,7 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
         return img_base64
     elif output_path:
         plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
-        print(f"运行图已保存至: {output_path}")
+        logger.info(f"运行图已保存至: {output_path}")
         plt.close()
     else:
         plt.show()
@@ -265,6 +277,7 @@ def create_comparison_diagram(original_trains: List[Dict], optimized_trains: Lis
 
 def _draw_single_diagram(ax, trains: List[Dict], title: str):
     """绘制单幅运行图（内部函数）"""
+<<<<<<< HEAD
     # ========== 1. 提取车站列表 ==========
     station_codes = []
     for train in trains:
@@ -275,6 +288,11 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
     # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
     # 只保留实际出现的车站，但按正确顺序排列
     station_codes = [code for code in STATION_ORDER if code in station_codes]
+=======
+    # ========== 1. 使用固定车站顺序（从BJX开始，从下到上） ==========
+    # 车站顺序：BJX在最下面，AYD在最上面
+    station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
+>>>>>>> 860e9e3d031984e9febd5d412e3f4e6a48ca0914
 
     # ========== 2. 确定时间范围 ==========
     all_times = []
@@ -310,6 +328,9 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
 
         for stop in stops:
             station = stop['station_code']
+            # 如果车站不在固定列表中，跳过
+            if station not in station_codes:
+                continue
             station_idx = station_codes.index(station)
 
             arrival_time = time_to_minutes(stop['arrival_time'])
@@ -335,20 +356,21 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
             y_points.append(station_idx)
 
         # 绘制运行线（红色，2px宽）
-        ax.plot(x_points, y_points, color=color, linewidth=2, marker='o',
-                markersize=6, markerfacecolor=color, markeredgecolor='white',
-                markeredgewidth=1.5, zorder=3, label=train_id)
+        if x_points and y_points:
+            ax.plot(x_points, y_points, color=color, linewidth=2, marker='o',
+                    markersize=6, markerfacecolor=color, markeredgecolor='white',
+                    markeredgewidth=1.5, zorder=3, label=train_id)
 
-        # 添加车次标签
-        if len(x_points) >= 2:
-            mid_idx = len(x_points) // 2
-            label_x = (x_points[mid_idx] + x_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(x_points) else x_points[0]
-            label_y = (y_points[mid_idx] + y_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(y_points) else y_points[0]
+            # 添加车次标签
+            if len(x_points) >= 2:
+                mid_idx = len(x_points) // 2
+                label_x = (x_points[mid_idx] + x_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(x_points) else x_points[0]
+                label_y = (y_points[mid_idx] + y_points[mid_idx + 1]) / 2 if mid_idx + 1 < len(y_points) else y_points[0]
 
-            ax.annotate(train_id, xy=(label_x, label_y),
-                       xytext=(label_x + 3, label_y + 0.15),
-                       fontsize=10, fontweight='bold', color='darkred',
-                       zorder=4)
+                ax.annotate(train_id, xy=(label_x, label_y),
+                           xytext=(label_x + 3, label_y + 0.15),
+                           fontsize=10, fontweight='bold', color='darkred',
+                           zorder=4)
 
     # ========== 5. 设置坐标轴 ==========
     ax.set_xlim(time_min, time_max)
@@ -357,6 +379,7 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
     ax.set_xticklabels(time_labels, rotation=45, ha='right', fontsize=10)
     ax.set_xlabel('Time', fontsize=12, fontweight='bold')
 
+    # 纵轴：从下到上，BJX在最下面（index=0），AYD在最上面（index=12）
     ax.set_ylim(-0.5, len(station_codes) - 0.5)
     ax.set_yticks(range(len(station_codes)))
     ax.set_yticklabels(station_codes, fontsize=12, fontweight='bold')

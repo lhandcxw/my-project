@@ -38,14 +38,35 @@ railway_dispatch/
 pip install -r requirements.txt
 ```
 
-### 2. 启动Web服务
+### 2. 使用FCFS调度器（新增）
+
+```bash
+cd railway_dispatch/solver
+python fcfs_scheduler.py
+```
+
+### 3. 对比FCFS和MIP调度器
+
+```bash
+cd railway_dispatch/solver
+python compare_schedulers.py
+```
+
+### 4. 完整流程演示（FCFS + 评估）
+
+```bash
+cd /data/wls/test-agent
+python test_fcfs_evaluation.py
+```
+
+### 5. 启动Web服务
 
 ```bash
 cd railway_dispatch
 python web/app.py
 ```
 
-### 3. 访问系统
+### 6. 访问系统
 
 打开浏览器访问: http://localhost:8080
 
@@ -55,6 +76,7 @@ python web/app.py
 - **自然语言输入**: 用自然语言描述调度需求，Agent自动识别场景
 - **表单输入**: 传统表单方式配置延误场景
 - **场景识别**: 自动识别临时限速、突发故障等场景
+- **FCFS调度**: 先到先服务策略，快速响应
 - **整数规划优化**: 使用MIP求解器生成最优调度方案
 
 ### Agent能力
@@ -74,10 +96,18 @@ python web/app.py
 - `tool_registry.py`: Tools注册和执行
 - `dispatch_skills.py`: 调度Skills实现
 
-### 2. MIP求解器 (`solver/mip_scheduler.py`)
-- 混合整数规划模型
-- 追踪间隔约束
-- 区间运行时间约束
+### 2. 求解器 (`solver/`)
+- `fcfs_scheduler.py`: **FCFS（先到先服务）调度器** - 快速调度策略
+- `mip_scheduler.py`: MIP（混合整数规划）求解器 - 优化调度策略
+- `compare_schedulers.py`: 调度器对比演示脚本
+
+#### 调度器对比
+
+| 特性 | FCFS | MIP |
+|------|------|-----|
+| 计算速度 | 快（毫秒级） | 较慢（秒级） |
+| 优化效果 | 一般 | 优秀 |
+| 适用场景 | 实时调度 | 离线优化 |
 
 ### 3. Skills (`railway_agent/dispatch_skills.py`)
 - `TemporarySpeedLimitSkill`: 临时限速场景
@@ -100,7 +130,7 @@ python web/app.py
 
 ## 技术栈
 
-- **大模型**: Qwen (支持 ModelScope 或 Ollama 本地模型，可选)
+- **大模型**: Qwen3.5-4B (本地模型，通过ModelScope加载，可选)
 - **求解器**: PuLP + CBC (整数规划)
 - **Web框架**: Flask
 - **数据验证**: Pydantic
@@ -116,12 +146,12 @@ python web/app.py
 
 **使用Ollama模式**：
 1. 启动Ollama服务：`ollama serve`
-2. 下载模型：`ollama pull qwen2.5:4b`
+2. 下载模型：`ollama pull qwen3.5:4b`
 3. 修改 `web/app.py` 中的导入语句使用 `ollama_agent`
 
 **使用Qwen模型**：
-1. 在 `web/app.py` 中配置 `MODEL_PATH`（如 "Qwen/Qwen2.5-0.5B"）
-2. 系统会自动下载模型
+1. 在 `web/app.py` 中配置 `MODEL_PATH`（本地路径如 "/data/wls/test-agent/Qwen3.5-4B"）
+2. 配置 ModelScope API Token（可选）
 
 **不使用大模型**（默认）：
 - 将 `USE_QWEN_AGENT = False` 或留空 `MODEL_PATH`
@@ -129,6 +159,7 @@ python web/app.py
 
 ## 版本
 
+- v2.4: 新增FCFS调度器，支持快速调度策略，完善评估流程
 - v2.3: 统一使用真实数据，移除示例数据
 - v2.2: 重构为railway_agent模块，新增Ollama支持，修复命名冲突
 - v2.1: 修复MIP求解器约束问题，支持真实数据
