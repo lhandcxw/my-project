@@ -360,6 +360,71 @@ Agent总耗时: {result.computation_time:.2f}秒
 """
         return summary
 
+    def analyze_with_comparison(
+        self,
+        delay_injection: Dict[str, Any],
+        comparison_criteria: str = "balanced",
+        max_new_tokens: int = 1024
+    ) -> AgentResult:
+        """
+        分析场景并执行调度比较（比较FCFS和MIP等多种调度方法）
+
+        Args:
+            delay_injection: 延误注入数据
+            comparison_criteria: 比较准则 (min_max_delay/min_avg_delay/balanced/real_time)
+            max_new_tokens: 最大生成token数
+
+        Returns:
+            AgentResult: 包含比较结果的执行结果
+        """
+        # Qwen模式下，直接使用tool_registry执行scheduler_comparison_skill
+        # 因为比较功能不依赖大模型
+        start_time = time.time()
+
+        try:
+            # 构建scenario_params
+            if "scenario_params" not in delay_injection:
+                delay_injection["scenario_params"] = {}
+            delay_injection["scenario_params"]["user_preference"] = comparison_criteria
+
+            # 获取车站编码
+            station_codes = [s.station_code for s in self.scheduler.stations]
+
+            # 执行调度比较
+            dispatch_result = self.tool_registry.execute(
+                "scheduler_comparison_skill",
+                {
+                    "train_ids": delay_injection.get("affected_trains", []),
+                    "station_codes": station_codes,
+                    "delay_injection": delay_injection,
+                    "optimization_objective": "min_max_delay"
+                }
+            )
+
+            computation_time = time.time() - start_time
+
+            return AgentResult(
+                success=True,
+                recognized_scenario=delay_injection.get("scenario_type", "unknown"),
+                selected_skill="scheduler_comparison_skill",
+                reasoning=f"执行调度方法比较，比较准则: {comparison_criteria}",
+                dispatch_result=dispatch_result,
+                model_response="",
+                computation_time=computation_time
+            )
+
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                recognized_scenario=delay_injection.get("scenario_type", "unknown"),
+                selected_skill="",
+                reasoning="",
+                dispatch_result=None,
+                model_response="",
+                computation_time=time.time() - start_time,
+                error_message=f"比较执行错误: {str(e)}"
+            )
+
 
 # ============================================
 # 模型配置
