@@ -1,65 +1,78 @@
 [
   {
+    "station_id" : 1,
     "station_code": "BJX",
     "station_name": "北京西",
     "track_count": 7
   },
   {
+    "station_id" : 2,
     "station_code": "DJK",
     "station_name": "杜家坎线路所",
     "track_count": 4
   },
   {
+    "station_id" : 3,
     "station_code": "ZBD",
     "station_name": "涿州东",
     "track_count": 4
   },
   {
+    "station_id" : 4,
     "station_code": "GBD",
     "station_name": "高碑店东",
     "track_count": 4
   },
   {
+    "station_id" : 5,
     "station_code": "XSD",
     "station_name": "徐水东",
     "track_count": 4
   },
   {
+    "station_id" : 6,
     "station_code": "BDD",
     "station_name": "保定东",
     "track_count": 6
   },
   {
+    "station_id" : 7,
     "station_code": "DZD",
     "station_name": "定州东",
     "track_count": 4
   },
   {
+    "station_id" : 8,
     "station_code": "ZDJ",
     "station_name": "正定机场",
     "track_count": 4
   },
   {
+    "station_id" : 9,
     "station_code": "SJP",
     "station_name": "石家庄",
     "track_count": 11
   },
   {
+    "station_id" : 10,
     "station_code": "GYX",
     "station_name": "高邑西",
     "track_count": 4
   },
   {
+    "station_id" : 11,
     "station_code": "XTD",
     "station_name": "邢台东",
     "track_count": 6
   },
   {
+    "station_id" : 12,
     "station_code": "HDD",
     "station_name": "邯郸东",
     "track_count": 7
   },
   {
+    "station_id" : 13,
     "station_code": "AYD",
     "station_name": "安阳东",
     "track_count": 4

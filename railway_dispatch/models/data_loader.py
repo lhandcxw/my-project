@@ -436,15 +436,60 @@ def get_trains_pydantic():
     trains = []
 
     for t in trains_data:
-        stops = [
-            TrainStop(
-                station_code=s["station_code"],
-                station_name=s["station_name"],
-                arrival_time=s["arrival_time"],
-                departure_time=s["departure_time"]
+        stops = []
+        for s in t["schedule"]["stops"]:
+            # 检查字段是否存在，如果存在则使用实际值
+            has_is_stopped = "is_stopped" in s
+            has_stop_duration = "stop_duration" in s
+            
+            if has_is_stopped and has_stop_duration:
+                # 两个字段都存在，直接使用
+                is_stopped = s["is_stopped"]
+                stop_duration = s["stop_duration"]
+            elif has_stop_duration:
+                # 只有stop_duration，用它来判断
+                stop_duration = s["stop_duration"]
+                is_stopped = stop_duration > 0
+            elif has_is_stopped:
+                # 只有is_stopped，计算stop_duration
+                is_stopped = s["is_stopped"]
+                # 计算停站时间
+                arr_parts = s["arrival_time"].split(':')
+                dep_parts = s["departure_time"].split(':')
+                if len(arr_parts) == 2:
+                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
+                else:
+                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
+                if len(dep_parts) == 2:
+                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
+                else:
+                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
+                stop_duration = dep_sec - arr_sec
+            else:
+                # 都没有，根据到达和发车时间计算
+                arr_parts = s["arrival_time"].split(':')
+                dep_parts = s["departure_time"].split(':')
+                if len(arr_parts) == 2:
+                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
+                else:
+                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
+                if len(dep_parts) == 2:
+                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
+                else:
+                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
+                stop_duration = dep_sec - arr_sec
+                is_stopped = stop_duration > 0
+            
+            stops.append(
+                TrainStop(
+                    station_code=s["station_code"],
+                    station_name=s["station_name"],
+                    arrival_time=s["arrival_time"],
+                    departure_time=s["departure_time"],
+                    is_stopped=is_stopped,
+                    stop_duration=stop_duration
+                )
             )
-            for s in t["schedule"]["stops"]
-        ]
 
         train = Train(
             train_id=t["train_id"],

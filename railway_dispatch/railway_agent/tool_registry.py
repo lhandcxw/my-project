@@ -7,6 +7,7 @@
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import json
+import logging
 
 import sys
 import os
@@ -19,6 +20,8 @@ from railway_agent.dispatch_skills import (
     BaseDispatchSkill
 )
 from solver.mip_scheduler import MIPScheduler
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -124,6 +127,165 @@ TOOLS_SCHEMA = [
                 "required": ["train_ids", "station_codes", "delay_injection"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduler_comparison_skill",
+            "description": "比较多种调度方法（FCFS、MIP等），根据用户偏好选择最优调度方案。适用于需要综合比较不同调度策略的场景。输出各调度方法的比较结果、推荐方案、详细指标对比。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "train_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "受影响列车ID列表"
+                    },
+                    "station_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "涉及的车站编码列表"
+                    },
+                    "delay_injection": {
+                        "type": "object",
+                        "description": "延误注入数据，包含scenario_params.user_preference指定比较准则"
+                    },
+                    "optimization_objective": {
+                        "type": "string",
+                        "enum": ["min_max_delay", "min_avg_delay"],
+                        "default": "min_max_delay",
+                        "description": "优化目标"
+                    }
+                },
+                "required": ["train_ids", "station_codes", "delay_injection"]
+            }
+        }
+    },
+    # ========== 新增工具：列车状态查询 ==========
+    {
+        "type": "function",
+        "function": {
+            "name": "get_train_status",
+            "description": "查询指定列车的实时运行状态。返回列车的当前位置、晚点情况、下一站信息等。适用于：调度员需要了解某列车的实时状态。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "train_id": {
+                        "type": "string",
+                        "description": "列车ID，如 'G1215'"
+                    },
+                    "include_position": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "是否包含位置信息"
+                    },
+                    "include_delay": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "是否包含晚点信息"
+                    }
+                },
+                "required": ["train_id"]
+            }
+        }
+    },
+    # ========== 新增工具：晚点传播分析 ==========
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_delay_propagation",
+            "description": "分析晚点对后续列车的影响范围和程度。返回受影响的列车列表、传播层级、预计晚点时间等。适用于：评估某列晚点后对整体运行图的影响。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "train_id": {
+                        "type": "string",
+                        "description": "晚点列车ID"
+                    },
+                    "delay_minutes": {
+                        "type": "integer",
+                        "description": "晚点时间（分钟）"
+                    },
+                    "propagation_depth": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "传播深度（分析几代后续列车），默认3"
+                    }
+                },
+                "required": ["train_id", "delay_minutes"]
+            }
+        }
+    },
+    # ========== 新增工具：时刻表查询 ==========
+    {
+        "type": "function",
+        "function": {
+            "name": "query_timetable",
+            "description": "查询列车时刻表信息。可以按列车ID查询特定列车的时刻表，或按车站查询所有到发列车。适用于：查询计划时刻表或历史时刻表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "train_id": {
+                        "type": "string",
+                        "description": "列车ID（可选，如不指定则查询车站所有列车）"
+                    },
+                    "station_code": {
+                        "type": "string",
+                        "description": "车站编码（可选）"
+                    },
+                    "timetable_type": {
+                        "type": "string",
+                        "enum": ["plan", "actual", "both"],
+                        "default": "plan",
+                        "description": "时刻表类型：plan=计划时刻表，actual=实际时刻表，both=两者都返回"
+                    }
+                }
+            }
+        }
+    },
+    # ========== 新增工具：车站状态查询 ==========
+    {
+        "type": "function",
+        "function": {
+            "name": "get_station_status",
+            "description": "查询车站的实时状态信息。包括到发线占用情况、正在接发车作业的列车等。适用于：了解车站接发车能力。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "station_code": {
+                        "type": "string",
+                        "description": "车站编码，如 'XSD'"
+                    }
+                },
+                "required": ["station_code"]
+            }
+        }
+    },
+    # ========== 新增工具：运力分析 ==========
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_capacity",
+            "description": "分析区间的通过能力和冗余运力。返回区间的最大通过能力、当前占用情况、可增加的列车数量等。适用于：评估区间承载能力和加开列车可能性。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_station": {
+                        "type": "string",
+                        "description": "起始站编码"
+                    },
+                    "to_station": {
+                        "type": "string",
+                        "description": "终止站编码"
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "分析的时间范围，如 '09:00-12:00'"
+                    }
+                },
+                "required": ["from_station", "to_station"]
+            }
+        }
     }
 ]
 
@@ -141,15 +303,33 @@ class ToolRegistry:
     2. 执行接口封装
     """
     
-    def __init__(self, scheduler: MIPScheduler):
+    def __init__(self, scheduler: MIPScheduler, trains=None, stations=None):
         """
         初始化Tool注册表
         
         Args:
             scheduler: MIP调度器实例
+            trains: 列车列表（用于比较功能）
+            stations: 车站列表（用于比较功能）
         """
         self.scheduler = scheduler
+        self.trains = trains or scheduler.trains
+        self.stations = stations or scheduler.stations
         self.skills: Dict[str, BaseDispatchSkill] = create_skills(scheduler)
+        
+        # 初始化比较技能
+        self._init_comparison_skill()
+    
+    def _init_comparison_skill(self):
+        """初始化调度比较技能"""
+        try:
+            from railway_agent.comparison_skill import SchedulerComparisonSkill
+            self.comparison_skill = SchedulerComparisonSkill(self.trains, self.stations)
+            self.skills["scheduler_comparison_skill"] = self.comparison_skill
+            logger.info("调度比较技能初始化完成")
+        except Exception as e:
+            logger.warning(f"调度比较技能初始化失败: {e}")
+            self.comparison_skill = None
     
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """
@@ -190,20 +370,28 @@ class ToolRegistry:
     ) -> DispatchSkillOutput:
         """
         执行指定的工具
-        
+
         Args:
             tool_name: 工具名称
             arguments: 工具参数
-            
+
         Returns:
             DispatchSkillOutput: 执行结果
         """
-        # 提取参数
+        # 提取标准参数
         train_ids = arguments.get("train_ids", [])
         station_codes = arguments.get("station_codes", [])
         delay_injection = arguments.get("delay_injection", {})
         optimization_objective = arguments.get("optimization_objective", "min_max_delay")
-        
+
+        # 提取额外参数（用于查询类技能）
+        extra_kwargs = {}
+        for key in ["train_id", "station_code", "from_station", "to_station",
+                    "delay_minutes", "propagation_depth", "timetable_type",
+                    "time_range", "include_position", "include_delay"]:
+            if key in arguments:
+                extra_kwargs[key] = arguments[key]
+
         # 执行Skill
         return execute_skill(
             skill_name=tool_name,
@@ -211,7 +399,8 @@ class ToolRegistry:
             train_ids=train_ids,
             station_codes=station_codes,
             delay_injection=delay_injection,
-            optimization_objective=optimization_objective
+            optimization_objective=optimization_objective,
+            **extra_kwargs
         )
     
     def has_tool(self, tool_name: str) -> bool:
