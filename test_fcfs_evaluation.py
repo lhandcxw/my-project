@@ -20,7 +20,12 @@ from railway_dispatch.evaluation.evaluator import Evaluator
 
 def create_delay_injection_scenario():
     """
-    创建延误注入场景
+    创建延误注入场景 - 真实延误传播场景
+
+    场景设计说明：
+    1. 选择G1563在保定东延误20分钟（发车时间18:19）
+    2. 选择紧随其后的G556等列车，这些列车在保定东的原始发车时间接近18:19
+    3. 由于追踪间隔（3分钟），后续列车会被延误传播
 
     Returns:
         DelayInjection: 延误注入对象
@@ -29,7 +34,7 @@ def create_delay_injection_scenario():
         scenario_type=ScenarioType.TEMPORARY_SPEED_LIMIT,
         scenario_id="FCFS_EVAL_TEST_001",
         injected_delays=[
-            # G1563在保定东延误20分钟
+            # G1563在保定东延误20分钟（造成后续多列列车延误传播）
             InjectedDelay(
                 train_id="G1563",
                 location=DelayLocation(
@@ -40,7 +45,7 @@ def create_delay_injection_scenario():
                 timestamp="2024-01-15T10:00:00Z"
             )
         ],
-        affected_trains=["G1563"]
+        affected_trains=["G1563"]  # 初始受影响列车，实际传播会更多
     )
 
 

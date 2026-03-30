@@ -99,12 +99,17 @@ class MIPScheduler:
         return self.min_running_times.get(key, 600)
 
     def _get_original_stop_duration(self, train: Train, station_code: str) -> int:
+        """获取列车在指定站的原始停站时间（秒）"""
         for stop in train.schedule.stops:
             if stop.station_code == station_code:
+                # 优先使用新字段stop_duration
+                if hasattr(stop, 'stop_duration') and stop.stop_duration is not None:
+                    return stop.stop_duration
+                # 兼容旧数据：通过到达和发车时间计算
                 arr = self._time_to_seconds(stop.arrival_time)
                 dep = self._time_to_seconds(stop.departure_time)
                 return dep - arr
-        return 180
+        return 180  # 默认3分钟停站时间
 
     def solve(self, delay_injection: DelayInjection, objective: str = "min_max_delay") -> SolveResult:
         """求解调度优化问题"""
@@ -192,29 +197,15 @@ class MIPScheduler:
                 # 只约束下界，允许区间内降速等待
                 prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] >= min_time
 
-        # 3. 追踪间隔约束
+        # 3. 追踪间隔约束（同股道）
         for s in self.stations:
             station_code = s.station_code
-            trains_at_station = [t for t in self.trains if station_code in self._get_stations_for_train(t)]
+            track_count = self.station_track_count.get(station_code, 1)
 
-            trains_with_time = []
-            for t in trains_at_station:
-                for stop in t.schedule.stops:
-                    if stop.station_code == station_code:
-                        trains_with_time.append((t, self._time_to_seconds(stop.departure_time)))
-                        break
-            trains_with_time.sort(key=lambda x: x[1])
-
-            for i in range(len(trains_with_time) - 1):
-                t1, _ = trains_with_time[i]
-                t2, _ = trains_with_time[i + 1]
-                prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
-
-        # 4. 股道容量约束
-        for s in self.stations:
-            station_code = s.station_code
-            if self.station_track_count.get(station_code, 1) <= 1:
+            if track_count == 1:
+                # 单股道情况：按照原始顺序建立追踪间隔约束
                 trains_at_station = [t for t in self.trains if station_code in self._get_stations_for_train(t)]
+
                 trains_with_time = []
                 for t in trains_at_station:
                     for stop in t.schedule.stops:
@@ -226,7 +217,7 @@ class MIPScheduler:
                 for i in range(len(trains_with_time) - 1):
                     t1, _ = trains_with_time[i]
                     t2, _ = trains_with_time[i + 1]
-                    prob += arrival[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.min_headway_time
+                    prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
 
         # 5. 第一站到达时间约束（修正：允许受影响列车在注入站延误）
         for t in self.trains:

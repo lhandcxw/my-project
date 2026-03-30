@@ -32,6 +32,8 @@ class TrainStop(BaseModel):
     station_name: str = Field(description="车站名称")
     arrival_time: str = Field(description="到达时间 HH:MM:SS")
     departure_time: str = Field(description="发车时间 HH:MM:SS")
+    is_stopped: bool = Field(default=True, description="是否停站（False=通过）")
+    stop_duration: int = Field(default=0, description="停站时间（秒）")
 
 
 class TrainSchedule(BaseModel):

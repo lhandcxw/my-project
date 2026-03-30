@@ -7,6 +7,7 @@
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import json
+import logging
 
 import sys
 import os
@@ -19,6 +20,8 @@ from railway_agent.dispatch_skills import (
     BaseDispatchSkill
 )
 from solver.mip_scheduler import MIPScheduler
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -124,6 +127,39 @@ TOOLS_SCHEMA = [
                 "required": ["train_ids", "station_codes", "delay_injection"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scheduler_comparison_skill",
+            "description": "比较多种调度方法（FCFS、MIP等），根据用户偏好选择最优调度方案。适用于需要综合比较不同调度策略的场景。输出各调度方法的比较结果、推荐方案、详细指标对比。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "train_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "受影响列车ID列表"
+                    },
+                    "station_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "涉及的车站编码列表"
+                    },
+                    "delay_injection": {
+                        "type": "object",
+                        "description": "延误注入数据，包含scenario_params.user_preference指定比较准则"
+                    },
+                    "optimization_objective": {
+                        "type": "string",
+                        "enum": ["min_max_delay", "min_avg_delay"],
+                        "default": "min_max_delay",
+                        "description": "优化目标"
+                    }
+                },
+                "required": ["train_ids", "station_codes", "delay_injection"]
+            }
+        }
     }
 ]
 
@@ -141,15 +177,33 @@ class ToolRegistry:
     2. 执行接口封装
     """
     
-    def __init__(self, scheduler: MIPScheduler):
+    def __init__(self, scheduler: MIPScheduler, trains=None, stations=None):
         """
         初始化Tool注册表
         
         Args:
             scheduler: MIP调度器实例
+            trains: 列车列表（用于比较功能）
+            stations: 车站列表（用于比较功能）
         """
         self.scheduler = scheduler
+        self.trains = trains or scheduler.trains
+        self.stations = stations or scheduler.stations
         self.skills: Dict[str, BaseDispatchSkill] = create_skills(scheduler)
+        
+        # 初始化比较技能
+        self._init_comparison_skill()
+    
+    def _init_comparison_skill(self):
+        """初始化调度比较技能"""
+        try:
+            from railway_agent.comparison_skill import SchedulerComparisonSkill
+            self.comparison_skill = SchedulerComparisonSkill(self.trains, self.stations)
+            self.skills["scheduler_comparison_skill"] = self.comparison_skill
+            logger.info("调度比较技能初始化完成")
+        except Exception as e:
+            logger.warning(f"调度比较技能初始化失败: {e}")
+            self.comparison_skill = None
     
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """

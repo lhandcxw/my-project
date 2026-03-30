@@ -14,7 +14,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.data_models import Train, Station, DelayInjection, ScenarioType
+from models.data_models import Train, Station, DelayInjection, ScenarioType, InjectedDelay, DelayLocation
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
 from solver.mip_scheduler import MIPScheduler
 from railway_agent.dispatch_skills import create_skills, execute_skill
@@ -36,8 +36,14 @@ sys.path.insert(0, project_root)
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
 # 导入Agent
-from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
+from railway_agent.rule_agent import RuleAgent, create_rule_agent
 from railway_agent.tool_registry import ToolRegistry
+
+# QwenAgent延迟导入（需要时再加载）
+def get_qwen_agent_module():
+    """延迟导入QwenAgent（避免在RuleAgent模式下加载modelscope）"""
+    from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
+    return QwenAgent, create_qwen_agent
 
 app = Flask(__name__)
 CORS(app)  # 启用跨域支持
@@ -64,12 +70,18 @@ evaluator = Evaluator()
 
 # Qwen Agent (延迟加载)
 qwen_agent = None
-# 设置为 False 可禁用 Qwen Agent
-# 设置为 True 但不设置 DEFAULT_MODEL_PATH 将使用规则引擎模式
-USE_QWEN_AGENT = True
+
+# ============================================
+# Agent模式配置
+# ============================================
+# 可选值：
+#   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
+#   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
+#   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
+AGENT_MODE = "qwen"  # 默认使用规则模式，跑通流程后再切换为"qwen"
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
-# 例如: "Qwen/Qwen2.5-0.5B" 或 "Qwen/Qwen2.5-1.8B"
+# 例如: "Qwen3.5-4B"
 # 留空则不使用大模型
 MODEL_PATH = "/data/wls/test-agent/Qwen3.5-4B"  # 使用本地 Qwen3.5-4B 模型
 
@@ -78,20 +90,52 @@ import os
 os.environ['MODELSCOPE_API_TOKEN'] = 'ms-4e02888f-95d6-4fd1-b07c-4897386cf13c'
 
 def get_qwen_agent():
-    """获取或创建Qwen Agent实例"""
+    """
+    获取或创建Agent实例
+    
+    根据AGENT_MODE配置选择Agent类型：
+    - "rule": 使用RuleAgent（固定规则，无需大模型）
+    - "qwen": 使用QwenAgent（需要大模型）
+    - "auto": 优先Qwen，失败则回退到RuleAgent
+    """
     global qwen_agent
-    if qwen_agent is None and USE_QWEN_AGENT:
+    
+    if qwen_agent is not None:
+        return qwen_agent
+    
+    # Rule模式：使用固定规则Agent
+    if AGENT_MODE == "rule":
+        logger.info("使用RuleAgent模式（固定规则，无需大模型）")
+        qwen_agent = create_rule_agent(trains=trains, stations=stations)
+        logger.info("RuleAgent 初始化完成")
+        return qwen_agent
+    
+    # Qwen模式：尝试加载大模型
+    if AGENT_MODE in ["qwen", "auto"]:
         try:
-            logger.info("正在初始化Qwen Agent...")
-            qwen_agent = create_qwen_agent(model_path=MODEL_PATH, trains=trains, stations=stations)
+            logger.info(f"正在初始化QwenAgent，模型路径: {MODEL_PATH}")
+            # 延迟导入QwenAgent（避免在RuleAgent模式下加载modelscope）
+            _, create_qwen_agent_func = get_qwen_agent_module()
+            qwen_agent = create_qwen_agent_func(model_path=MODEL_PATH, trains=trains, stations=stations)
             if qwen_agent is None:
-                logger.warning("未配置模型路径，使用规则引擎模式")
+                logger.warning("QwenAgent创建失败（可能未配置模型路径）")
+                if AGENT_MODE == "auto":
+                    logger.info("回退到RuleAgent模式")
+                    qwen_agent = create_rule_agent(trains=trains, stations=stations)
+                    logger.info("RuleAgent 初始化完成")
             else:
-                logger.info("Qwen Agent 初始化完成")
+                logger.info("QwenAgent 初始化完成")
+            return qwen_agent
         except Exception as e:
-            logger.error(f"Qwen Agent 初始化失败: {e}")
+            logger.error(f"QwenAgent 初始化失败: {e}")
+            if AGENT_MODE == "auto":
+                logger.info("回退到RuleAgent模式")
+                qwen_agent = create_rule_agent(trains=trains, stations=stations)
+                logger.info("RuleAgent 初始化完成")
+                return qwen_agent
             return None
-    return qwen_agent
+    
+    return None
 
 
 def get_original_schedule():
@@ -325,6 +369,7 @@ HTML_TEMPLATE = '''
         <!-- 标签页 -->
         <div class="tabs">
             <button class="tab active" onclick="showTab('dispatch')">🤖 智能调度</button>
+            <button class="tab" onclick="showTab('comparison')">📊 调度比较</button>
         </div>
 
         <!-- 智能调度 - 统一入口 -->
@@ -343,7 +388,10 @@ HTML_TEMPLATE = '''
                         <button class="btn" style="background: #f3e5f5; color: #7b1fa2;" onclick="fillPrompt('延误')">📋 延误调整</button>
                     </div>
                     <textarea id="dispatchPrompt" rows="3" placeholder="描述您的调度需求..."></textarea>
-                    <button class="btn btn-primary" onclick="sendDispatch()" style="margin-top: 10px;">🚀 开始智能调度</button>
+                    <div class="grid" style="margin-top: 10px;">
+                        <button class="btn btn-primary" onclick="sendDispatch()">🚀 开始智能调度</button>
+                        <button class="btn btn-success" onclick="sendDispatchWithComparison()">📊 调度方法比较</button>
+                    </div>
                 </div>
 
                 <div style="border-top: 1px dashed #ddd; padding-top: 20px;">
@@ -444,6 +492,15 @@ HTML_TEMPLATE = '''
                     <div id="resultMessage" style="background: #e8f5e9; padding: 12px; border-radius: 5px; margin-top: 15px;"></div>
                 </div>
 
+                <!-- 调度比较结果（新增） -->
+                <div id="comparisonResultSection" style="display: none;">
+                    <div class="card">
+                        <h2>🏆 调度方法比较结果</h2>
+                        <div id="comparisonRanking"></div>
+                        <div id="comparisonRecommendations" style="margin-top: 15px;"></div>
+                    </div>
+                </div>
+
                 <!-- 时刻表 -->
                 <div class="card">
                     <h2>📅 优化后时刻表</h2>
@@ -454,6 +511,64 @@ HTML_TEMPLATE = '''
                 <div class="card">
                     <h2>📈 运行图对比</h2>
                     <div id="diagramContainer" style="text-align: center;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 调度比较标签页 -->
+        <div id="comparison" class="tab-content">
+            <div class="card">
+                <h2>📊 调度方法比较</h2>
+                <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）和MIP（整数规划）等多种调度方法，根据您的偏好选择最优方案</p>
+                
+                <div class="form-group">
+                    <label>比较准则</label>
+                    <select id="comparisonCriteria">
+                        <option value="balanced">均衡考虑</option>
+                        <option value="min_max_delay">最小最大延误</option>
+                        <option value="min_avg_delay">最小平均延误</option>
+                        <option value="real_time">实时优先（计算速度）</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>列车ID</label>
+                    <select id="comparisonTrainId">
+                        {% for train_id in train_ids %}
+                        <option value="{{ train_id }}">{{ train_id }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>延误车站</label>
+                        <select id="comparisonStation">
+                            {% for code, name in station_names.items() %}
+                            <option value="{{ code }}">{{ name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>延误时间(分钟)</label>
+                        <input type="number" id="comparisonDelayMinutes" value="20" min="1" max="120">
+                    </div>
+                </div>
+                
+                <button class="btn btn-primary" onclick="runComparison()" style="width: 100%;">🔍 开始比较</button>
+            </div>
+            
+            <!-- 比较结果加载 -->
+            <div class="loading" id="comparisonLoading">
+                <div class="spinner"></div>
+                <p>正在比较多种调度方法...</p>
+            </div>
+            
+            <!-- 比较结果展示 -->
+            <div id="comparisonResultDisplay" style="display: none;">
+                <div class="card">
+                    <h2>📋 比较报告</h2>
+                    <div id="comparisonReport"></div>
                 </div>
             </div>
         </div>
@@ -478,11 +593,16 @@ HTML_TEMPLATE = '''
         }
 
         // 标签页切换
-        function showTab(tabId) {
+        function showTab(tabId, event) {
+            if (event) {
+                event.preventDefault();
+            }
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('.tab').classList.add('active');
-            document.getElementById('dispatch').classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+            document.getElementById(tabId).classList.add('active');
         }
 
         // 填充快速输入
@@ -537,7 +657,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
@@ -604,7 +724,7 @@ HTML_TEMPLATE = '''
                 .catch(error => {
                     document.getElementById('dispatchLoading').style.display = 'none';
                     console.error('请求失败:', error);
-                    alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                    alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
                 });
             }
 
@@ -660,6 +780,152 @@ HTML_TEMPLATE = '''
                     }
                 });
             }
+            
+            // 显示比较结果（如果有）
+            const stats = result.delay_statistics || {};
+            if (stats.ranking && stats.ranking.length > 0) {
+                showComparisonResult(stats);
+            }
+        }
+        
+        // 发送智能调度（带比较）
+        function sendDispatchWithComparison() {
+            const prompt = document.getElementById('dispatchPrompt').value.trim();
+            if (!prompt) {
+                alert('请输入调度需求');
+                return;
+            }
+
+            document.getElementById('dispatchLoading').style.display = 'block';
+            document.getElementById('dispatchResult').style.display = 'none';
+            document.getElementById('comparisonResultSection').style.display = 'none';
+
+            fetch('/api/agent_chat_with_comparison', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prompt: prompt, comparison_criteria: 'balanced'})
+            })
+            .then(response => response.json())
+            .then(result => {
+                document.getElementById('dispatchLoading').style.display = 'none';
+
+                if (result.success) {
+                    showDispatchResult(result);
+                } else {
+                    alert('执行失败: ' + result.message);
+                }
+            })
+            .catch(error => {
+                document.getElementById('dispatchLoading').style.display = 'none';
+                console.error('请求失败:', error);
+                alert('请求失败: ' + error.message);
+            });
+        }
+        
+        // 显示比较结果
+        function showComparisonResult(stats) {
+            const section = document.getElementById('comparisonResultSection');
+            const rankingDiv = document.getElementById('comparisonRanking');
+            const recDiv = document.getElementById('comparisonRecommendations');
+            
+            // 生成排名表格
+            let rankingHtml = '<table class="schedule-table"><thead><tr><th>排名</th><th>调度器</th><th>最大延误</th><th>平均延误</th><th>得分</th></tr></thead><tbody>';
+            for (let r of stats.ranking || []) {
+                const winner = r.rank === 1 ? ' ⭐' : '';
+                rankingHtml += '<tr><td>' + r.rank + winner + '</td><td>' + r.scheduler + '</td><td>' + r.max_delay_minutes + '分钟</td><td>' + r.avg_delay_minutes + '分钟</td><td>' + r.score.toFixed(1) + '</td></tr>';
+            }
+            rankingHtml += '</tbody></table>';
+            rankingDiv.innerHTML = rankingHtml;
+            
+            // 显示推荐
+            let recHtml = '<div class="recommendation"><h4>💡 推荐建议</h4><ul>';
+            for (let rec of stats.recommendations || []) {
+                recHtml += '<li>' + rec + '</li>';
+            }
+            recHtml += '</ul></div>';
+            recDiv.innerHTML = recHtml;
+            
+            section.style.display = 'block';
+        }
+        
+        // 运行调度比较
+        function runComparison() {
+            const trainId = document.getElementById('comparisonTrainId').value;
+            const station = document.getElementById('comparisonStation').value;
+            const delayMinutes = parseInt(document.getElementById('comparisonDelayMinutes').value);
+            const criteria = document.getElementById('comparisonCriteria').value;
+
+            document.getElementById('comparisonLoading').style.display = 'block';
+            document.getElementById('comparisonResultDisplay').style.display = 'none';
+
+            fetch('/api/scheduler_comparison', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    train_id: trainId,
+                    station_code: station,
+                    delay_seconds: delayMinutes * 60,
+                    criteria: criteria
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                document.getElementById('comparisonLoading').style.display = 'none';
+                
+                if (result.success) {
+                    displayComparisonReport(result);
+                } else {
+                    alert('比较失败: ' + result.message);
+                }
+            })
+            .catch(error => {
+                document.getElementById('comparisonLoading').style.display = 'none';
+                console.error('请求失败:', error);
+                alert('请求失败: ' + error.message);
+            });
+        }
+        
+        // 显示比较报告
+        function displayComparisonReport(result) {
+            const display = document.getElementById('comparisonResultDisplay');
+            const reportDiv = document.getElementById('comparisonReport');
+            
+            let html = '';
+            
+            // 推荐方案
+            if (result.comparison && result.comparison.recommendation) {
+                const rec = result.comparison.recommendation;
+                html += '<div class="recommendation" style="margin-bottom: 20px;">';
+                html += '<h4>🏆 推荐方案: ' + rec.scheduler_name + '</h4>';
+                html += '<div class="grid">';
+                html += '<div class="metric"><div class="metric-value">' + rec.key_metrics.max_delay_minutes + '分钟</div><div class="metric-label">最大延误</div></div>';
+                html += '<div class="metric"><div class="metric-value">' + rec.key_metrics.avg_delay_minutes + '分钟</div><div class="metric-label">平均延误</div></div>';
+                html += '<div class="metric"><div class="metric-value">' + rec.key_metrics.on_time_rate + '%</div><div class="metric-label">准点率</div></div>';
+                html += '</div></div>';
+            }
+            
+            // 所有方案
+            if (result.comparison && result.comparison.all_options) {
+                html += '<h4 style="margin: 15px 0 10px;">📊 所有方案对比</h4>';
+                html += '<table class="schedule-table"><thead><tr><th>排名</th><th>调度器</th><th>最大延误</th><th>平均延误</th><th>计算时间</th></tr></thead><tbody>';
+                for (let opt of result.comparison.all_options) {
+                    const winner = opt.rank === 1 ? ' ⭐' : '';
+                    html += '<tr><td>' + opt.rank + winner + '</td><td>' + opt.name + '</td><td>' + opt.max_delay_minutes + '分钟</td><td>' + opt.avg_delay_minutes + '分钟</td><td>' + opt.computation_time.toFixed(2) + '秒</td></tr>';
+                }
+                html += '</tbody></table>';
+            }
+            
+            // 分析建议
+            if (result.comparison && result.comparison.analysis) {
+                html += '<h4 style="margin: 15px 0 10px;">💡 分析建议</h4><ul>';
+                for (let a of result.comparison.analysis) {
+                    html += '<li>' + a + '</li>';
+                }
+                html += '</ul>';
+            }
+            
+            reportDiv.innerHTML = html;
+            display.style.display = 'block';
         }
     </script>
 </body>
@@ -861,8 +1127,12 @@ def generate_diagram():
 @app.route('/api/agent_chat', methods=['POST'])
 def agent_chat():
     """
-    Qwen Agent 对话API
+    Agent 对话API
     接收自然语言输入，Agent自动识别场景并执行调度
+    
+    支持两种Agent模式：
+    - RuleAgent: 固定规则，无需大模型
+    - QwenAgent: 大模型驱动
     """
     try:
         data = request.json
@@ -877,22 +1147,27 @@ def agent_chat():
 
         logger.info(f"收到agent_chat请求，prompt: {prompt[:50]}...")
 
-        # 获取Qwen Agent
+        # 获取Agent
         agent = get_qwen_agent()
         if agent is None:
-            logger.error("Qwen Agent未初始化")
+            logger.error("Agent未初始化")
             return jsonify({
                 "success": False,
-                "message": "Qwen Agent未初始化，请检查模型配置"
+                "message": "Agent未初始化，请检查配置"
             })
 
         # 解析用户输入，构建DelayInjection
-        # 尝试从输入中提取场景信息
         delay_injection = parse_user_prompt(prompt)
         logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
 
         # 调用Agent分析
-        result = agent.analyze(delay_injection)
+        # RuleAgent和QwenAgent都支持analyze方法
+        if isinstance(agent, RuleAgent):
+            # RuleAgent需要传入原始prompt用于推理过程生成
+            result = agent.analyze(delay_injection, user_prompt=prompt)
+        else:
+            # QwenAgent
+            result = agent.analyze(delay_injection)
 
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -1099,10 +1374,186 @@ def parse_user_prompt(prompt: str) -> dict:
         }
 
 
+@app.route('/api/agent_chat_with_comparison', methods=['POST'])
+def agent_chat_with_comparison():
+    """
+    Agent对话API（带调度比较）
+    比较FCFS和MIP等多种调度方法，返回最优方案
+    """
+    try:
+        data = request.json
+        prompt = data.get('prompt', '')
+        comparison_criteria = data.get('comparison_criteria', 'balanced')
+
+        if not prompt:
+            return jsonify({
+                "success": False,
+                "message": "请输入调度需求"
+            })
+
+        logger.info(f"收到带比较的agent_chat请求，prompt: {prompt[:50]}...")
+
+        # 获取Agent
+        agent = get_qwen_agent()
+        if agent is None:
+            return jsonify({
+                "success": False,
+                "message": "Agent未初始化"
+            })
+
+        # 解析用户输入
+        delay_injection = parse_user_prompt(prompt)
+        
+        # 添加用户偏好到scenario_params
+        if "scenario_params" not in delay_injection:
+            delay_injection["scenario_params"] = {}
+        delay_injection["scenario_params"]["user_preference"] = comparison_criteria
+
+        logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
+
+        # 调用Agent分析（带比较）
+        if isinstance(agent, RuleAgent):
+            result = agent.analyze_with_comparison(delay_injection, user_prompt=prompt, comparison_criteria=comparison_criteria)
+        else:
+            # QwenAgent也使用RuleAgent的比较方法（因为比较功能与模型无关）
+            result = agent.analyze_with_comparison(delay_injection, comparison_criteria=comparison_criteria) if hasattr(agent, 'analyze_with_comparison') else agent.analyze(delay_injection)
+
+        if result.success and result.dispatch_result:
+            dispatch = result.dispatch_result
+            original_schedule = get_original_schedule()
+
+            logger.info("Agent比较分析成功，返回结果")
+            return jsonify({
+                "success": True,
+                "recognized_scenario": result.recognized_scenario,
+                "selected_skill": result.selected_skill,
+                "reasoning": result.reasoning,
+                "delay_statistics": dispatch.delay_statistics,
+                "message": dispatch.message,
+                "computation_time": result.computation_time,
+                "optimized_schedule": dispatch.optimized_schedule,
+                "original_schedule": original_schedule
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": result.error_message or "Agent执行失败"
+            })
+
+    except Exception as e:
+        logger.exception(f"agent_chat_with_comparison处理异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+@app.route('/api/scheduler_comparison', methods=['POST'])
+def scheduler_comparison():
+    """
+    调度方法比较API
+    比较FCFS、MIP等多种调度方法
+    """
+    try:
+        data = request.json
+        
+        train_id = data.get('train_id')
+        station_code = data.get('station_code')
+        delay_seconds = data.get('delay_seconds', 1200)
+        criteria = data.get('criteria', 'balanced')
+        
+        if not train_id:
+            return jsonify({
+                "success": False,
+                "message": "请提供列车ID"
+            })
+        
+        logger.info(f"调度比较请求: train={train_id}, station={station_code}, delay={delay_seconds}s, criteria={criteria}")
+        
+        # 构建延误注入
+        delay_injection = DelayInjection(
+            scenario_type=ScenarioType.TEMPORARY_SPEED_LIMIT,
+            scenario_id="COMPARISON_API",
+            injected_delays=[
+                InjectedDelay(
+                    train_id=train_id,
+                    location=DelayLocation(location_type="station", station_code=station_code),
+                    initial_delay_seconds=delay_seconds,
+                    timestamp="2024-01-15T10:00:00Z"
+                )
+            ],
+            affected_trains=[train_id],
+            scenario_params={
+                "user_preference": criteria
+            }
+        )
+        
+        # 使用Agent的比较功能
+        agent = get_qwen_agent()
+        if agent is None:
+            return jsonify({
+                "success": False,
+                "message": "Agent未初始化"
+            })
+        
+        if isinstance(agent, RuleAgent):
+            result = agent.analyze_with_comparison(
+                delay_injection.model_dump(),
+                user_prompt=f"{train_id}在{station_code}延误{delay_seconds // 60}分钟",
+                comparison_criteria=criteria
+            )
+        else:
+            result = agent.analyze_with_comparison(delay_injection.model_dump(), comparison_criteria=criteria) if hasattr(agent, 'analyze_with_comparison') else agent.analyze(delay_injection.model_dump())
+        
+        if result.success and result.dispatch_result:
+            dispatch = result.dispatch_result
+            
+            # 构建结构化输出
+            comparison_output = {
+                "success": True,
+                "comparison": {
+                    "recommendation": {
+                        "scheduler_name": dispatch.delay_statistics.get("winner_scheduler", "未知"),
+                        "scheduler_type": "mip",
+                        "key_metrics": {
+                            "max_delay_minutes": dispatch.delay_statistics.get("max_delay_seconds", 0) // 60,
+                            "avg_delay_minutes": round(dispatch.delay_statistics.get("avg_delay_seconds", 0) / 60, 2),
+                            "affected_trains": dispatch.delay_statistics.get("affected_trains_count", 0),
+                            "on_time_rate": round(dispatch.delay_statistics.get("on_time_rate", 1.0) * 100, 1)
+                        }
+                    },
+                    "all_options": dispatch.delay_statistics.get("ranking", []),
+                    "analysis": dispatch.delay_statistics.get("recommendations", [])
+                },
+                "message": dispatch.message
+            }
+            
+            return jsonify(comparison_output)
+        else:
+            return jsonify({
+                "success": False,
+                "message": result.error_message or "比较执行失败"
+            })
+    
+    except Exception as e:
+        logger.exception(f"调度比较异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
 if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("铁路调度Agent系统 v1.0")
     logger.info("=" * 50)
+    logger.info(f"Agent模式: {AGENT_MODE}")
+    if AGENT_MODE == "rule":
+        logger.info("使用固定规则Agent，无需加载大模型")
+    elif AGENT_MODE == "qwen":
+        logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
+    else:
+        logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
     logger.info("访问地址: http://localhost:8080")
     logger.info("按 Ctrl+C 停止服务")
     logger.info("=" * 50)
