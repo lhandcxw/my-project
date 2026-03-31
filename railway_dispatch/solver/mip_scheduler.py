@@ -197,27 +197,38 @@ class MIPScheduler:
                 # 只约束下界，允许区间内降速等待
                 prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] >= min_time
 
-        # 3. 追踪间隔约束（同股道）
+        # 3. 追踪间隔约束（所有车站）
+        # 修正：无论是单股道还是多股道，都需要添加追踪间隔约束
+        # 多股道车站使用简化模型：按原始顺序依次发车（避免冲突）
         for s in self.stations:
             station_code = s.station_code
             track_count = self.station_track_count.get(station_code, 1)
 
-            if track_count == 1:
-                # 单股道情况：按照原始顺序建立追踪间隔约束
-                trains_at_station = [t for t in self.trains if station_code in self._get_stations_for_train(t)]
+            # 收集该站所有列车，按原始发车时间排序
+            trains_at_station = [t for t in self.trains if station_code in self._get_stations_for_train(t)]
 
-                trains_with_time = []
-                for t in trains_at_station:
-                    for stop in t.schedule.stops:
-                        if stop.station_code == station_code:
-                            trains_with_time.append((t, self._time_to_seconds(stop.departure_time)))
-                            break
-                trains_with_time.sort(key=lambda x: x[1])
+            trains_with_time = []
+            for t in trains_at_station:
+                for stop in t.schedule.stops:
+                    if stop.station_code == station_code:
+                        trains_with_time.append((t, self._time_to_seconds(stop.departure_time)))
+                        break
+            trains_with_time.sort(key=lambda x: x[1])
 
-                for i in range(len(trains_with_time) - 1):
-                    t1, _ = trains_with_time[i]
-                    t2, _ = trains_with_time[i + 1]
+            # 对所有列车按顺序建立追踪间隔约束
+            # 多股道时：使用更宽松的约束（允许并行），但仍需满足基本间隔
+            for i in range(len(trains_with_time) - 1):
+                t1, _ = trains_with_time[i]
+                t2, _ = trains_with_time[i + 1]
+
+                if track_count == 1:
+                    # 单股道：严格追踪间隔
                     prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
+                else:
+                    # 多股道：使用简化模型
+                    # 虽然有多股道，但咽喉区能力有限，仍需按顺序发车
+                    # 约束：相邻两列车发车间隔至少为 headway_time * 0.5（咽喉区通行时间）
+                    prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + max(60, self.headway_time // 3)
 
         # 5. 第一站到达时间约束（修正：允许受影响列车在注入站延误）
         for t in self.trains:

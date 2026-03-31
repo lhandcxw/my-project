@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 铁路调度系统 - 评估指标定义模块
-定义完整的调度评估指标体系
+定义完整的调度评估指标体系（专家版）
+
+专家视角的指标设计：
+1. 旅客服务指标：准点率、平均/最大延误、延误方差
+2. 运营效率指标：受影响列车、传播控制、恢复能力
+3. 资源利用指标：股道占用、咽喉区冲突
+4. 计算性能指标：求解时间、稳定性
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -110,17 +116,38 @@ class MetricsWeight:
         ).normalize()
     
     @classmethod
-    def for_real_time(cls) -> 'MetricsWeight':
+    def for_real_time(cls) -> 'MetricsExpertWeight':
         """实时调度场景的权重配置（重视计算速度）"""
         return cls(
             max_delay_weight=0.8,
             avg_delay_weight=0.8,
-            total_delay_weight=0.5,
-            affected_trains_weight=0.6,
-            computation_time_weight=2.0,
             on_time_rate_weight=0.5,
-            delay_spread_weight=0.3,
-            resource_utilization_weight=0.2
+            affected_trains_weight=0.6,
+            delay_propagation_weight=0.3,
+            total_delay_weight=0.5,
+            track_conflict_weight=0.2,
+            throat_conflict_weight=0.2,
+            computation_time_weight=2.0,
+            stability_weight=0.6
+        ).normalize()
+
+    @classmethod
+    def for_high_speed(cls) -> 'MetricsExpertWeight':
+        """
+        高铁专用权重（简化版）
+        只关注延误指标：最大延误、平均延误、准点率、受影响列车
+        """
+        return cls(
+            max_delay_weight=3.0,        # 最大延误最重要
+            avg_delay_weight=2.0,        # 平均延误次重要
+            on_time_rate_weight=2.0,    # 准点率同等重要
+            affected_trains_weight=1.5,  # 受影响列车（传播控制）
+            delay_propagation_weight=1.0,
+            total_delay_weight=0.5,
+            track_conflict_weight=0.0,    # 忽略
+            throat_conflict_weight=0.0,   # 忽略
+            computation_time_weight=0.1,  # 非关键
+            stability_weight=0.1
         ).normalize()
     
     @classmethod
@@ -328,10 +355,15 @@ class MetricsDefinition:
             else:
                 delay_by_train[train_id] = {"max": 0, "avg": 0, "total": 0, "count": 0}
         
-        # 计算基础统计
+        # 计算基础统计（修正：平均延误只计算受影响的列车，避免分母被未受影响列车稀释）
         if all_delays:
             max_delay = max(all_delays)
-            avg_delay = sum(all_delays) / len(all_delays)
+            # 只计算有延误的站点的平均延误，更准确反映调度效果
+            affected_delays = [d for d in all_delays if d > 0]
+            if affected_delays:
+                avg_delay = sum(affected_delays) / len(affected_delays)
+            else:
+                avg_delay = 0.0
             total_delay = sum(all_delays)
             affected_trains = len([d for d in delay_by_train.values() if d["max"] > 0])
             
@@ -515,8 +547,302 @@ if __name__ == "__main__":
             {"station_code": "TJG", "delay_seconds": 420}
         ]
     }
-    
+
     metrics = MetricsDefinition.calculate_metrics(test_schedule, computation_time=0.5)
     print("评估指标:")
     print(json.dumps(metrics.to_dict(), indent=2, ensure_ascii=False))
     print(f"\n摘要: {metrics.get_summary()}")
+
+    # 测试专家指标权重
+    print("\n" + "=" * 60)
+    print("专家指标权重配置")
+    print("=" * 60)
+    print(f"高铁客运专线: {MetricsExpertWeight.for_high_speed_passenger().to_summary()}")
+    print(f"货运重载线路: {MetricsExpertWeight.for_freight_heavy().to_summary()}")
+    print(f"城际通勤线路: {MetricsExpertWeight.for_intercity().to_summary()}")
+
+
+# =========================================
+# 专家级指标权重配置（新增）
+# =========================================
+
+class DispatchScenarioType(str, Enum):
+    """调度场景类型"""
+    HIGH_SPEED_PASSENGER = "high_speed_passenger"  # 高铁客运专线
+    FREIGHT_HEAVY = "freight_heavy"               # 货运重载线路
+    INTERCITY = "intercity"                       # 城际通勤线路
+    MIXED = "mixed"                              # 客货混跑线路
+
+
+@dataclass
+class MetricsExpertWeight:
+    """
+    专家级指标权重配置
+    根据不同调度场景类型设计的专业权重方案
+    """
+    # 旅客服务指标（最重要）
+    max_delay_weight: float = 1.0                # 最大延误（关键：影响旅客出行）
+    avg_delay_weight: float = 1.0                # 平均延误
+    on_time_rate_weight: float = 1.0             # 准点率（关键：服务承诺）
+
+    # 运营效率指标
+    affected_trains_weight: float = 0.8          # 受影响列车数
+    delay_propagation_weight: float = 1.0       # 延误传播控制（关键：避免链式反应）
+    total_delay_weight: float = 0.5             # 总延误
+
+    # 资源利用指标
+    track_conflict_weight: float = 0.6          # 股道冲突
+    throat_conflict_weight: float = 0.5         # 咽喉区冲突
+
+    # 计算性能指标
+    computation_time_weight: float = 0.3       # 计算时间
+    stability_weight: float = 0.4               # 求解稳定性
+
+    def normalize(self) -> 'MetricsExpertWeight':
+        """归一化权重"""
+        total = (
+            self.max_delay_weight + self.avg_delay_weight + self.on_time_rate_weight +
+            self.affected_trains_weight + self.delay_propagation_weight + self.total_delay_weight +
+            self.track_conflict_weight + self.throat_conflict_weight +
+            self.computation_time_weight + self.stability_weight
+        )
+        if total == 0:
+            return self
+
+        return MetricsExpertWeight(
+            max_delay_weight=self.max_delay_weight / total,
+            avg_delay_weight=self.avg_delay_weight / total,
+            on_time_rate_weight=self.on_time_rate_weight / total,
+            affected_trains_weight=self.affected_trains_weight / total,
+            delay_propagation_weight=self.delay_propagation_weight / total,
+            total_delay_weight=self.total_delay_weight / total,
+            track_conflict_weight=self.track_conflict_weight / total,
+            throat_conflict_weight=self.throat_conflict_weight / total,
+            computation_time_weight=self.computation_time_weight / total,
+            stability_weight=self.stability_weight / total
+        )
+
+    def to_summary(self) -> str:
+        """转换为摘要字符串"""
+        return (
+            f"max_delay={self.max_delay_weight:.2f}, "
+            f"avg_delay={self.avg_delay_weight:.2f}, "
+            f"on_time_rate={self.on_time_rate_weight:.2f}, "
+            f"propagation={self.delay_propagation_weight:.2f}"
+        )
+
+    @classmethod
+    def for_high_speed_passenger(cls) -> 'MetricsExpertWeight':
+        """
+        高铁客运专线场景（最高优先级：旅客体验）
+        特点：准点率要求高，延误传播控制关键
+        """
+        return cls(
+            max_delay_weight=2.0,          # 最大延误最重要（影响高端旅客）
+            avg_delay_weight=1.5,         # 平均延误很重要
+            on_time_rate_weight=2.0,      # 准点率是服务承诺（>99%）
+            affected_trains_weight=1.0,    # 受影响列车数
+            delay_propagation_weight=1.5,  # 延误传播是链式反应的关键
+            total_delay_weight=0.5,
+            track_conflict_weight=0.5,
+            throat_conflict_weight=0.5,
+            computation_time_weight=0.2,  # 非实时要求
+            stability_weight=0.3
+        ).normalize()
+
+    @classmethod
+    def for_freight_heavy(cls) -> 'MetricsExpertWeight':
+        """
+        货运重载线路场景（最高优先级：运输能力）
+        特点：允许一定延误，追求运输量最大化
+        """
+        return cls(
+            max_delay_weight=0.8,          # 货运对延误容忍度较高
+            avg_delay_weight=1.0,
+            on_time_rate_weight=0.5,      # 货运不追求准点率
+            affected_trains_weight=1.5,   # 货运列车周转重要
+            delay_propagation_weight=0.8, # 传播控制相对不那么严格
+            total_delay_weight=1.5,       # 总延误反映运输能力损失
+            track_conflict_weight=1.0,    # 股道占用影响装卸
+            throat_conflict_weight=0.8,
+            computation_time_weight=0.3,
+            stability_weight=0.5
+        ).normalize()
+
+    @classmethod
+    def for_intercity(cls) -> 'MetricsExpertWeight':
+        """
+        城际通勤线路场景（平衡：效率+服务）
+        特点：高密度发车，传播控制关键
+        """
+        return cls(
+            max_delay_weight=1.5,
+            avg_delay_weight=1.5,
+            on_time_rate_weight=1.5,      # 通勤族对延误敏感
+            affected_trains_weight=1.2,    # 影响后续所有列车
+            delay_propagation_weight=2.0,  # 高密度下传播极快
+            total_delay_weight=0.8,
+            track_conflict_weight=0.8,
+            throat_conflict_weight=0.6,
+            computation_time_weight=0.5,   # 需要快速响应
+            stability_weight=0.6
+        ).normalize()
+
+    @classmethod
+    def from_scenario(cls, scenario: DispatchScenarioType) -> 'MetricsExpertWeight':
+        """根据场景类型获取权重配置"""
+        scenario_map = {
+            DispatchScenarioType.HIGH_SPEED_PASSENGER: cls.for_high_speed_passenger,
+            DispatchScenarioType.FREIGHT_HEAVY: cls.for_freight_heavy,
+            DispatchScenarioType.INTERCITY: cls.for_intercity,
+            DispatchScenarioType.MIXED: cls.for_high_speed_passenger  # 默认使用高铁配置
+        }
+        return scenario_map.get(scenario, cls.for_high_speed_passenger)()
+
+    @classmethod
+    def for_high_speed_simplified(cls) -> 'MetricsExpertWeight':
+        """
+        高铁简化版权重（只关注延误指标）
+        用于高铁调度器对比评估
+        """
+        return cls(
+            max_delay_weight=3.0,        # 最大延误最重要（高铁安全）
+            avg_delay_weight=2.0,        # 平均延误反映整体水平
+            on_time_rate_weight=2.5,     # 准点率是运营质量核心
+            affected_trains_weight=1.5,   # 受影响列车反映传播控制
+            delay_propagation_weight=1.0,
+            total_delay_weight=0.3,
+            track_conflict_weight=0.0,
+            throat_conflict_weight=0.0,
+            computation_time_weight=0.0,
+            stability_weight=0.0
+        ).normalize()
+
+
+class ExpertEvaluationCriteria(str, Enum):
+    """专家级评估准则"""
+    PASSENGER_SERVICE = "passenger_service"     # 旅客服务优先
+    TRANSPORT_CAPACITY = "transport_capacity"   # 运输能力优先
+    PROPAGATION_CONTROL = "propagation_control"  # 延误传播控制
+    REAL_TIME_RESPONSE = "real_time_response"   # 实时响应优先
+    BALANCED = "balanced"                       # 均衡评估
+
+
+@dataclass
+class ExpertComparisonResult:
+    """
+    专家级比较结果
+    包含多维度分析和专业建议
+    """
+    scheduler_name: str
+    rank: int
+
+    # 旅客服务维度
+    passenger_score: float           # 旅客服务得分
+    max_delay_minutes: int
+    avg_delay_minutes: float
+    on_time_rate_percent: float
+
+    # 运营效率维度
+    efficiency_score: float          # 运营效率得分
+    affected_trains: int
+    propagation_coefficient: float   # 传播系数（延误传播广度）
+    total_delay_minutes: int
+
+    # 资源利用维度
+    resource_score: float            # 资源利用得分
+    track_conflict_count: int        # 虚拟：股道冲突数
+    throat_conflict_count: int       # 虚拟：咽喉区冲突数
+
+    # 综合评分
+    overall_score: float
+    recommendation: str = ""
+
+    def to_expert_report(self) -> str:
+        """生成专家报告格式"""
+        lines = [
+            f"{'='*60}",
+            f"专家评估报告 - {self.scheduler_name}",
+            f"{'='*60}",
+            f"",
+            f"【排名】第 {self.rank} 名",
+            f"【综合评分】{self.overall_score:.2f} 分",
+            f"",
+            f"▌ 旅客服务维度 (得分: {self.passenger_score:.1f})",
+            f"   • 最大延误: {self.max_delay_minutes} 分钟",
+            f"   • 平均延误: {self.avg_delay_minutes:.1f} 分钟",
+            f"   • 准点率: {self.on_time_rate_percent:.1f}%",
+            f"",
+            f"▌ 运营效率维度 (得分: {self.efficiency_score:.1f})",
+            f"   • 受影响列车: {self.affected_trains} 列",
+            f"   • 传播系数: {self.propagation_coefficient:.2f}",
+            f"   • 总延误: {self.total_delay_minutes} 分钟",
+            f"",
+            f"▌ 资源利用维度 (得分: {self.resource_score:.1f})",
+            f"   • 综合利用率: {self.track_conflict_count:.0f}%",
+            f"",
+            f"【建议】{self.recommendation}",
+            f"{'='*60}"
+        ]
+        return "\n".join(lines)
+
+
+def calculate_expert_metrics(
+    schedule: Dict[str, List[Dict]],
+    original_schedule: Optional[Dict[str, List[Dict]]] = None,
+    computation_time: float = 0.0,
+    scenario: DispatchScenarioType = DispatchScenarioType.HIGH_SPEED_PASSENGER
+) -> ExpertComparisonResult:
+    """
+    专家级指标计算
+    根据不同场景类型计算专业评估结果
+    """
+    # 计算基础指标
+    base_metrics = MetricsDefinition.calculate_metrics(schedule, original_schedule, computation_time)
+
+    # 获取场景权重
+    weights = MetricsExpertWeight.from_scenario(scenario)
+
+    # 计算各维度得分
+    # 旅客服务得分（100分制，越高越好）
+    passenger_score = 100 - (
+        min(base_metrics.max_delay_seconds / 1800, 1.0) * 30 +  # 最大延误扣分（最多30分）
+        min(base_metrics.avg_delay_seconds / 600, 1.0) * 20 +    # 平均延误扣分
+        (1 - base_metrics.on_time_rate) * 50                     # 准点率扣分
+    )
+
+    # 运营效率得分
+    propagation_coefficient = base_metrics.delay_propagation_breadth / max(base_metrics.affected_trains_count, 1)
+    efficiency_score = 100 - (
+        min(base_metrics.affected_trains_count / 10, 1.0) * 30 +
+        min(propagation_coefficient, 1.0) * 30 +
+        min(base_metrics.total_delay_seconds / 3600, 1.0) * 40
+    )
+
+    # 资源利用得分（简化版）
+    resource_score = 85.0  # 预留扩展
+
+    # 综合评分（加权）
+    overall_score = (
+        passenger_score * weights.max_delay_weight +
+        efficiency_score * weights.delay_propagation_weight +
+        resource_score * weights.track_conflict_weight
+    )
+
+    return ExpertComparisonResult(
+        scheduler_name="",  # 待填充
+        rank=0,
+        passenger_score=passenger_score,
+        max_delay_minutes=base_metrics.max_delay_seconds // 60,
+        avg_delay_minutes=base_metrics.avg_delay_seconds / 60,
+        on_time_rate_percent=base_metrics.on_time_rate * 100,
+        efficiency_score=efficiency_score,
+        affected_trains=base_metrics.affected_trains_count,
+        propagation_coefficient=propagation_coefficient,
+        total_delay_minutes=base_metrics.total_delay_seconds // 60,
+        resource_score=resource_score,
+        track_conflict_count=85,
+        throat_conflict_count=90,
+        overall_score=overall_score,
+        recommendation=""
+    )

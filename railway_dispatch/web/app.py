@@ -54,10 +54,9 @@ use_real_data(True)
 logger.info("已启用真实数据模式")
 
 # 全局数据 - 从 centralized data loader 加载
-# 注意：使用真实数据时，MIP求解器对列车数量有限制（约60列内可行）
-# 这里只加载前50列列车以保证求解器可以正常工作
+# 加载所有列车（真实数据共147列）
 all_trains = get_trains_pydantic()
-trains = all_trains[:50]  # 限制列车数量
+trains = all_trains  # 使用全部列车
 stations = get_stations_pydantic()
 station_codes = get_station_codes()
 station_names = get_station_names()
@@ -78,7 +77,7 @@ qwen_agent = None
 #   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
 #   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
 #   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "rule"  # 默认使用规则模式，跑通流程后再切换为"qwen"
+AGENT_MODE = "auto"  # 默认使用规则模式，跑通流程后再切换为"qwen"
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
 # 例如: "Qwen3.5-4B"

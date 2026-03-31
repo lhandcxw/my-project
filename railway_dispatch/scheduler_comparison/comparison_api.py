@@ -38,7 +38,7 @@ def get_comparator():
     
     if _comparator is None:
         use_real_data(True)
-        trains = get_trains_pydantic()[:50]  # 限制列车数量
+        trains = get_trains_pydantic()  # 使用全部列车
         stations = get_stations_pydantic()
         _comparator = create_comparator(trains, stations)
         logger.info(f"比较器初始化完成，已注册调度器: {_comparator.list_schedulers()}")

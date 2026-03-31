@@ -145,11 +145,11 @@ class FCFSSchedulerAdapter(BaseScheduler):
                 min_stop_time=self.min_stop_time
             )
         return self._scheduler
-    
+
     @property
     def scheduler_type(self) -> SchedulerType:
         return SchedulerType.FCFS
-    
+
     def solve(
         self,
         delay_injection: DelayInjection,
@@ -157,16 +157,16 @@ class FCFSSchedulerAdapter(BaseScheduler):
     ) -> SchedulerResult:
         scheduler = self._get_scheduler()
         start_time = time.time()
-        
+
         result = scheduler.solve(delay_injection, objective)
-        
+
         # 计算完整指标
         metrics = MetricsDefinition.calculate_metrics(
             result.optimized_schedule,
             self.get_original_schedule(),
             result.computation_time
         )
-        
+
         return SchedulerResult(
             success=result.success,
             scheduler_name=self.name,
@@ -182,7 +182,7 @@ class MIPSchedulerAdapter(BaseScheduler):
     MIP调度器适配器
     封装现有的MIP调度器实现
     """
-    
+
     def __init__(
         self,
         trains: List[Train],
@@ -194,9 +194,9 @@ class MIPSchedulerAdapter(BaseScheduler):
         super().__init__(trains, stations, name="MIP调度器", **kwargs)
         self.headway_time = headway_time
         self.min_stop_time = min_stop_time
-        
+
         self._scheduler = None
-    
+
     def _get_scheduler(self):
         """延迟加载MIP调度器"""
         if self._scheduler is None:
@@ -208,11 +208,11 @@ class MIPSchedulerAdapter(BaseScheduler):
                 min_stop_time=self.min_stop_time
             )
         return self._scheduler
-    
+
     @property
     def scheduler_type(self) -> SchedulerType:
         return SchedulerType.MIP
-    
+
     def solve(
         self,
         delay_injection: DelayInjection,
@@ -220,16 +220,136 @@ class MIPSchedulerAdapter(BaseScheduler):
     ) -> SchedulerResult:
         scheduler = self._get_scheduler()
         start_time = time.time()
-        
+
         result = scheduler.solve(delay_injection, objective)
-        
+
         # 计算完整指标
         metrics = MetricsDefinition.calculate_metrics(
             result.optimized_schedule,
             self.get_original_schedule(),
             result.computation_time
         )
-        
+
+        return SchedulerResult(
+            success=result.success,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=result.optimized_schedule,
+            metrics=metrics,
+            message=result.message
+        )
+
+
+class NoOpSchedulerAdapter(BaseScheduler):
+    """
+    基线调度器（No-Op）适配器
+    封装 solver/noop_scheduler.py 的实现
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="基线调度器（无调整）", **kwargs)
+
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载NoOp调度器"""
+        if self._scheduler is None:
+            from solver.noop_scheduler import NoOpScheduler
+            self._scheduler = NoOpScheduler(
+                trains=self.trains,
+                stations=self.stations
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.NOOP
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        start_time = time.time()
+
+        result = scheduler.solve(delay_injection, objective)
+
+        # 计算完整指标
+        metrics = MetricsDefinition.calculate_metrics(
+            result.optimized_schedule,
+            self.get_original_schedule(),
+            result.computation_time
+        )
+
+        return SchedulerResult(
+            success=result.success,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=result.optimized_schedule,
+            metrics=metrics,
+            message=result.message
+        )
+
+
+class MaxDelayFirstSchedulerAdapter(BaseScheduler):
+    """
+    最大延误优先调度器（Max-Delay First）适配器
+    封装 solver/max_delay_first_scheduler.py 的实现
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = 180,
+        min_stop_time: int = 60,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="最大延误优先调度器", **kwargs)
+        self.headway_time = headway_time
+        self.min_stop_time = min_stop_time
+
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载MaxDelayFirst调度器"""
+        if self._scheduler is None:
+            from solver.max_delay_first_scheduler import MaxDelayFirstScheduler
+            self._scheduler = MaxDelayFirstScheduler(
+                trains=self.trains,
+                stations=self.stations,
+                headway_time=self.headway_time,
+                min_stop_time=self.min_stop_time
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.MAX_DELAY_FIRST
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        start_time = time.time()
+
+        result = scheduler.solve(delay_injection, objective)
+
+        # 计算完整指标
+        metrics = MetricsDefinition.calculate_metrics(
+            result.optimized_schedule,
+            self.get_original_schedule(),
+            result.computation_time
+        )
+
         return SchedulerResult(
             success=result.success,
             scheduler_name=self.name,
@@ -441,218 +561,7 @@ class SchedulerRegistry:
         return schedulers
 
 
-class NoOpSchedulerAdapter(BaseScheduler):
-    """
-    基线调度器（No-Op）
-    不做任何调整，仅返回原始时刻表和初始延误
-    这是调度优化的基线/基准
-    """
-
-    def __init__(
-        self,
-        trains: List[Train],
-        stations: List[Station],
-        **kwargs
-    ):
-        super().__init__(trains, stations, name="基线调度器（无调整）", **kwargs)
-        self.station_names = {s.station_code: s.station_name for s in stations}
-
-    @property
-    def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.NOOP
-
-    def solve(
-        self,
-        delay_injection: DelayInjection,
-        objective: str = "min_max_delay"
-    ) -> SchedulerResult:
-        start_time = time.time()
-
-        # 获取原始时刻表并应用初始延误（不做任何传播）
-        schedule = self.get_original_schedule()
-
-        # 收集所有延误信息
-        all_delays = []
-
-        # 应用初始延误（只影响注入站及后续，不做传播）
-        for injected in delay_injection.injected_delays:
-            train_id = injected.train_id
-            initial_delay = injected.initial_delay_seconds
-
-            if train_id in schedule:
-                # 找到注入站在列车时刻表中的位置
-                train_stops = schedule[train_id]
-                injected_station = injected.location.station_code
-
-                for stop in train_stops:
-                    if stop["station_code"] == injected_station:
-                        # 从该站开始应用延误
-                        stop["delay_seconds"] = initial_delay
-                        all_delays.append(initial_delay)
-                        break
-                    # 记录该站之前的延误为0
-                    all_delays.append(0)
-
-        # 计算指标
-        max_delay_val = max(all_delays) if all_delays else 0
-        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
-
-        computation_time = time.time() - start_time
-        metrics = EvaluationMetrics(
-            max_delay_seconds=int(max_delay_val),
-            avg_delay_seconds=float(avg_delay),
-            total_delay_seconds=int(sum(all_delays)),
-            affected_trains_count=len(set(i.train_id for i in delay_injection.injected_delays)),
-            on_time_rate=1.0 if max_delay_val == 0 else 0.0,
-            computation_time=computation_time
-        )
-
-        return SchedulerResult(
-            success=True,
-            scheduler_name=self.name,
-            scheduler_type=self.scheduler_type,
-            optimized_schedule=schedule,
-            metrics=metrics,
-            message="基线调度器：不做任何调整"
-        )
-
-
-class MaxDelayFirstSchedulerAdapter(BaseScheduler):
-    """
-    最大延误优先调度器（Max-Delay First）
-    优先处理延误最大的列车，尽可能减少最大延误
-    采用贪心策略：每次选择当前最大延误的列车进行调整
-    """
-
-    def __init__(
-        self,
-        trains: List[Train],
-        stations: List[Station],
-        headway_time: int = 180,
-        min_stop_time: int = 60,
-        **kwargs
-    ):
-        super().__init__(trains, stations, name="最大延误优先调度器", **kwargs)
-        self.headway_time = headway_time
-        self.min_stop_time = min_stop_time
-        self.station_names = {s.station_code: s.station_name for s in stations}
-        self.station_track_count = {s.station_code: s.track_count for s in stations}
-
-    @property
-    def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.MAX_DELAY_FIRST
-
-    def _time_to_seconds(self, time_str: str) -> int:
-        parts = time_str.split(':')
-        if len(parts) == 2:
-            h, m = map(int, parts)
-            return h * 3600 + m * 60
-        else:
-            h, m, s = map(int, parts)
-            return h * 3600 + m * 60 + s
-
-    def _seconds_to_time(self, seconds: int) -> str:
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
-
-    def solve(
-        self,
-        delay_injection: DelayInjection,
-        objective: str = "min_max_delay"
-    ) -> SchedulerResult:
-        start_time = time.time()
-
-        # 初始化：应用初始延误
-        schedule = self.get_original_schedule()
-
-        # 记录每列车的当前延误
-        train_delays = {}  # train_id -> current_delay
-
-        # 应用初始延误
-        for injected in delay_injection.injected_delays:
-            train_id = injected.train_id
-            station_code = injected.location.station_code
-            initial_delay = injected.initial_delay_seconds
-
-            if train_id in schedule:
-                train_delays[train_id] = initial_delay
-
-                # 从注入站开始，后续所有站点都延误
-                train_stops = schedule[train_id]
-                found_station = False
-                for stop in train_stops:
-                    if found_station:
-                        stop["delay_seconds"] = initial_delay
-                    if stop["station_code"] == station_code:
-                        found_station = True
-                        stop["delay_seconds"] = initial_delay
-
-        # 获取所有受影响的列车，按延误时间排序（最大延误优先）
-        affected_trains = list(train_delays.keys())
-
-        # 迭代优化：尝试通过压缩停站时间来减少最大延误
-        # 使用简化的贪心策略：对于延误最大的列车，尝试利用停站冗余
-        for _ in range(3):  # 最多迭代3次
-            max_delay_train = None
-            max_delay = 0
-
-            # 找到当前最大延误的列车
-            for train_id in affected_trains:
-                if train_delays.get(train_id, 0) > max_delay:
-                    max_delay = train_delays[train_id]
-                    max_delay_train = train_id
-
-            if max_delay_train is None or max_delay == 0:
-                break
-
-            # 尝试压缩该列车的停站时间来减少延误
-            train_stops = schedule[max_delay_train]
-            recovery = 0
-
-            for stop in train_stops:
-                if stop.get("delay_seconds", 0) > 0:
-                    # 尝试压缩停站时间（简化版：假设可压缩60秒）
-                    if recovery < 60:
-                        recovery += 30  # 每次恢复30秒
-                        stop["delay_seconds"] = max(0, stop["delay_seconds"] - 30)
-
-            # 更新该列车的延误
-            train_delays[max_delay_train] = max(0, max_delay - recovery)
-
-        # 计算延误统计
-        all_delays = []
-        for train_id, stops in schedule.items():
-            for stop in stops:
-                all_delays.append(stop.get("delay_seconds", 0))
-
-        max_delay_val = max(all_delays) if all_delays else 0
-        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
-        affected_count = len([t for t in affected_trains if train_delays.get(t, 0) > 0])
-
-        computation_time = time.time() - start_time
-
-        metrics = EvaluationMetrics(
-            max_delay_seconds=int(max_delay_val),
-            avg_delay_seconds=float(avg_delay),
-            total_delay_seconds=int(sum(all_delays)),
-            affected_trains_count=affected_count,
-            on_time_rate=1.0 - (affected_count / len(self.trains)) if self.trains else 1.0,
-            computation_time=computation_time
-        )
-
-        return SchedulerResult(
-            success=True,
-            scheduler_name=self.name,
-            scheduler_type=self.scheduler_type,
-            optimized_schedule=schedule,
-            metrics=metrics,
-            message="最大延误优先调度器：优先减少最大延误"
-        )
-
-
-class EarliestArrivalFirstSchedulerAdapter(BaseScheduler):
+class ReinforcementLearningSchedulerAdapter(BaseScheduler):
     """
     最早到站优先调度器（Earliest Arrival First）
 

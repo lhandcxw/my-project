@@ -294,9 +294,8 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
             ax.plot(x_points, y_points, color=color, linewidth=1.5, alpha=0.8,
                     zorder=3)
 
-            # 根据列车数量动态调整显示标签的数量
-            # 列车少的时候显示更多，列车多的时候显示部分
-            label_threshold = 30 if num_trains <= 30 else (50 if num_trains <= 50 else 80)
+            # 显示所有列车标签
+            label_threshold = num_trains  # 显示所有标签
             if idx < label_threshold and len(x_points) >= 2:
                 # 选择合适的位置添加标签（避免重叠）
                 mid_idx = len(x_points) // 2

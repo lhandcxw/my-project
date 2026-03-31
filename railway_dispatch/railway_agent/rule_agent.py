@@ -655,7 +655,7 @@ def create_rule_agent(
     if trains is None or stations is None:
         from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
         use_real_data(True)
-        trains = get_trains_pydantic()[:50]
+        trains = get_trains_pydantic()  # 使用全部列车
         stations = get_stations_pydantic()
 
     scheduler = MIPScheduler(trains, stations)

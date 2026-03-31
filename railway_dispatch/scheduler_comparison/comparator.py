@@ -178,33 +178,54 @@ class SchedulerComparator:
     def _calculate_score(
         self,
         metrics: EvaluationMetrics,
-        weights: MetricsWeight
+        weights: MetricsWeight,
+        total_trains: int = 0
     ) -> float:
         """
-        计算综合得分
-        
-        Args:
-            metrics: 评估指标
-            weights: 权重配置
-        
-        Returns:
-            综合得分（越小越好）
+        计算综合得分（高铁延误指标简化版，归一化）
+
+        只关注延误相关指标：
+        - 最大延误（关键：高铁调度安全）
+        - 平均延误（关键：整体服务水平）= 总延误 / 延误列车数
+        - 准点率（关键：运营质量）
+        - 受影响列车数（关键：延误传播控制）
+
+        分数范围：0-100分（越低越好）
         """
         # 归一化权重
         nw = weights.normalize()
-        
-        # 计算加权得分
-        # 注意：所有指标都是越小越好，除了准点率
+
+        # 平均延误使用指标计算值（总延误 / 延误站点数，更准确）
+        avg_delay_minutes = metrics.avg_delay_seconds / 60
+
+        # 将各指标归一化到0-100范围
+        # === 阈值说明 ===
+        # 最大延误阈值：60分钟为满分（100分）
+        #   - 延误0分钟 = 0分（最优）
+        #   - 延误60分钟 = 100分（最差）
+        #   - 延误90分钟 = 100分（封顶）
+        max_delay_threshold = 60  # 分钟
+        max_delay_score = min(metrics.max_delay_seconds / 60 / max_delay_threshold * 100, 100)
+
+        # 平均延误阈值：同样60分钟
+        avg_delay_score = min(avg_delay_minutes / max_delay_threshold * 100, 100)
+
+        # 准点率：100%为0分，0%为100分
+        on_time_score = (1 - metrics.on_time_rate) * 100
+
+        # 受影响列车阈值：5列为满分（高铁场景合理值）
+        affected_threshold = 5
+        affected_score = min(metrics.affected_trains_count / affected_threshold * 100, 100)
+
+        # 加权综合得分（越低越好）
         score = (
-            metrics.max_delay_seconds * nw.max_delay_weight +
-            metrics.avg_delay_seconds * nw.avg_delay_weight +
-            metrics.total_delay_seconds * nw.total_delay_weight * 0.1 +  # 缩放
-            metrics.affected_trains_count * 60 * nw.affected_trains_weight +  # 转换为秒
-            metrics.computation_time * 60 * nw.computation_time_weight +  # 转换为秒
-            (1 - metrics.on_time_rate) * 3600 * nw.on_time_rate_weight  # 准点率转换为时间
+            max_delay_score * nw.max_delay_weight +
+            avg_delay_score * nw.avg_delay_weight +
+            on_time_score * nw.on_time_rate_weight +
+            affected_score * nw.affected_trains_weight
         )
-        
-        return score
+
+        return round(score, 2)
     
     def compare_all(
         self,
