@@ -28,6 +28,8 @@ class SchedulerType(str, Enum):
     RL = "reinforcement_learning"  # 强化学习
     GREEDY = "greedy"
     GENETIC = "genetic"  # 遗传算法
+    NOOP = "noop"  # 基线不做调整
+    MAX_DELAY_FIRST = "max_delay_first"  # 最大延误优先
     CUSTOM = "custom"
 
 
@@ -439,11 +441,436 @@ class SchedulerRegistry:
         return schedulers
 
 
+class NoOpSchedulerAdapter(BaseScheduler):
+    """
+    基线调度器（No-Op）
+    不做任何调整，仅返回原始时刻表和初始延误
+    这是调度优化的基线/基准
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="基线调度器（无调整）", **kwargs)
+        self.station_names = {s.station_code: s.station_name for s in stations}
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.NOOP
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        start_time = time.time()
+
+        # 获取原始时刻表并应用初始延误（不做任何传播）
+        schedule = self.get_original_schedule()
+
+        # 收集所有延误信息
+        all_delays = []
+
+        # 应用初始延误（只影响注入站及后续，不做传播）
+        for injected in delay_injection.injected_delays:
+            train_id = injected.train_id
+            initial_delay = injected.initial_delay_seconds
+
+            if train_id in schedule:
+                # 找到注入站在列车时刻表中的位置
+                train_stops = schedule[train_id]
+                injected_station = injected.location.station_code
+
+                for stop in train_stops:
+                    if stop["station_code"] == injected_station:
+                        # 从该站开始应用延误
+                        stop["delay_seconds"] = initial_delay
+                        all_delays.append(initial_delay)
+                        break
+                    # 记录该站之前的延误为0
+                    all_delays.append(0)
+
+        # 计算指标
+        max_delay_val = max(all_delays) if all_delays else 0
+        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+
+        computation_time = time.time() - start_time
+        metrics = EvaluationMetrics(
+            max_delay_seconds=int(max_delay_val),
+            avg_delay_seconds=float(avg_delay),
+            total_delay_seconds=int(sum(all_delays)),
+            affected_trains_count=len(set(i.train_id for i in delay_injection.injected_delays)),
+            on_time_rate=1.0 if max_delay_val == 0 else 0.0,
+            computation_time=computation_time
+        )
+
+        return SchedulerResult(
+            success=True,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=schedule,
+            metrics=metrics,
+            message="基线调度器：不做任何调整"
+        )
+
+
+class MaxDelayFirstSchedulerAdapter(BaseScheduler):
+    """
+    最大延误优先调度器（Max-Delay First）
+    优先处理延误最大的列车，尽可能减少最大延误
+    采用贪心策略：每次选择当前最大延误的列车进行调整
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = 180,
+        min_stop_time: int = 60,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="最大延误优先调度器", **kwargs)
+        self.headway_time = headway_time
+        self.min_stop_time = min_stop_time
+        self.station_names = {s.station_code: s.station_name for s in stations}
+        self.station_track_count = {s.station_code: s.track_count for s in stations}
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.MAX_DELAY_FIRST
+
+    def _time_to_seconds(self, time_str: str) -> int:
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            h, m = map(int, parts)
+            return h * 3600 + m * 60
+        else:
+            h, m, s = map(int, parts)
+            return h * 3600 + m * 60 + s
+
+    def _seconds_to_time(self, seconds: int) -> str:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        start_time = time.time()
+
+        # 初始化：应用初始延误
+        schedule = self.get_original_schedule()
+
+        # 记录每列车的当前延误
+        train_delays = {}  # train_id -> current_delay
+
+        # 应用初始延误
+        for injected in delay_injection.injected_delays:
+            train_id = injected.train_id
+            station_code = injected.location.station_code
+            initial_delay = injected.initial_delay_seconds
+
+            if train_id in schedule:
+                train_delays[train_id] = initial_delay
+
+                # 从注入站开始，后续所有站点都延误
+                train_stops = schedule[train_id]
+                found_station = False
+                for stop in train_stops:
+                    if found_station:
+                        stop["delay_seconds"] = initial_delay
+                    if stop["station_code"] == station_code:
+                        found_station = True
+                        stop["delay_seconds"] = initial_delay
+
+        # 获取所有受影响的列车，按延误时间排序（最大延误优先）
+        affected_trains = list(train_delays.keys())
+
+        # 迭代优化：尝试通过压缩停站时间来减少最大延误
+        # 使用简化的贪心策略：对于延误最大的列车，尝试利用停站冗余
+        for _ in range(3):  # 最多迭代3次
+            max_delay_train = None
+            max_delay = 0
+
+            # 找到当前最大延误的列车
+            for train_id in affected_trains:
+                if train_delays.get(train_id, 0) > max_delay:
+                    max_delay = train_delays[train_id]
+                    max_delay_train = train_id
+
+            if max_delay_train is None or max_delay == 0:
+                break
+
+            # 尝试压缩该列车的停站时间来减少延误
+            train_stops = schedule[max_delay_train]
+            recovery = 0
+
+            for stop in train_stops:
+                if stop.get("delay_seconds", 0) > 0:
+                    # 尝试压缩停站时间（简化版：假设可压缩60秒）
+                    if recovery < 60:
+                        recovery += 30  # 每次恢复30秒
+                        stop["delay_seconds"] = max(0, stop["delay_seconds"] - 30)
+
+            # 更新该列车的延误
+            train_delays[max_delay_train] = max(0, max_delay - recovery)
+
+        # 计算延误统计
+        all_delays = []
+        for train_id, stops in schedule.items():
+            for stop in stops:
+                all_delays.append(stop.get("delay_seconds", 0))
+
+        max_delay_val = max(all_delays) if all_delays else 0
+        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+        affected_count = len([t for t in affected_trains if train_delays.get(t, 0) > 0])
+
+        computation_time = time.time() - start_time
+
+        metrics = EvaluationMetrics(
+            max_delay_seconds=int(max_delay_val),
+            avg_delay_seconds=float(avg_delay),
+            total_delay_seconds=int(sum(all_delays)),
+            affected_trains_count=affected_count,
+            on_time_rate=1.0 - (affected_count / len(self.trains)) if self.trains else 1.0,
+            computation_time=computation_time
+        )
+
+        return SchedulerResult(
+            success=True,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=schedule,
+            metrics=metrics,
+            message="最大延误优先调度器：优先减少最大延误"
+        )
+
+
+class EarliestArrivalFirstSchedulerAdapter(BaseScheduler):
+    """
+    最早到站优先调度器（Earliest Arrival First）
+
+    与FCFS的区别：
+    - FCFS: 先到的列车先处理，延误会传播到后续列车
+    - EAF: 优先保证先到列车准点，**后续列车会为之前列车让行并等待**
+      （即使追踪间隔允许通过，也选择等待以保证先到列车优先）
+
+    这是一种**绝对保守**策略：确保先到列车不受后车影响
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = 180,
+        min_stop_time: int = 60,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="最早到站优先调度器", **kwargs)
+        self.headway_time = headway_time
+        self.min_stop_time = min_stop_time
+        self.station_names = {s.station_code: s.station_name for s in stations}
+        self.station_track_count = {s.station_code: s.track_count for s in stations}
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.EARLIEST_ARRIVAL
+
+    def _time_to_seconds(self, time_str: str) -> int:
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            h, m = map(int, parts)
+            return h * 3600 + m * 60
+        else:
+            h, m, s = map(int, parts)
+            return h * 3600 + m * 60 + s
+
+    def _seconds_to_time(self, seconds: int) -> str:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        start_time = time.time()
+
+        # Step 1: 获取所有列车的发车时间并排序
+        train_first_departure = []
+        for train in self.trains:
+            if train.schedule.stops:
+                first_stop = train.schedule.stops[0]
+                dep_time = self._time_to_seconds(first_stop.departure_time)
+                train_first_departure.append((train.train_id, dep_time, train))
+
+        # 按发车时间排序（最早发车的在前）
+        train_first_departure.sort(key=lambda x: x[1])
+
+        # Step 2: 初始化时刻表
+        schedule = {}
+        train_current_departure = {}  # 记录每列车的当前发车时间
+
+        for train in self.trains:
+            stops = []
+            for stop in train.schedule.stops:
+                arr_sec = self._time_to_seconds(stop.arrival_time)
+                dep_sec = self._time_to_seconds(stop.departure_time)
+                stops.append({
+                    "station_code": stop.station_code,
+                    "station_name": stop.station_name,
+                    "arrival_time": stop.arrival_time,
+                    "departure_time": stop.departure_time,
+                    "delay_seconds": 0,
+                    "arrival_seconds": arr_sec,
+                    "departure_seconds": dep_sec
+                })
+            schedule[train.train_id] = stops
+            train_current_departure[train.train_id] = dep_sec
+
+        # Step 3: 按顺序处理，**后续列车强制等待**
+        # 关键区别于FCFS：不仅满足最小间隔，还会让后续列车额外等待
+        for train_id, dep_time, train in train_first_departure:
+            # 检查该列车是否需要应用初始延误
+            for injected in delay_injection.injected_delays:
+                if injected.train_id == train_id:
+                    station_code = injected.location.station_code
+                    initial_delay = injected.initial_delay_seconds
+
+                    # 从该站开始，后续所有站点都延误
+                    train_stops = schedule[train_id]
+                    found_station = False
+                    for stop in train_stops:
+                        if found_station:
+                            stop["delay_seconds"] += initial_delay
+                            stop["arrival_seconds"] += initial_delay
+                            stop["departure_seconds"] += initial_delay
+                        if stop["station_code"] == station_code:
+                            found_station = True
+                            stop["delay_seconds"] += initial_delay
+                            stop["arrival_seconds"] += initial_delay
+                            stop["departure_seconds"] += initial_delay
+
+            # 更新该列车的当前发车时间
+            if train_id in schedule and schedule[train_id]:
+                last_stop = schedule[train_id][-1]
+                train_current_departure[train_id] = last_stop["departure_seconds"]
+
+        # Step 4: 二次处理 - 让后续列车等待先到列车
+        # 重新按发车时间排序
+        sorted_trains = sorted(train_first_departure, key=lambda x: x[1])
+
+        # 对每个车站，后续列车都要等待先到的列车
+        for station in self.stations:
+            station_code = station.station_code
+
+            # 获取该站所有列车
+            trains_at_station = []
+            for train_id, _, _ in sorted_trains:
+                if train_id in schedule:
+                    for stop in schedule[train_id]:
+                        if stop["station_code"] == station_code:
+                            trains_at_station.append({
+                                "train_id": train_id,
+                                "original_dep": self._get_original_departure(train_id, station_code),
+                                "current_dep": stop["departure_seconds"]
+                            })
+                            break
+
+            # 按原始发车时间排序
+            trains_at_station.sort(key=lambda x: x["original_dep"])
+
+            # 处理：后续列车要额外等待先到列车
+            for i in range(1, len(trains_at_station)):
+                prev_train = trains_at_station[i-1]
+                curr_train = trains_at_station[i]
+
+                prev_dep = prev_train["current_dep"]
+                curr_dep = curr_train["current_dep"]
+
+                # 计算需要的间隔（比FCFS更保守：额外增加1分钟）
+                required_interval = self.headway_time + 60
+                required_dep = prev_dep + required_interval
+
+                if curr_dep < required_dep:
+                    # 需要额外等待
+                    wait_time = required_dep - curr_dep
+
+                    # 更新该列车及其后续所有站点
+                    curr_stops = schedule[curr_train["train_id"]]
+                    found = False
+                    for stop in curr_stops:
+                        if stop["station_code"] == station_code:
+                            found = True
+                        if found:
+                            stop["departure_seconds"] += wait_time
+                            stop["arrival_seconds"] += wait_time
+                            stop["delay_seconds"] += wait_time
+
+        # Step 5: 转换时间格式并计算统计
+        for train_id in schedule:
+            for stop in schedule[train_id]:
+                stop["arrival_time"] = self._seconds_to_time(stop["arrival_seconds"])
+                stop["departure_time"] = self._seconds_to_time(stop["departure_seconds"])
+
+        all_delays = []
+        for train_id, stops in schedule.items():
+            for stop in stops:
+                all_delays.append(stop.get("delay_seconds", 0))
+
+        max_delay_val = max(all_delays) if all_delays else 0
+        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+
+        affected_count = len([d for d in all_delays if d > 0])
+
+        computation_time = time.time() - start_time
+
+        metrics = EvaluationMetrics(
+            max_delay_seconds=int(max_delay_val),
+            avg_delay_seconds=float(avg_delay),
+            total_delay_seconds=int(sum(all_delays)),
+            affected_trains_count=affected_count,
+            on_time_rate=1.0 - (affected_count / len(self.trains)) if self.trains else 1.0,
+            computation_time=computation_time
+        )
+
+        return SchedulerResult(
+            success=True,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=schedule,
+            metrics=metrics,
+            message="最早到站优先调度器：后续列车为之前列车让行（保守策略）"
+        )
+
+    def _get_original_departure(self, train_id: str, station_code: str) -> int:
+        """获取列车在车站的原始发车时间"""
+        for train in self.trains:
+            if train.train_id == train_id:
+                for stop in train.schedule.stops:
+                    if stop.station_code == station_code:
+                        return self._time_to_seconds(stop.departure_time)
+        return 0
+
+
 # 注册内置调度器
 SchedulerRegistry.register("fcfs", FCFSSchedulerAdapter)
 SchedulerRegistry.register("mip", MIPSchedulerAdapter)
 SchedulerRegistry.register("rl", ReinforcementLearningSchedulerAdapter)
 SchedulerRegistry.register("reinforcement_learning", ReinforcementLearningSchedulerAdapter)
+SchedulerRegistry.register("noop", NoOpSchedulerAdapter)
+SchedulerRegistry.register("no-op", NoOpSchedulerAdapter)
+SchedulerRegistry.register("baseline", NoOpSchedulerAdapter)
+SchedulerRegistry.register("max_delay_first", MaxDelayFirstSchedulerAdapter)
+SchedulerRegistry.register("max-delay-first", MaxDelayFirstSchedulerAdapter)
 
 
 # 测试代码

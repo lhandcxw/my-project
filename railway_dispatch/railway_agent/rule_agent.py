@@ -153,7 +153,7 @@ class RuleAgent:
     2. 操作流程生成：输出标准化的调度员操作流程
     3. 技能选择：基于场景类型选择对应的调度技能
     4. 结果返回：执行调度优化并返回结果
-    5. 调度比较：比较FCFS和MIP等多种调度方法
+    5. 调度比较：比较FCFS、MIP、基线（无调整）、最大延误优先等多种调度方法
     
     优点：
     - 无需加载大模型，启动快
@@ -462,7 +462,7 @@ class RuleAgent:
         comparison_criteria: str = "balanced"
     ) -> AgentResult:
         """
-        分析场景并执行调度比较（比较FCFS和MIP等多种调度方法）
+        分析场景并执行调度比较（比较FCFS、MIP、基线、最大延误优先等多种调度方法）
         
         Args:
             delay_injection: 延误注入数据
@@ -493,7 +493,7 @@ class RuleAgent:
 【调度方法比较】
 - 启用多调度方法比较功能
 - 比较准则：{comparison_criteria}
-- 参与比较的调度器：FCFS（先到先服务）、MIP（整数规划）
+- 参与比较的调度器：FCFS（先到先服务）、MIP（整数规划）、基线（无调整）、最大延误优先
 - 将根据综合得分选择最优方案
 """
             

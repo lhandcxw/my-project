@@ -484,33 +484,43 @@ def create_comparator(
     include_fcfs: bool = True,
     include_mip: bool = True,
     include_rl: bool = False,
+    include_noop: bool = True,
+    include_max_delay_first: bool = True,
     **kwargs
 ) -> SchedulerComparator:
     """
     创建比较器并注册调度器
-    
+
     Args:
         trains: 列车列表
         stations: 车站列表
         include_fcfs: 是否包含FCFS调度器
         include_mip: 是否包含MIP调度器
         include_rl: 是否包含强化学习调度器
+        include_noop: 是否包含基线调度器（不做调整）
+        include_max_delay_first: 是否包含最大延误优先调度器
         **kwargs: 其他参数
-    
+
     Returns:
         配置好的比较器
     """
     comparator = SchedulerComparator(trains, stations)
-    
+
     if include_fcfs:
         comparator.register_scheduler_by_name("fcfs", **kwargs)
-    
+
     if include_mip:
         comparator.register_scheduler_by_name("mip", **kwargs)
-    
+
     if include_rl:
         comparator.register_scheduler_by_name("rl", **kwargs)
-    
+
+    if include_noop:
+        comparator.register_scheduler_by_name("noop", **kwargs)
+
+    if include_max_delay_first:
+        comparator.register_scheduler_by_name("max_delay_first", **kwargs)
+
     return comparator
 
 

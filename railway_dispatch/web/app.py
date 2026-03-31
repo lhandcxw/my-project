@@ -519,7 +519,7 @@ HTML_TEMPLATE = '''
         <div id="comparison" class="tab-content">
             <div class="card">
                 <h2>📊 调度方法比较</h2>
-                <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）和MIP（整数规划）等多种调度方法，根据您的偏好选择最优方案</p>
+                <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）、MIP（整数规划）、最大延误优先、基线（无调整）等多种调度方法，根据您的偏好选择最优方案</p>
                 
                 <div class="form-group">
                     <label>比较准则</label>
@@ -1451,7 +1451,7 @@ def agent_chat_with_comparison():
 def scheduler_comparison():
     """
     调度方法比较API
-    比较FCFS、MIP等多种调度方法
+    比较FCFS、MIP、基线等多种调度方法
     """
     try:
         data = request.json
