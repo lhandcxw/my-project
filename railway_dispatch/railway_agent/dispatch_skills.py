@@ -8,12 +8,16 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 import json
 import time
+import logging
 
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.data_models import Train, Station, DelayInjection
 from solver.mip_scheduler import MIPScheduler, SolveResult
+from solver.fcfs_scheduler import FCFSScheduler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,10 +48,113 @@ class BaseDispatchSkill:
 
     def __init__(self, scheduler: MIPScheduler):
         self.scheduler = scheduler
+        # 创建FCFS调度器作为fallback
+        self.fcfs_scheduler = FCFSScheduler(
+            trains=scheduler.trains,
+            stations=scheduler.stations,
+            headway_time=scheduler.headway_time,
+            min_stop_time=scheduler.min_stop_time
+        )
 
     def _parse_delay_injection(self, delay_data: Dict[str, Any]) -> DelayInjection:
         """解析延误注入数据"""
         return DelayInjection(**delay_data)
+
+    def _solve_with_fallback(
+        self,
+        delay_obj: DelayInjection,
+        optimization_objective: str
+    ) -> SolveResult:
+        """
+        使用fallback机制求解
+
+        优先使用MIP求解，如果MIP失败（无法在合理时间内求解），
+        则自动切换到FCFS算法确保输出结果
+
+        Args:
+            delay_obj: 延误注入对象
+            optimization_objective: 优化目标
+
+        Returns:
+            SolveResult: 调度结果
+        """
+        # 首先尝试MIP求解
+        logger.info(f"尝试使用MIP求解...")
+        mip_result = self.scheduler.solve(delay_obj, optimization_objective)
+
+        if mip_result.success:
+            logger.info("MIP求解成功")
+            return mip_result
+
+        # MIP求解失败，使用FCFS作为fallback
+        logger.warning(f"MIP求解失败: {mip_result.message}，自动切换到FCFS算法")
+
+        # 创建新的FCFS调度器实例（如果需要）
+        fcfs_result = self.fcfs_scheduler.solve(delay_obj, optimization_objective)
+
+        if fcfs_result.success:
+            logger.info("FCFS fallback求解成功")
+            # 修改消息以表明这是fallback结果
+            fcfs_result.message = f"MIP求解失败，使用FCFS算法: {fcfs_result.message}"
+            return fcfs_result
+
+        # 如果FCFS也失败，返回No-Op基线结果
+        logger.error("FCFS求解也失败，返回基线结果")
+        return self._solve_baseline(delay_obj)
+
+    def _solve_baseline(self, delay_obj: DelayInjection) -> SolveResult:
+        """
+        基线求解：不做任何调整，只返回原始时刻表
+
+        Args:
+            delay_obj: 延误注入对象
+
+        Returns:
+            SolveResult: 原始时刻表
+        """
+        schedule = {}
+        all_delays = []
+
+        for train in self.scheduler.trains:
+            train_schedule = []
+            for stop in train.schedule.stops:
+                # 检查该站点是否有初始延误
+                delay_seconds = 0
+                for injected in delay_obj.injected_delays:
+                    if (injected.train_id == train.train_id and
+                        stop.station_code == injected.location.station_code):
+                        delay_seconds = injected.initial_delay_seconds
+                        break
+
+                all_delays.append(delay_seconds)
+
+                train_schedule.append({
+                    "station_code": stop.station_code,
+                    "station_name": stop.station_name,
+                    "arrival_time": stop.arrival_time,
+                    "departure_time": stop.departure_time,
+                    "original_arrival": stop.arrival_time,
+                    "original_departure": stop.departure_time,
+                    "delay_seconds": delay_seconds
+                })
+
+            schedule[train.train_id] = train_schedule
+
+        max_delay_val = max(all_delays) if all_delays else 0
+        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+
+        return SolveResult(
+            success=True,
+            optimized_schedule=schedule,
+            delay_statistics={
+                "max_delay_seconds": int(max_delay_val),
+                "avg_delay_seconds": float(avg_delay),
+                "total_delay_seconds": int(sum(all_delays)),
+                "affected_trains_count": len(set(i.train_id for i in delay_obj.injected_delays))
+            },
+            computation_time=0.0,
+            message="基线调度：MIP和FCFS均失败，返回原始时刻表"
+        )
 
     def execute(
         self,
@@ -89,8 +196,8 @@ class TemporarySpeedLimitSkill(BaseDispatchSkill):
         临时限速调度逻辑：
 
         1. 提取限速参数
-        2. 应用MIP求解调整方案
-        3. 输出最优调度方案
+        2. 使用fallback机制求解（MIP失败时自动切换到FCFS）
+        3. 输出调度方案
 
         Args:
             train_ids: 受影响列车ID列表
@@ -110,17 +217,21 @@ class TemporarySpeedLimitSkill(BaseDispatchSkill):
         speed_limit = delay_injection.get("scenario_params", {}).get("limit_speed_kmh", 200)
         affected_section = delay_injection.get("scenario_params", {}).get("affected_section", "")
 
-        # Step 3: MIP求解
-        result = self.scheduler.solve(delay_obj, optimization_objective)
+        # Step 3: 使用fallback机制求解（MIP -> FCFS -> Baseline）
+        result = self._solve_with_fallback(delay_obj, optimization_objective)
 
         computation_time = time.time() - start_time
+
+        # 判断是否使用了fallback
+        use_fallback = "FCFS" in result.message or "基线" in result.message
+        fallback_msg = " (使用FCFS算法)" if use_fallback else ""
 
         return DispatchSkillOutput(
             optimized_schedule=result.optimized_schedule,
             delay_statistics=result.delay_statistics,
             computation_time=computation_time + result.computation_time,
             success=result.success,
-            message=f"临时限速调度完成。限速值: {speed_limit}km/h, 影响区段: {affected_section}",
+            message=f"临时限速调度完成{fallback_msg}。限速值: {speed_limit}km/h, 影响区段: {affected_section}",
             skill_name=self.name
         )
 
@@ -179,7 +290,7 @@ class SuddenFailureSkill(BaseDispatchSkill):
 
         1. 识别故障列车和位置
         2. 计算故障导致的延误传播
-        3. 应用优化求解
+        3. 使用fallback机制求解（MIP失败时自动切换到FCFS）
 
         Args:
             train_ids: 受影响列车ID列表
@@ -206,29 +317,21 @@ class SuddenFailureSkill(BaseDispatchSkill):
         else:
             propagation = {}
 
-# Step 3: MIP求解
-        result = self.scheduler.solve(delay_obj, optimization_objective)
+        # Step 3: 使用fallback机制求解（MIP -> FCFS -> Baseline）
+        result = self._solve_with_fallback(delay_obj, optimization_objective)
 
         computation_time = time.time() - start_time
 
-        # 调试输出
-        if not result.success:
-            print(f"⚠️ 调度失败：{result.message}")
-        else:
-            print("✅ 优化成功，变化如下：")
-            for train_id, stops in result.optimized_schedule.items():
-                changes = [s for s in stops if s['delay_seconds'] > 0]
-                print(f"列车{train_id}：{len(changes)}个站点时刻变化")
-                for stop in stops:
-                    if stop['delay_seconds'] > 0:
-                        print(f"  车站{stop['station_code']}: {stop['original_arrival']} → {stop['arrival_time']} (延误{stop['delay_seconds']}秒)")
+        # 判断是否使用了fallback
+        use_fallback = "FCFS" in result.message or "基线" in result.message
+        fallback_msg = " (使用FCFS算法)" if use_fallback else ""
 
         return DispatchSkillOutput(
             optimized_schedule=result.optimized_schedule,
             delay_statistics=result.delay_statistics,
             computation_time=computation_time + result.computation_time,
             success=result.success,
-            message=f"突发故障调度完成。故障列车: {failure_train}, 延误传播分析: {propagation}",
+            message=f"突发故障调度完成{fallback_msg}。故障列车: {failure_train}, 延误传播分析: {propagation}",
             skill_name=self.name
         )
 

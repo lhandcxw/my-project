@@ -54,9 +54,10 @@ use_real_data(True)
 logger.info("已启用真实数据模式")
 
 # 全局数据 - 从 centralized data loader 加载
-# 加载所有列车（真实数据共147列）
+# 注意：使用真实数据时，MIP求解器对列车数量有限制（约60列内可行）
+# 这里只加载前50列列车以保证求解器可以正常工作
 all_trains = get_trains_pydantic()
-trains = all_trains  # 使用全部列车
+trains = all_trains[:50]  # 限制列车数量
 stations = get_stations_pydantic()
 station_codes = get_station_codes()
 station_names = get_station_names()
@@ -518,7 +519,7 @@ HTML_TEMPLATE = '''
         <div id="comparison" class="tab-content">
             <div class="card">
                 <h2>📊 调度方法比较</h2>
-                <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）、MIP（整数规划）、最大延误优先、基线（无调整）等多种调度方法，根据您的偏好选择最优方案</p>
+                <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）和MIP（整数规划）等多种调度方法，根据您的偏好选择最优方案</p>
                 
                 <div class="form-group">
                     <label>比较准则</label>
@@ -656,7 +657,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
@@ -723,7 +724,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
@@ -781,6 +782,7 @@ HTML_TEMPLATE = '''
             }
             
             // 显示比较结果（如果有）
+            const stats = result.delay_statistics || {};
             if (stats.ranking && stats.ranking.length > 0) {
                 showComparisonResult(stats);
             }
@@ -816,7 +818,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\\n\\\n请检查：\\\n1. 后端服务是否正常运行\\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
             });
         }
         
@@ -1450,7 +1452,7 @@ def agent_chat_with_comparison():
 def scheduler_comparison():
     """
     调度方法比较API
-    比较FCFS、MIP、基线等多种调度方法
+    比较FCFS、MIP等多种调度方法
     """
     try:
         data = request.json
@@ -1552,7 +1554,7 @@ if __name__ == '__main__':
         logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
     else:
         logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
-    logger.info("访问地址: http://localhost:8081")
+    logger.info("访问地址: http://localhost:8080")
     logger.info("按 Ctrl+C 停止服务")
     logger.info("=" * 50)
-    app.run(host='0.0.0.0', port=8081, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)

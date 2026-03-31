@@ -282,10 +282,9 @@ class FCFSScheduler:
 
                 # Step 3.2: 检查追踪间隔约束
                 # 关键：后车需要等待前车发车时间 + 追踪间隔
-                # 修正：必须等待所有已处理列车的最后发车时间 + 追踪间隔
-                # 而不是仅等待该股道的最后发车时间
-                max_last_departure = max(last_departures) if last_departures else 0
-                required_dep = max(current_dep, max_last_departure + self.headway_time)
+                # 使用所有股道中的最早可用时间（更合理的多股道处理）
+                earliest_available = min(last_departures) if last_departures else 0
+                required_dep = max(current_dep, earliest_available + self.headway_time)
                 delay_needed = required_dep - current_dep
 
                 if delay_needed > 0:
@@ -314,61 +313,67 @@ class FCFSScheduler:
             if train is None:
                 continue
 
-            stations_for_train = self._get_stations_for_train(train)
-            accumulated_recovery = 0  # 累计恢复时间
+            # 计算该列车的总延误量（用于恢复）
+            total_train_delay = 0
+            for sc in self._get_stations_for_train(train):
+                _, dep = schedule[(train_id, sc)]
+                original_dep = self._time_to_seconds(
+                    next(s.departure_time for s in train.schedule.stops if s.station_code == sc)
+                )
+                total_train_delay += max(0, dep - original_dep)
 
-            # 从延误站开始，尝试利用后续各站的停站冗余
-            for injected in delay_injection.injected_delays:
-                if injected.train_id != train_id:
-                    continue
-
-                delay_station = injected.location.station_code or "BJX"
-                try:
-                    start_idx = stations_for_train.index(delay_station)
-                except ValueError:
-                    start_idx = 0
-
-                # 从延误站开始，依次利用停站冗余
-                for i in range(start_idx, len(stations_for_train) - 1):
-                    sc = stations_for_train[i]
-                    sc_next = stations_for_train[i + 1]
-
-                    # Step 4.1: 尝试利用停站冗余
+            # 如果有延误，尝试恢复
+            if total_train_delay > 0:
+                # 计算可用的冗余时间
+                available_recovery = 0
+                for sc in self._get_stations_for_train(train)[:-1]:  # 最后一个站无法压缩
+                    # 停站冗余
                     original_duration = self._get_original_stop_duration(train, sc)
                     if original_duration > 0:
                         redundancy = self._get_stop_time_redundancy(train, sc)
-                        if redundancy > 0 and accumulated_recovery > 0:
-                            # 有累积延误，可以压缩停站
-                            recovery = min(int(redundancy * self.stop_time_redundancy_ratio), accumulated_recovery)
-                            if recovery > 0:
-                                # 压缩停站时间（在发车时间上体现）
+                        available_recovery += int(redundancy * self.stop_time_redundancy_ratio)
+
+                # 实际可恢复的时间
+                actual_recovery = min(available_recovery, total_train_delay)
+
+                # 应用恢复：压缩后续停站和区间运行时间
+                if actual_recovery > 0:
+                    remaining_recovery = actual_recovery
+                    for sc in self._get_stations_for_train(train)[:-1]:
+                        if remaining_recovery <= 0:
+                            break
+                        # 压缩停站
+                        original_duration = self._get_original_stop_duration(train, sc)
+                        if original_duration > 0:
+                            redundancy = self._get_stop_time_redundancy(train, sc)
+                            compress = min(int(redundancy * self.stop_time_redundancy_ratio), remaining_recovery)
+                            if compress > 0:
                                 arr, dep = schedule[(train_id, sc)]
-                                # 到达时间不变，压缩发车时间
-                                schedule[(train_id, sc)][1] = dep - recovery
-                                accumulated_recovery -= recovery
+                                schedule[(train_id, sc)][1] = dep - compress  # 压缩发车时间
+                                remaining_recovery -= compress
+
                                 # 后续站点同步提前
-                                for j in range(i + 1, len(stations_for_train)):
-                                    sc_j = stations_for_train[j]
-                                    arr_j, dep_j = schedule[(train_id, sc_j)]
-                                    schedule[(train_id, sc_j)] = [arr_j - recovery, dep_j - recovery]
+                                for sc_next in self._get_stations_for_train(train):
+                                    if sc == sc_next:
+                                        continue
+                                    arr_next, dep_next = schedule[(train_id, sc_next)]
+                                    schedule[(train_id, sc_next)] = [arr_next - compress, dep_next - compress]
 
-                    # Step 4.2: 尝试利用区间运行冗余
-                    original_running = self._get_original_section_time(sc, sc_next)
-                    min_running = self._get_min_section_time(sc, sc_next)
-                    section_redundancy = original_running - min_running
+                    # 压缩区间运行时间
+                    for i, sc in enumerate(self._get_stations_for_train(train)[:-1]):
+                        if remaining_recovery <= 0:
+                            break
+                        sc_next = self._get_stations_for_train(train)[i + 1]
+                        original_running = self._get_original_section_time(sc, sc_next)
+                        min_running = self._get_min_section_time(sc, sc_next)
+                        section_redundancy = original_running - min_running
 
-                    if section_redundancy > 0 and accumulated_recovery > 0:
-                        # 可以加速通过该区间
-                        recovery = min(int(section_redundancy * self.running_time_redundancy_ratio), accumulated_recovery)
-                        if recovery > 0:
-                            # 减少区间运行时间（到发时间都提前）
-                            arr_next, dep_next = schedule[(train_id, sc_next)]
-                            schedule[(train_id, sc_next)][0] = arr_next - recovery
-                            schedule[(train_id, sc_next)][1] = dep_next - recovery
-                            accumulated_recovery -= recovery
-
-                # 计算该列车的最终延误，看能否利用冗余恢复
-                # （简化版：这里只是标记，实际恢复逻辑较复杂）
+                        if section_redundancy > 0:
+                            compress = min(int(section_redundancy * self.running_time_redundancy_ratio), remaining_recovery)
+                            if compress > 0:
+                                arr_next, dep_next = schedule[(train_id, sc_next)]
+                                schedule[(train_id, sc_next)] = [arr_next - compress, dep_next - compress]
+                                remaining_recovery -= compress
 
         # Step 5: 构建最终结果
         optimized_schedule = {}
