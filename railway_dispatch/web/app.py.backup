@@ -78,7 +78,7 @@ qwen_agent = None
 #   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
 #   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
 #   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "rule"  # 默认使用规则模式，跑通流程后再切换为"qwen"
+AGENT_MODE = "qwen"  # 默认使用规则模式，跑通流程后再切换为"qwen"
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
 # 例如: "Qwen3.5-4B"
@@ -657,7 +657,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
@@ -724,7 +724,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\n\n请检查：\n1. 后端服务是否正常运行\n2. 浏览器控制台是否有更多错误信息');
             });
         }
 
@@ -782,6 +782,7 @@ HTML_TEMPLATE = '''
             }
             
             // 显示比较结果（如果有）
+            const stats = result.delay_statistics || {};
             if (stats.ranking && stats.ranking.length > 0) {
                 showComparisonResult(stats);
             }
@@ -817,7 +818,7 @@ HTML_TEMPLATE = '''
             .catch(error => {
                 document.getElementById('dispatchLoading').style.display = 'none';
                 console.error('请求失败:', error);
-                alert('请求失败: ' + error.message + '\\\n\\\n请检查：\\\n1. 后端服务是否正常运行\\\n2. 浏览器控制台是否有更多错误信息');
+                alert('请求失败: ' + error.message + '\\n\\n请检查：\\n1. 后端服务是否正常运行\\n2. 浏览器控制台是否有更多错误信息');
             });
         }
         
@@ -1553,7 +1554,7 @@ if __name__ == '__main__':
         logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
     else:
         logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
-    logger.info("访问地址: http://localhost:8081")
+    logger.info("访问地址: http://localhost:8080")
     logger.info("按 Ctrl+C 停止服务")
     logger.info("=" * 50)
-    app.run(host='0.0.0.0', port=8081, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)

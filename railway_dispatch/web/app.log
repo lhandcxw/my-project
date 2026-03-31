@@ -1,0 +1,190 @@
+2026-03-30 22:31:39,955 - __main__ - INFO - 已启用真实数据模式
+2026-03-30 22:31:40,045 - __main__ - INFO - ==================================================
+2026-03-30 22:31:40,045 - __main__ - INFO - 铁路调度Agent系统 v1.0
+2026-03-30 22:31:40,045 - __main__ - INFO - ==================================================
+2026-03-30 22:31:40,045 - __main__ - INFO - Agent模式: qwen
+2026-03-30 22:31:40,045 - __main__ - INFO - 使用Qwen Agent，模型路径: /data/wls/test-agent/Qwen3.5-4B
+2026-03-30 22:31:40,045 - __main__ - INFO - 访问地址: http://localhost:8081
+2026-03-30 22:31:40,045 - __main__ - INFO - 按 Ctrl+C 停止服务
+2026-03-30 22:31:40,045 - __main__ - INFO - ==================================================
+ * Serving Flask app 'app'
+ * Debug mode: on
+2026-03-30 22:31:40,060 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.118:8081
+2026-03-30 22:31:40,060 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-03-30 22:31:40,065 - werkzeug - INFO -  * Restarting with watchdog (inotify)
+2026-03-30 22:31:41,469 - __main__ - INFO - 已启用真实数据模式
+2026-03-30 22:31:41,628 - __main__ - INFO - ==================================================
+2026-03-30 22:31:41,628 - __main__ - INFO - 铁路调度Agent系统 v1.0
+2026-03-30 22:31:41,628 - __main__ - INFO - ==================================================
+2026-03-30 22:31:41,628 - __main__ - INFO - Agent模式: qwen
+2026-03-30 22:31:41,628 - __main__ - INFO - 使用Qwen Agent，模型路径: /data/wls/test-agent/Qwen3.5-4B
+2026-03-30 22:31:41,628 - __main__ - INFO - 访问地址: http://localhost:8081
+2026-03-30 22:31:41,628 - __main__ - INFO - 按 Ctrl+C 停止服务
+2026-03-30 22:31:41,628 - __main__ - INFO - ==================================================
+2026-03-30 22:31:41,641 - werkzeug - WARNING -  * Debugger is active!
+2026-03-30 22:31:41,662 - werkzeug - INFO -  * Debugger PIN: 127-969-045
+2026-03-30 22:38:44,531 - werkzeug - INFO -  * Detected change in '/data/wls/test-agent/railway_dispatch/web/app.py', reloading
+2026-03-30 22:38:44,534 - werkzeug - INFO -  * Detected change in '/data/wls/test-agent/railway_dispatch/web/app.py', reloading
+2026-03-30 22:38:44,534 - werkzeug - INFO -  * Detected change in '/data/wls/test-agent/railway_dispatch/web/app.py', reloading
+2026-03-30 22:38:45,913 - werkzeug - INFO -  * Restarting with watchdog (inotify)
+2026-03-30 22:38:47,371 - __main__ - INFO - 已启用真实数据模式
+2026-03-30 22:38:47,531 - __main__ - INFO - ==================================================
+2026-03-30 22:38:47,532 - __main__ - INFO - 铁路调度Agent系统 v1.0
+2026-03-30 22:38:47,532 - __main__ - INFO - ==================================================
+2026-03-30 22:38:47,532 - __main__ - INFO - Agent模式: rule
+2026-03-30 22:38:47,532 - __main__ - INFO - 使用固定规则Agent，无需加载大模型
+2026-03-30 22:38:47,532 - __main__ - INFO - 访问地址: http://localhost:8081
+2026-03-30 22:38:47,532 - __main__ - INFO - 按 Ctrl+C 停止服务
+2026-03-30 22:38:47,532 - __main__ - INFO - ==================================================
+2026-03-30 22:38:47,550 - werkzeug - WARNING -  * Debugger is active!
+2026-03-30 22:38:47,579 - werkzeug - INFO -  * Debugger PIN: 127-969-045
+2026-03-31 09:52:48,128 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:52:48] "GET / HTTP/1.1" 200 -
+2026-03-31 09:52:53,170 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:52:53] "GET / HTTP/1.1" 200 -
+2026-03-31 09:53:04,181 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:53:04] "GET / HTTP/1.1" 200 -
+2026-03-31 09:56:08,247 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:56:08] "GET / HTTP/1.1" 200 -
+2026-03-31 09:56:14,402 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:56:14] "GET / HTTP/1.1" 200 -
+2026-03-31 09:56:58,215 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:56:58] "GET / HTTP/1.1" 200 -
+2026-03-31 09:56:58,366 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:56:58] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-03-31 09:57:24,163 - __main__ - INFO - 收到agent_chat请求，prompt: G1563列车在石家庄站因遭遇大风预计延误10分钟...
+2026-03-31 09:57:24,163 - __main__ - INFO - 使用RuleAgent模式（固定规则，无需大模型）
+2026-03-31 09:57:24,167 - railway_agent.tool_registry - INFO - 调度比较技能初始化完成
+2026-03-31 09:57:24,168 - railway_agent.rule_agent - INFO - RuleAgent 初始化完成（固定规则模式）
+2026-03-31 09:57:24,168 - __main__ - INFO - RuleAgent 初始化完成
+2026-03-31 09:57:24,169 - __main__ - INFO - 解析后的延误注入: temporary_speed_limit, 列车: ['G1563']
+Welcome to the CBC MILP Solver 
+Version: 2.10.3 
+Build Date: Dec 15 2019 
+
+command line - /data/wls/.local/lib/python3.8/site-packages/pulp/apis/../solverdir/cbc/linux/i64/cbc /tmp/72de3053462d4cdb9e561426d2edc180-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/72de3053462d4cdb9e561426d2edc180-pulp.sol (default strategy 1)
+At line 2 NAME          MODEL
+At line 3 ROWS
+At line 3276 COLUMNS
+At line 11101 RHS
+At line 14373 BOUNDS
+At line 15755 ENDATA
+Problem MODEL has 3271 rows, 1381 columns and 5061 elements
+Coin0008I MODEL read with 0 errors
+Option for timeMode changed from cpu to elapsed
+Continuous objective value is 600 - 0.07 seconds
+Cgl0003I 0 fixed, 736 tightened bounds, 0 strengthened rows, 0 substitutions
+Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
+Cbc3007W No integer variables - nothing to do
+Cuts at root node changed objective from 600 to -1.79769e+308
+Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+
+Result - Optimal solution found
+
+Objective value:                600.00000000
+Enumerated nodes:               0
+Total iterations:               0
+Time (CPU seconds):             0.09
+Time (Wallclock seconds):       0.11
+
+Option for printingOptions changed from normal to all
+Total time (CPU seconds):       0.11   (Wallclock seconds):       0.13
+
+2026-03-31 09:57:24,474 - __main__ - INFO - Agent分析成功，返回结果
+2026-03-31 09:57:24,491 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:57:24] "POST /api/agent_chat HTTP/1.1" 200 -
+2026-03-31 09:57:30,030 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:57:30] "POST /api/diagram HTTP/1.1" 200 -
+2026-03-31 09:57:32,567 - __main__ - INFO - 收到带比较的agent_chat请求，prompt: G1563列车在石家庄站因遭遇大风预计延误10分钟...
+2026-03-31 09:57:32,567 - __main__ - INFO - 解析后的延误注入: temporary_speed_limit, 列车: ['G1563']
+2026-03-31 09:57:32,569 - scheduler_comparison.comparator - INFO - 执行调度器: FCFS调度器
+2026-03-31 09:57:32,597 - scheduler_comparison.comparator - INFO - 执行调度器: MIP调度器
+Welcome to the CBC MILP Solver 
+Version: 2.10.3 
+Build Date: Dec 15 2019 
+
+command line - /data/wls/.local/lib/python3.8/site-packages/pulp/apis/../solverdir/cbc/linux/i64/cbc /tmp/2a37f113429647d59fcf4b220397b3aa-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/2a37f113429647d59fcf4b220397b3aa-pulp.sol (default strategy 1)
+At line 2 NAME          MODEL
+At line 3 ROWS
+At line 3276 COLUMNS
+At line 11101 RHS
+At line 14373 BOUNDS
+At line 15755 ENDATA
+Problem MODEL has 3271 rows, 1381 columns and 5061 elements
+Coin0008I MODEL read with 0 errors
+Option for timeMode changed from cpu to elapsed
+Continuous objective value is 600 - 0.06 seconds
+Cgl0003I 0 fixed, 736 tightened bounds, 0 strengthened rows, 0 substitutions
+Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
+Cbc3007W No integer variables - nothing to do
+Cuts at root node changed objective from 600 to -1.79769e+308
+Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+
+Result - Optimal solution found
+
+Objective value:                600.00000000
+Enumerated nodes:               0
+Total iterations:               0
+Time (CPU seconds):             0.07
+Time (Wallclock seconds):       0.08
+
+Option for printingOptions changed from normal to all
+Total time (CPU seconds):       0.09   (Wallclock seconds):       0.10
+
+2026-03-31 09:57:32,860 - __main__ - INFO - Agent比较分析成功，返回结果
+2026-03-31 09:57:32,876 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:57:32] "POST /api/agent_chat_with_comparison HTTP/1.1" 200 -
+2026-03-31 09:57:38,200 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:57:38] "POST /api/diagram HTTP/1.1" 200 -
+2026-03-31 09:57:59,554 - __main__ - INFO - 收到带比较的agent_chat请求，prompt: G1563列车在石家庄站因遭遇大风预计延误10分钟...
+2026-03-31 09:57:59,554 - __main__ - INFO - 解析后的延误注入: temporary_speed_limit, 列车: ['G1563']
+2026-03-31 09:57:59,556 - scheduler_comparison.comparator - INFO - 执行调度器: FCFS调度器
+2026-03-31 09:57:59,578 - scheduler_comparison.comparator - INFO - 执行调度器: MIP调度器
+Welcome to the CBC MILP Solver 
+Version: 2.10.3 
+Build Date: Dec 15 2019 
+
+command line - /data/wls/.local/lib/python3.8/site-packages/pulp/apis/../solverdir/cbc/linux/i64/cbc /tmp/d55571d57ad447bcae6568be8c3adfee-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/d55571d57ad447bcae6568be8c3adfee-pulp.sol (default strategy 1)
+At line 2 NAME          MODEL
+At line 3 ROWS
+At line 3276 COLUMNS
+At line 11101 RHS
+At line 14373 BOUNDS
+At line 15755 ENDATA
+Problem MODEL has 3271 rows, 1381 columns and 5061 elements
+Coin0008I MODEL read with 0 errors
+Option for timeMode changed from cpu to elapsed
+Continuous objective value is 600 - 0.05 seconds
+Cgl0003I 0 fixed, 736 tightened bounds, 0 strengthened rows, 0 substitutions
+Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
+Cbc3007W No integer variables - nothing to do
+Cuts at root node changed objective from 600 to -1.79769e+308
+Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+
+Result - Optimal solution found
+
+Objective value:                600.00000000
+Enumerated nodes:               0
+Total iterations:               0
+Time (CPU seconds):             0.07
+Time (Wallclock seconds):       0.07
+
+Option for printingOptions changed from normal to all
+Total time (CPU seconds):       0.09   (Wallclock seconds):       0.09
+
+2026-03-31 09:57:59,840 - __main__ - INFO - Agent比较分析成功，返回结果
+2026-03-31 09:57:59,857 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:57:59] "POST /api/agent_chat_with_comparison HTTP/1.1" 200 -
+2026-03-31 09:58:05,092 - werkzeug - INFO - 127.0.0.1 - - [31/Mar/2026 09:58:05] "POST /api/diagram HTTP/1.1" 200 -
