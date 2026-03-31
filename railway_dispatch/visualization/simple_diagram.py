@@ -62,14 +62,7 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
     # 车站顺序：BJX在最下面，AYD在最上面
     station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
 
-<<<<<<< HEAD
-    # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
-    # 只保留实际出现的车站，但按正确顺序排列
-    station_codes = [code for code in STATION_ORDER if code in station_codes]
-    print(f"车站列表（已排序）: {station_codes}")
-=======
     logger.debug(f"车站列表: {station_codes}")
->>>>>>> 860e9e3d031984e9febd5d412e3f4e6a48ca0914
 
     # ========== 2. 确定时间范围 ==========
     all_times = []
@@ -277,22 +270,9 @@ def create_comparison_diagram(original_trains: List[Dict], optimized_trains: Lis
 
 def _draw_single_diagram(ax, trains: List[Dict], title: str):
     """绘制单幅运行图（内部函数）"""
-<<<<<<< HEAD
-    # ========== 1. 提取车站列表 ==========
-    station_codes = []
-    for train in trains:
-        for stop in train['schedule']['stops']:
-            if stop['station_code'] not in station_codes:
-                station_codes.append(stop['station_code'])
-                
-    # 按预定义顺序排列（从下到上是BJX, DJK, ZBD, GBD, XSD, BDD, DZD, ZDJ, SJP, GYX, XTD, HDD, AYD）
-    # 只保留实际出现的车站，但按正确顺序排列
-    station_codes = [code for code in STATION_ORDER if code in station_codes]
-=======
     # ========== 1. 使用固定车站顺序（从BJX开始，从下到上） ==========
     # 车站顺序：BJX在最下面，AYD在最上面
     station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
->>>>>>> 860e9e3d031984e9febd5d412e3f4e6a48ca0914
 
     # ========== 2. 确定时间范围 ==========
     all_times = []

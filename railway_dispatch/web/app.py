@@ -78,7 +78,7 @@ qwen_agent = None
 #   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
 #   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
 #   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "qwen"  # 默认使用规则模式，跑通流程后再切换为"qwen"
+AGENT_MODE = "rule"  # 默认使用规则模式，跑通流程后再切换为"qwen"
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
 # 例如: "Qwen3.5-4B"
