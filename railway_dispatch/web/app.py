@@ -77,7 +77,7 @@ qwen_agent = None
 #   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
 #   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
 #   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "qwen"  # 默认使用规则模式，跑通流程后再切换为"qwen"
+AGENT_MODE = "rule"  # 默认使用规则模式，跑通流程后再切换为"qwen"
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
 # 例如: "Qwen3.5-4B"
@@ -1535,6 +1535,50 @@ def scheduler_comparison():
     
     except Exception as e:
         logger.exception(f"调度比较异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+# 导入工作流引擎
+from railway_agent.workflow_engine import run_workflow
+
+
+@app.route('/api/workflow_debug', methods=['POST'])
+def workflow_debug():
+    """
+    工作流调试接口（Phase B）
+    用于测试工作流骨架的 dry-run 模式
+    """
+    try:
+        data = request.json
+
+        if not data:
+            return jsonify({
+                "success": False,
+                "message": "请提供JSON输入"
+            })
+
+        # 调用工作流引擎（dry-run模式）
+        result = run_workflow(data, dry_run=True)
+
+        # 构建响应
+        response = {
+            "success": result.success,
+            "scene_spec": result.scene_spec.model_dump() if result.scene_spec else None,
+            "task_plan": result.task_plan.model_dump() if result.task_plan else None,
+            "debug_trace": result.debug_trace,
+            "message": result.message
+        }
+
+        if result.error:
+            response["error"] = result.error
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.exception(f"workflow_debug处理异常: {str(e)}")
         return jsonify({
             "success": False,
             "message": str(e)
