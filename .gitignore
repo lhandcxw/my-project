@@ -1,76 +1,39 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Model files (大模型文件不应提交)
-*.safetensors
-*.safetensors.*
+# ====================== 适配你项目的专属忽略规则 ======================
+# 1. 大模型/权重（核心！models文件夹整个忽略，防止大文件被提交）
+railway_dispatch/models/
 *.bin
-*.pt
+*.safetensors
 *.pth
 *.ckpt
+*.pt
 *.h5
-*.onnx
-Qwen3.5-4B/
-*/models/--/
-*/checkpoints/
 
-# Data files (大数据文件)
-*.csv
-*.json
-!data/station_alias.json
-!data/stations.json
-!data/trains.json
-!data/scenarios/*.json
-!data/knowledge/*.json
+# 2. 大数据集（data文件夹，若有大文件直接忽略；如需部分上传可单独调整规则）
+railway_dispatch/data/
 
-# Logs
+# 3. IDE/工具本地配置（无需提交）
+.comate/
+.idea/
+.vscode/
+*.iml
+
+# 4. Python虚拟环境/缓存
+venv/
+__pycache__/
+*.pyc
+.env
 *.log
-logs/
+*.tmp
 
-# OS
+# 5. 系统垃圾文件
 .DS_Store
 Thumbs.db
 
-# Jupyter
-.ipynb_checkpoints/
+# 6. 大文档/压缩包（防止误提交）
+*.docx
+*.zip
+*.rar
+*.7z
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Temporary files
-*.tmp
-*.bak
-*.cache
+# 7. 可选：ms-agent文件夹（若为本地测试目录，无需提交则取消注释）
+# ms-agent/
