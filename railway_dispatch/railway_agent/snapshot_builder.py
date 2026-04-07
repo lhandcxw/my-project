@@ -130,6 +130,8 @@ class SnapshotBuilder:
         Returns:
             (window_start: str, window_end: str)
         """
+        from datetime import timedelta
+        
         # 使用 event_time 作为窗口开始
         window_start = canonical_request.event_time or datetime.now().isoformat()
         
@@ -137,10 +139,14 @@ class SnapshotBuilder:
         duration = canonical_request.expected_duration_minutes or 60
         try:
             start_dt = datetime.fromisoformat(window_start)
-            end_dt = start_dt.replace(minute=start_dt.minute + duration + 30)  # 加30分钟缓冲
+            # 使用 timedelta 正确计算时间，避免分钟溢出
+            end_dt = start_dt + timedelta(minutes=duration + 30)  # 加30分钟缓冲
             window_end = end_dt.isoformat()
-        except:
-            window_end = window_start  # 回退
+        except Exception as e:
+            logger.warning(f"时间窗口计算失败: {e}，使用默认窗口")
+            # 回退：使用当前时间+90分钟
+            end_dt = datetime.now() + timedelta(minutes=90)
+            window_end = end_dt.isoformat()
         
         return window_start, window_end
     

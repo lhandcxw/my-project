@@ -37,6 +37,7 @@ from models.workflow_models import (
     RankingResult,
     StructuredOutput
 )
+from models.common_enums import scene_code_to_label, fault_code_to_label
 
 logger = logging.getLogger(__name__)
 
@@ -368,25 +369,28 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
     """
     logger.info("========== 第一层：数据建模层 (LLM辅助+RAG) ==========")
 
-    # 如果有L0预处理的结果，直接使用
-    if canonical_request and canonical_request.scene_category:
-        logger.info(f"使用L0预处理结果: scene_category={canonical_request.scene_category}")
+        # 如果有L0预处理的结果，直接使用
+    if canonical_request and canonical_request.scene_type_code:
+        scene_label = canonical_request.scene_type_label or "临时限速"
+        logger.info(f"使用L0预处理结果: scene_type_code={canonical_request.scene_type_code}, label={scene_label}")
         accident_card = AccidentCard(
-            fault_type=canonical_request.fault_type or "未知",
-            scene_category=canonical_request.scene_category,
-            start_time=canonical_request.start_time,
-            expected_duration=canonical_request.expected_duration,
-            affected_section=canonical_request.affected_section,
-            location_code=canonical_request.location_code,
-            location_name=canonical_request.location_name,
-            is_complete=True,
-            missing_fields=[]
+            fault_type=fault_code_to_label(canonical_request.fault_type) if canonical_request.fault_type else "未知",
+            scene_category=scene_label,
+            start_time=datetime.fromisoformat(canonical_request.event_time) if canonical_request.event_time else None,
+            expected_duration=(canonical_request.reported_delay_seconds or 0) / 60 if canonical_request.reported_delay_seconds else None,
+            affected_section=f"{canonical_request.location.station_code}-{canonical_request.location.station_code}" if canonical_request.location and canonical_request.location.station_code else "",
+            location_code=canonical_request.location.station_code if canonical_request.location else "",
+            location_name=canonical_request.location.station_name if canonical_request.location else "",
+            affected_train_ids=canonical_request.affected_train_ids or [],
+            is_complete=canonical_request.completeness.can_enter_solver if canonical_request.completeness else False,
+            missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
         )
         
         # 确定性逻辑构建NetworkSnapshot
+        location_code = canonical_request.location.station_code if canonical_request.location else ""
         network_snapshot = _build_network_snapshot_deterministic(
-            canonical_request.location_code,
-            canonical_request.affected_section,
+            location_code,
+            accident_card.affected_section,
             snapshot_info
         )
         
@@ -515,18 +519,89 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
         affected_train_ids = acc_card_data.get("affected_train_ids", [])
         reported_delay = acc_card_data.get("reported_delay_minutes")
         
-        accident_card = AccidentCard(
-            fault_type=acc_card_data.get("fault_type", "未知"),
-            scene_category=acc_card_data.get("scene_category", "临时限速"),
-            start_time=datetime.fromisoformat(acc_card_data.get("start_time", "2024-01-15T10:00:00")) if acc_card_data.get("start_time") else None,
-            expected_duration=reported_delay or acc_card_data.get("expected_duration"),
-            affected_section=acc_card_data.get("affected_section", ""),
-            location_code=acc_card_data.get("location_code", ""),
-            location_name=acc_card_data.get("location_name", ""),
-            affected_train_ids=affected_train_ids,
-            is_complete=acc_card_data.get("is_complete", False),
-            missing_fields=acc_card_data.get("missing_fields", [])
+        # 将 scene_type_code 转换为中文场景类别
+        scene_type_mapping = {
+            "TEMP_SPEED_LIMIT": "临时限速",
+            "SUDDEN_FAILURE": "突发故障",
+            "SECTION_INTERRUPT": "区间封锁"
+        }
+        scene_category = scene_type_mapping.get(
+            canonical_request.scene_type_code.value if canonical_request.scene_type_code else None,
+            "临时限速"
         )
+
+        # 将 fault_type 转换为中文
+        fault_type_mapping = {
+            "RAIN": "暴雨",
+            "WIND": "大风",
+            "SNOW": "降雪",
+            "EQUIPMENT_FAILURE": "设备故障",
+            "SIGNAL_FAILURE": "信号故障",
+            "CATENARY_FAILURE": "接触网故障",
+            "TRACK_CONDITION": "线路条件",
+            "MANUAL_RESTRICTION": "人工限速",
+            "DELAY": "延误",
+            "UNKNOWN": "未知"
+        }
+        fault_type = fault_type_mapping.get(
+            canonical_request.fault_type.value if canonical_request.fault_type else None,
+            "暴雨"
+        )
+
+        # 从 location 提取位置信息
+        location_code = canonical_request.location.station_code if canonical_request.location else ""
+        location_name = canonical_request.location.station_name if canonical_request.location else ""
+
+        # 构建 affected_section
+        if location_code:
+            affected_section = f"{location_code}-{location_code}"
+        else:
+            affected_section = ""
+
+            # 从 scene_type_code 映射到中文场景类别
+            scene_category_map = {
+                "TEMP_SPEED_LIMIT": "临时限速",
+                "SUDDEN_FAILURE": "突发故障",
+                "SECTION_INTERRUPT": "区间封锁"
+            }
+            scene_category = scene_category_map.get(
+                canonical_request.scene_type_code.value if canonical_request.scene_type_code else None,
+                "临时限速"
+            )
+
+            # 从 fault_type 映射到中文故障类型
+            fault_type_map = {
+                "RAIN": "暴雨",
+                "WIND": "大风",
+                "SNOW": "降雪",
+                "EQUIPMENT_FAILURE": "设备故障",
+                "SIGNAL_FAILURE": "信号故障",
+                "CATENARY_FAILURE": "接触网故障"
+            }
+            fault_type = fault_type_map.get(
+                canonical_request.fault_type.value if canonical_request.fault_type else None,
+                "未知"
+            )
+
+            # 获取位置信息
+            location_code = canonical_request.location.station_code if canonical_request.location else None
+            location_name = canonical_request.location.station_name if canonical_request.location else None
+
+            # 计算 affected_section
+            affected_section = ""
+            if location_code:
+                affected_section = f"{location_code}-{location_code}"
+
+            accident_card = AccidentCard(
+                fault_type=fault_type,
+                scene_category=scene_category,
+                affected_section=affected_section,
+                location_code=location_code or "",
+                location_name=location_name or "",
+                affected_train_ids=canonical_request.affected_train_ids or [],
+                is_complete=canonical_request.completeness.can_enter_solver if canonical_request.completeness else False,
+                missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
+            )
 
         # 使用确定性逻辑构建NetworkSnapshot（不是LLM生成）
         network_snapshot = _build_network_snapshot_deterministic(
@@ -698,6 +773,7 @@ def layer2_planner(
 
         result = json.loads(json_str)
         logger.info(f"第二层解析结果keys: {result.keys()}")
+        print(f"DEBUG: result = {result}")  # 添加print以确保输出
 
         # 提取 planning_intent
         planning_intent = result.get("planning_intent", "")
@@ -721,11 +797,14 @@ def layer2_planner(
         # 如果 LLM 返回的是旧格式 {"主技能": "noop_scheduler", "reasoning": "..."}
         # 需要根据 scene_category 修正为正确的求解器
         # 临时限速场景应使用 mip_scheduler
-        
+
         # 如果 LLM 已经返回了 skill_dispatch，使用它的选择
-        if "主技能" in result:
+        # 注意：主技能可能在 result["skill_dispatch"]["主技能"] 或 result["主技能"]
+        skill_dispatch_result = result.get("skill_dispatch", {})
+
+        if "主技能" in skill_dispatch_result:
             # 使用 LLM 返回的求解器
-            main_skill = result.get("主技能", "mip_scheduler")
+            main_skill = skill_dispatch_result.get("主技能", "mip_scheduler")
 
             # 根据场景类型强制修正（因为 LLM 经常返回错误的求解器）
             scene = accident_card.scene_category
@@ -743,18 +822,30 @@ def layer2_planner(
             elif scene == "区间封锁":
                 logger.warning(f"区间封锁场景强制使用noop_scheduler（原LLM返回: {main_skill}）")
                 main_skill = "noop_scheduler"
-            
+
             logger.info(f"[DEBUG L2] 最终主技能: {main_skill}")
-            
+
+            # 如果 planning_intent 为空，根据 scene 类型设置默认的 planning_intent
+            if not planning_intent:
+                if scene == "临时限速":
+                    planning_intent = "recalculate_corridor_schedule"
+                elif scene == "突发故障":
+                    planning_intent = "recover_from_disruption"
+                elif scene == "区间封锁":
+                    planning_intent = "handle_section_block"
+                else:
+                    planning_intent = "recalculate_corridor_schedule"  # 默认
+
+            # 构建 skill_dispatch（使用修正后的 main_skill）
             skill_dispatch = {
-                "是否进入技能求解": result.get("是否进入技能求解", True),
+                "是否进入技能求解": True,
                 "主技能": main_skill,
-                "辅助技能": result.get("辅助技能", []),
-                "调用顺序": result.get("调用顺序", [main_skill]),
-                "阻塞项": result.get("阻塞项", []),
-                "需补充信息": result.get("需补充信息", [])
+                "辅助技能": skill_dispatch_result.get("辅助技能", []),
+                "调用顺序": skill_dispatch_result.get("调用顺序", [main_skill]),
+                "阻塞项": skill_dispatch_result.get("阻塞项", []),
+                "需补充信息": skill_dispatch_result.get("需补充信息", [])
             }
-        else:
+        elif "主技能" in result:
             # 没有 skill_dispatch，根据 planning_intent 映射
             skill_dispatch = {
                 "是否进入技能求解": True,
@@ -872,17 +963,28 @@ def layer3_solver_execution(
         else:
             solver = MIPSolverAdapter()  # 默认
 
+    # 构建求解器请求 - 正确构造 InjectedDelay 对象
+    # 从 accident_card.affected_train_ids 获取受影响的列车，如果没有则使用默认列车
+    affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1215"]
+    location_code = accident_card.location_code if accident_card.location_code else "SJP"
+    delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else 600
+
+    injected_delays = []
+    for train_id in affected_trains:
+        injected_delays.append({
+            "train_id": train_id,
+            "location": {"location_type": "station", "station_code": location_code},
+            "initial_delay_seconds": delay_seconds,
+            "timestamp": "2024-01-15T10:00:00"
+        })
+
     # 构建求解器请求
     solver_request = SolverRequest(
         scene_type=accident_card.scene_category,
         scene_id="llm_workflow_001",
         trains=trains,
         stations=stations,
-        injected_delays=[{
-            "train_id": network_snapshot.trains[0].get("train_id") if network_snapshot.trains else "G1215",
-            "location": {"station_code": accident_card.location_code},
-            "initial_delay_seconds": 600
-        }],
+        injected_delays=injected_delays,
         solver_config={},
         metadata={
             "accident_card": accident_card.model_dump(),
@@ -1277,7 +1379,23 @@ def run_llm_workflow(
         # 构建SolverResult
         solver_result = None
         if solver_response:
-            schedule = solver_response.schedule
+            # 处理 solver_response 可能是 dict 或 SolverResponse 对象的情况
+            if isinstance(solver_response, dict):
+                # 从字典提取数据
+                schedule = solver_response.get("schedule", {})
+                success = solver_response.get("success", False)
+                metrics = solver_response.get("metrics", {})
+                solving_time = solver_response.get("solving_time_seconds", 0)
+                solver_type = solver_response.get("solver_type", "unknown")
+            else:
+                # 从 SolverResponse 对象提取数据
+                schedule = solver_response.schedule
+                success = solver_response.success
+                metrics = solver_response.metrics
+                solving_time = solver_response.solving_time_seconds
+                solver_type = solver_response.solver_type
+            
+            # 转换 schedule 格式
             if isinstance(schedule, dict):
                 schedule_list = []
                 for train_id, stops in schedule.items():
@@ -1287,11 +1405,11 @@ def run_llm_workflow(
                 schedule = schedule_list
 
             solver_result = SolverResult(
-                success=solver_response.success,
+                success=success,
                 schedule=schedule if isinstance(schedule, list) else [],
-                metrics=solver_response.metrics,
-                solving_time_seconds=solver_response.solving_time_seconds,
-                solver_type=solver_response.solver_type
+                metrics=metrics,
+                solving_time_seconds=solving_time,
+                solver_type=solver_type
             )
 
         # 判断最终结果
