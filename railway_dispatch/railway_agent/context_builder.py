@@ -4,9 +4,12 @@
 负责从原始输入构建场景规格和调度上下文
 """
 
+import logging
 from typing import Optional, List, Dict, Any
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from models.workflow_models import (
     SceneSpec,
@@ -63,13 +66,29 @@ def build_dispatch_context(
 
     Args:
         scene_spec: 场景规格
-        trains: 列车数据列表（可选）
-        stations: 车站数据列表（可选）
+        trains: 列车数据列表（可选，未提供时自动加载真实数据）
+        stations: 车站数据列表（可选，未提供时自动加载真实数据）
         data_loader: 数据加载器（可选）
 
     Returns:
         DispatchContext: 调度上下文对象
     """
+    # 如果没有传入 trains/stations，自动加载真实数据
+    if trains is None or stations is None:
+        try:
+            from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
+            # 确保使用真实数据模式
+            use_real_data(True)
+
+            if trains is None:
+                trains = get_trains_pydantic()
+            if stations is None:
+                stations = get_stations_pydantic()
+
+            logger.info(f"Auto-loaded real data: {len(trains)} trains, {len(stations)} stations")
+        except Exception as e:
+            logger.warning(f"Failed to auto-load data: {e}")
+
     # 处理列车数据
     trains_data = []
     if trains is not None:
@@ -156,36 +175,79 @@ def identify_affected_trains(
             "message": "没有列车数据，无法识别受影响列车"
         }
 
-    # 基于场景类型的简单规则
-    if scene_type == SceneType.TEMPORARY_SPEED_LIMIT.value:
-        # 临时限速：根据位置信息简单匹配
-        limit_section = location.get("section", "")
+    # 从 injected_delays 中提取受影响列车
+    injected_delays = dispatch_context.metadata.get("injected_delays", [])
+    if injected_delays:
+        # 从 injected_delays 获取受影响的列车ID
+        affected_train_ids = set()
+        for delay in injected_delays:
+            if isinstance(delay, dict):
+                train_id = delay.get("train_id", "")
+                if train_id:
+                    affected_train_ids.add(train_id)
+
+        # 过滤出实际受影响的列车
         for train in dispatch_context.trains:
-            # 简单规则：所有列车都可能受影响
+            # 兼容 Pydantic 对象和字典格式
+            train_id = getattr(train, "train_id", None) or train.get("train_id", "") if isinstance(train, dict) else ""
+            if train_id in affected_train_ids:
+                affected_trains_list.append(AffectedTrain(
+                    train_id=train_id,
+                    reason=scene_type,
+                    impact_level="high"
+                ))
+
+        if affected_trains_list:
+            return {
+                "affected_trains": affected_trains_list,
+                "rule": "from_injected_delays",
+                "total_count": len(affected_trains_list)
+            }
+
+    # 从 raw_input 中获取受影响的列车
+    affected_trains_from_input = dispatch_context.metadata.get("affected_trains", [])
+    if affected_trains_from_input:
+        train_id_set = set(affected_trains_from_input) if isinstance(affected_trains_from_input, list) else set()
+        for train in dispatch_context.trains:
+            train_id = getattr(train, "train_id", None) or train.get("train_id", "") if isinstance(train, dict) else ""
+            if train_id in train_id_set:
+                affected_trains_list.append(AffectedTrain(
+                    train_id=train_id,
+                    reason=scene_type,
+                    impact_level="medium"
+                ))
+
+        if affected_trains_list:
+            return {
+                "affected_trains": affected_trains_list,
+                "rule": "from_input_metadata",
+                "total_count": len(affected_trains_list)
+            }
+
+    # 基于场景类型的简单规则：所有列车都可能受影响
+    if scene_type == SceneType.TEMPORARY_SPEED_LIMIT.value:
+        for train in dispatch_context.trains:
+            train_id = getattr(train, "train_id", None) or train.get("train_id", "unknown") if isinstance(train, dict) else "unknown"
             affected_trains_list.append(AffectedTrain(
-                train_id=train.get("train_id", "unknown"),
+                train_id=train_id,
                 reason="temporary_speed_limit",
                 impact_level="medium"
             ))
 
     elif scene_type == SceneType.SUDDEN_FAILURE.value:
-        # 突发故障：根据位置匹配
-        failure_station = location.get("station_code", "")
         for train in dispatch_context.trains:
-            # 简单规则：所有列车都可能受影响
+            train_id = getattr(train, "train_id", None) or train.get("train_id", "unknown") if isinstance(train, dict) else "unknown"
             affected_trains_list.append(AffectedTrain(
-                train_id=train.get("train_id", "unknown"),
+                train_id=train_id,
                 reason="sudden_failure",
                 impact_level="high"
             ))
 
     elif scene_type == SceneType.SECTION_INTERRUPT.value:
-        # 区间中断：根据区间信息匹配
-        interrupt_section = location.get("section", "")
         for train in dispatch_context.trains:
-            # 简单规则：所有列车都可能受影响
+            train_id = getattr(train, "train_id", None) or train.get("train_id", "unknown") if isinstance(train, dict) else "unknown"
             affected_trains_list.append(AffectedTrain(
-                train_id=train.get("train_id", "unknown"),
+                train_id=train_id,
                 reason="section_interrupt",
                 impact_level="critical"
             ))
@@ -200,6 +262,6 @@ def identify_affected_trains(
 
     return {
         "affected_trains": affected_trains_list,
-        "rule": f"simple_rule_for_{scene_type}",
+        "rule": f"all_trains_for_{scene_type}",
         "total_count": len(affected_trains_list)
     }

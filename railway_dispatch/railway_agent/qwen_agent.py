@@ -4,7 +4,7 @@
 基于Qwen模型实现场景识别和功能调用的Agent
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 import json
 import time
@@ -359,6 +359,75 @@ Agent总耗时: {result.computation_time:.2f}秒
 ========================================
 """
         return summary
+
+    # ============================================
+    # Phase 3: 工作流兼容钩子（预留）
+    # ============================================
+
+    def parse_scene_spec_from_llm_output(self, model_output: Union[str, dict]) -> dict:
+        """
+        从 LLM 输出解析场景规格（未来接 workflow 的兼容钩子）
+
+        Args:
+            model_output: LLM 输出（str 或 dict）
+
+        Returns:
+            dict: 场景规格 dict
+        """
+        # 占位实现：不做复杂解析，只是兼容钩子
+        if isinstance(model_output, dict):
+            return {
+                "scene_type": model_output.get("scene_type", ""),
+                "scene_id": model_output.get("scene_id", ""),
+                "description": model_output.get("description", ""),
+                "location": model_output.get("location", {}),
+                "time_info": model_output.get("time_info", {})
+            }
+        elif isinstance(model_output, str):
+            # 尝试解析 JSON
+            import json
+            try:
+                parsed = json.loads(model_output)
+                if isinstance(parsed, dict):
+                    return self.parse_scene_spec_from_llm_output(parsed)
+            except:
+                pass
+            # 解析失败，返回空 dict
+            return {}
+        else:
+            return {}
+
+    def parse_task_plan_from_llm_output(self, model_output: Union[str, dict]) -> dict:
+        """
+        从 LLM 输出解析任务计划（未来接 workflow 的兼容钩子）
+
+        Args:
+            model_output: LLM 输出（str 或 dict）
+
+        Returns:
+            dict: 任务计划 dict
+        """
+        # 占位实现：不做复杂解析，只是兼容钩子
+        if isinstance(model_output, dict):
+            return {
+                "task_id": model_output.get("task_id", ""),
+                "scene_spec": model_output.get("scene_spec", {}),
+                "subtasks": model_output.get("subtasks", []),
+                "status": model_output.get("status", "planned")
+            }
+        elif isinstance(model_output, str):
+            # 尝试解析 JSON
+            import json
+            try:
+                parsed = json.loads(model_output)
+                if isinstance(parsed, dict):
+                    return self.parse_task_plan_from_llm_output(parsed)
+            except:
+                pass
+            # 解析失败，返回空 dict
+            return {}
+        else:
+            return {}
 
     def analyze_with_comparison(
         self,

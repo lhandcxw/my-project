@@ -3,6 +3,11 @@
 铁路调度系统 - Web后端 (Flask)
 降低环境配置难度
 """
+import os
+os.environ["RULE_AGENT_USE_WORKFLOW"] = "1"
+
+
+
 
 from flask import Flask, render_template_string, request, jsonify, Response
 from flask_cors import CORS
@@ -18,6 +23,7 @@ from models.data_models import Train, Station, DelayInjection, ScenarioType, Inj
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
 from solver.mip_scheduler import MIPScheduler
 from railway_agent.dispatch_skills import create_skills, execute_skill
+from railway_agent.session_manager import get_session_manager, SessionManager
 from evaluation.evaluator import Evaluator
 
 # 配置日志
@@ -38,6 +44,10 @@ from visualization.simple_diagram import create_train_diagram, create_comparison
 # 导入Agent
 from railway_agent.rule_agent import RuleAgent, create_rule_agent
 from railway_agent.tool_registry import ToolRegistry
+
+# 导入预处理服务
+from railway_agent.preprocess_service import get_preprocess_service
+from railway_agent.adapters.response_adapter import get_response_adapter
 
 # QwenAgent延迟导入（需要时再加载）
 def get_qwen_agent_module():
@@ -72,17 +82,15 @@ qwen_agent = None
 
 # ============================================
 # Agent模式配置
-# ============================================
-# 可选值：
 #   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
 #   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
 #   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "rule"  # 默认使用规则模式，跑通流程后再切换为"qwen"
+AGENT_MODE = "qwen"  # 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
 
 # 模型配置: 设置为 ModelScope 模型 ID 或本地路径
-# 例如: "Qwen3.5-4B"
-# 留空则不使用大模型
-MODEL_PATH = "/data/wls/test-agent/Qwen3.5-4B"  # 使用本地 Qwen3.5-4B 模型
+# 留空则使用Ollama本地模型
+# 可选: Qwen/Qwen2.5-0.5B, Qwen/Qwen2.5-1.8B, Qwen/Qwen2.5-3B
+MODEL_PATH = "Qwen/Qwen2.5-1.8B"  # 使用ModelScope大模型(1.8B)
 
 # ModelScope API Key 配置
 import os
@@ -180,6 +188,30 @@ HTML_TEMPLATE = '''
         .tab.active { color: #1E88E5; border-bottom: 3px solid #1E88E5; font-weight: bold; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+
+        /* 调试: 确保llm_workflow内容始终可见 */
+        #llm_workflow {
+            display: block !important;
+            min-height: 500px;
+            background: #ffcccc;
+            padding: 20px;
+            border: 3px solid blue;
+            border-radius: 10px;
+        }
+
+        /* 求解器选择 */
+        .solver-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .solver-mip { background: #e3f2fd; color: #1565C0; }
+        .solver-fcfs { background: #e8f5e9; color: #2e7d32; }
+        .solver-max_delay_first { background: #fff3e0; color: #e65100; }
+        .solver-noop { background: #f3e5f5; color: #7b1fa2; }
+        .solver-fallback { background: #ffebee; color: #c62828; }
         
         /* 卡片 */
         .card { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -368,6 +400,7 @@ HTML_TEMPLATE = '''
         <!-- 标签页 -->
         <div class="tabs">
             <button class="tab active" onclick="showTab('dispatch', event)">🤖 智能调度</button>
+            <button class="tab" onclick="showTab('llm_workflow', event)">🔀 LLM多轮对话</button>
             <button class="tab" onclick="showTab('comparison', event)">📊 调度比较</button>
         </div>
 
@@ -514,6 +547,63 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         
+        <!-- LLM多轮对话标签页 -->
+        <div id="llm_workflow" class="tab-content">
+            <div class="card">
+                <h2>🔀 LLM驱动的4层工作流</h2>
+                <p style="color: #666; margin-bottom: 15px;">
+                    多轮对话模式，每层由LLM决策：数据建模 → Planner → 求解 → 评估
+                </p>
+
+                <!-- 对话历史区域 -->
+                <div id="chatHistory" style="background: #f5f5f5; border-radius: 8px; padding: 15px; min-height: 200px; max-height: 400px; overflow-y: auto; margin-bottom: 15px;">
+                    <p style="color: #999; text-align: center;">暂无对话记录，请输入调度需求开始</p>
+                </div>
+
+                <!-- 输入区域 -->
+                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                    <input type="text" id="llmChatInput" placeholder="输入调度需求，如：北京至石家庄区间暴雨限速" style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    <button class="btn btn-primary" onclick="startLlmWorkflow()">🚀 开始</button>
+                </div>
+
+                <!-- 控制按钮 -->
+                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                    <button class="btn btn-success" id="continueBtn" onclick="continueLlmWorkflow()" disabled>▶ 继续执行下一层</button>
+                    <button class="btn btn-secondary" id="resetBtn" onclick="resetLlmWorkflow()" disabled>🔄 重置会话</button>
+                </div>
+
+                <!-- 进度显示 -->
+                <div style="background: #e3f2fd; border-radius: 8px; padding: 10px; margin-bottom: 15px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-weight: bold;">当前进度:</span>
+                        <span id="llmProgress" style="color: #1565C0;">等待开始</span>
+                    </div>
+                    <div style="display: flex; gap: 5px; margin-top: 8px;">
+                        <div id="layer1Badge" style="flex: 1; text-align: center; padding: 5px; background: #ddd; border-radius: 4px; font-size: 0.85em;">第1层</div>
+                        <div id="layer2Badge" style="flex: 1; text-align: center; padding: 5px; background: #ddd; border-radius: 4px; font-size: 0.85em;">第2层</div>
+                        <div id="layer3Badge" style="flex: 1; text-align: center; padding: 5px; background: #ddd; border-radius: 4px; font-size: 0.85em;">第3层</div>
+                        <div id="layer4Badge" style="flex: 1; text-align: center; padding: 5px; background: #ddd; border-radius: 4px; font-size: 0.85em;">第4层</div>
+                    </div>
+                </div>
+
+                <!-- 结果详情 -->
+                <div id="llmResultSection" style="display: none;">
+                    <h3 style="color: #2e7d32;">📋 执行结果</h3>
+                    <pre id="llmResultContent" style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 0.85em;"></pre>
+                </div>
+            </div>
+
+            <style>
+                .chat-message { margin-bottom: 10px; padding: 8px 12px; border-radius: 8px; }
+                .chat-user { background: #e3f2fd; text-align: right; }
+                .chat-system { background: #f3e5f5; }
+                .chat-user .msg-content { color: #1565C0; }
+                .chat-system .msg-content { color: #7b1fa2; }
+                .layer-badge-active { background: #4caf50 !important; color: white; }
+                .layer-badge-done { background: #8bc34a !important; color: white; }
+            </style>
+        </div>
+
         <!-- 调度比较标签页 -->
         <div id="comparison" class="tab-content">
             <div class="card">
@@ -593,16 +683,63 @@ HTML_TEMPLATE = '''
 
         // 标签页切换
         function showTab(tabId, event) {
+            console.log('Switching to tab:', tabId);
+            console.log('Event:', event);
+            console.log('Event target:', event ? event.target : 'none');
             if (event) {
                 event.preventDefault();
             }
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            // 移除所有tab的active状态
+            console.log('Removing active from all tabs...');
+            document.querySelectorAll('.tab').forEach(t => {
+                console.log('Removing from:', t.textContent, t.classList.contains('active'));
+                t.classList.remove('active');
+            });
+            // 移除所有tab-content的active状态
+            console.log('Removing active from all tab-contents...');
+            document.querySelectorAll('.tab-content').forEach(c => {
+                console.log('Removing from:', c.id, c.classList.contains('active'));
+                c.classList.remove('active');
+            });
+
+            // 为当前点击的tab添加active状态
             if (event && event.target) {
+                console.log('Adding active to clicked tab:', event.target.textContent);
                 event.target.classList.add('active');
+            } else {
+                // 如果没有event，尝试通过索引查找对应的tab按钮
+                // 注意：现在只有3个tab，所以索引是 0, 1, 2
+                var tabMap = {'dispatch': 0, 'llm_workflow': 1, 'comparison': 2};
+                var idx = tabMap[tabId];
+                console.log('No event, using index:', idx);
+                if (idx !== undefined) {
+                    var tabs = document.querySelectorAll('.tab');
+                    if (tabs[idx]) {
+                        console.log('Adding active to tab index:', idx, tabs[idx].textContent);
+                        tabs[idx].classList.add('active');
+                    }
+                }
             }
-            document.getElementById(tabId).classList.add('active');
+
+            // 显示对应的tab内容
+            var tabContent = document.getElementById(tabId);
+            console.log('Looking for tab content:', tabId, 'Found:', !!tabContent);
+            if (tabContent) {
+                console.log('Adding active to tab content:', tabId);
+                tabContent.classList.add('active');
+                console.log('Tab content now has classes:', tabContent.className);
+                console.log('Tab', tabId, 'activated successfully');
+            } else {
+                console.error('Tab content not found:', tabId);
+            }
         }
+
+        // 页面加载后确保默认tab正确显示
+        window.onload = function() {
+            // 确保默认tab可见
+            document.getElementById('dispatch').classList.add('active');
+            console.log('Page loaded, dispatch tab should be visible');
+        };
 
         // 填充快速输入
         function fillPrompt(type) {
@@ -785,7 +922,153 @@ HTML_TEMPLATE = '''
                 showComparisonResult(stats);
             }
         }
-        
+
+        // LLM多轮对话 - 全局变量
+        let currentSessionId = null;
+        let currentLayer = 0;
+
+        // LLM多轮对话 - 开始工作流
+        function startLlmWorkflow() {
+            const userInput = document.getElementById('llmChatInput').value.trim();
+            if (!userInput) {
+                alert('请输入调度需求');
+                return;
+            }
+
+            // 显示加载状态
+            document.getElementById('llmProgress').textContent = '正在启动...';
+            document.getElementById('continueBtn').disabled = true;
+
+            fetch('/api/workflow/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    user_input: userInput,
+                    snapshot_info: {}
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    currentSessionId = result.session_id;
+                    currentLayer = result.current_layer;
+                    updateChatHistory(result.messages);
+                    updateProgress(result.current_layer, result.progress);
+                    updateLayerBadges(result.current_layer);
+                    document.getElementById('continueBtn').disabled = false;
+                    document.getElementById('resetBtn').disabled = false;
+                    document.getElementById('llmResultSection').style.display = 'none';
+                } else {
+                    alert('启动失败: ' + result.message);
+                }
+            })
+            .catch(error => {
+                alert('请求失败: ' + error.message);
+            });
+        }
+
+        // LLM多轮对话 - 继续执行下一层
+        function continueLlmWorkflow() {
+            if (!currentSessionId) {
+                alert('请先开始一个新会话');
+                return;
+            }
+
+            document.getElementById('llmProgress').textContent = '正在执行...';
+            document.getElementById('continueBtn').disabled = true;
+
+            fetch('/api/workflow/next', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    session_id: currentSessionId,
+                    continue_layer: true
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    currentLayer = result.current_layer;
+                    updateChatHistory(result.messages);
+                    updateProgress(result.current_layer, result.progress);
+                    updateLayerBadges(result.current_layer);
+
+                    // 显示结果详情
+                    const resultContent = document.getElementById('llmResultContent');
+                    if (currentLayer === 1) {
+                        resultContent.textContent = JSON.stringify(result.layer1_result, null, 2);
+                    } else if (currentLayer === 2) {
+                        resultContent.textContent = JSON.stringify(result.layer2_result, null, 2);
+                    } else if (currentLayer === 3) {
+                        resultContent.textContent = JSON.stringify(result.layer3_result, null, 2);
+                    } else if (currentLayer === 4) {
+                        resultContent.textContent = JSON.stringify(result.layer4_result, null, 2);
+                        document.getElementById('continueBtn').disabled = true;
+                        document.getElementById('llmProgress').textContent = '已完成';
+                    } else {
+                        document.getElementById('continueBtn').disabled = true;
+                    }
+                    document.getElementById('llmResultSection').style.display = 'block';
+                } else {
+                    alert('执行失败: ' + result.message);
+                    document.getElementById('continueBtn').disabled = false;
+                }
+            })
+            .catch(error => {
+                alert('请求失败: ' + error.message);
+                document.getElementById('continueBtn').disabled = false;
+            });
+        }
+
+        // LLM多轮对话 - 重置会话
+        function resetLlmWorkflow() {
+            if (currentSessionId) {
+                fetch('/api/workflow/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_id: currentSessionId})
+                });
+            }
+            currentSessionId = null;
+            currentLayer = 0;
+            document.getElementById('llmChatInput').value = '';
+            document.getElementById('chatHistory').innerHTML = '<p style="color: #999; text-align: center;">暂无对话记录，请输入调度需求开始</p>';
+            document.getElementById('llmProgress').textContent = '等待开始';
+            document.getElementById('continueBtn').disabled = true;
+            document.getElementById('resetBtn').disabled = true;
+            document.getElementById('llmResultSection').style.display = 'none';
+            updateLayerBadges(0);
+        }
+
+        // 更新对话历史
+        function updateChatHistory(messages) {
+            const chatDiv = document.getElementById('chatHistory');
+            chatDiv.innerHTML = messages.map(msg => {
+                const cssClass = msg.role === 'user' ? 'chat-user' : 'chat-system';
+                return `<div class="chat-message ${cssClass}"><span class="msg-content">${msg.content}</span></div>`;
+            }).join('');
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }
+
+        // 更新进度显示
+        function updateProgress(layer, progress) {
+            document.getElementById('llmProgress').textContent = progress;
+        }
+
+        // 更新层级标签
+        function updateLayerBadges(currentLayer) {
+            for (let i = 1; i <= 4; i++) {
+                const badge = document.getElementById('layer' + i + 'Badge');
+                if (i < currentLayer) {
+                    badge.className = 'layer-badge-done';
+                } else if (i === currentLayer) {
+                    badge.className = 'layer-badge-active';
+                } else {
+                    badge.className = '';
+                }
+            }
+        }
+
         // 发送智能调度（带比较）
         function sendDispatchWithComparison() {
             const prompt = document.getElementById('dispatchPrompt').value.trim();
@@ -1541,44 +1824,462 @@ def scheduler_comparison():
         })
 
 
-# 导入工作流引擎
-from railway_agent.workflow_engine import run_workflow
-
-
-@app.route('/api/workflow_debug', methods=['POST'])
-def workflow_debug():
+# RuleAgent 到 Workflow 的桥接调试接口
+def rule_workflow_debug():
     """
-    工作流调试接口（Phase B）
-    用于测试工作流骨架的 dry-run 模式
+    RuleAgent 到 Workflow 的桥接调试接口
+    用于测试 RuleAgent 走新工作流路径
     """
     try:
-        data = request.json
+        from railway_agent.rule_workflow_bridge import (
+            run_rule_workflow_bridge,
+            is_bridge_enabled
+        )
+        from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
 
-        if not data:
-            return jsonify({
-                "success": False,
-                "message": "请提供JSON输入"
-            })
+        data = request.json or {}
 
-        # 调用工作流引擎（dry-run模式）
-        result = run_workflow(data, dry_run=True)
+        # 获取数据
+        use_real_data(True)
+        trains = get_trains_pydantic()[:10]  # 限制数量
+        stations = get_stations_pydantic()
+
+        # 检查是否启用
+        bridge_enabled = is_bridge_enabled()
+
+        # 解析请求
+        user_input = data
+
+        # 调用桥接（默认 dry_run=True）
+        dry_run = data.get("dry_run", True)
+        workflow_result, fallback_triggered = run_rule_workflow_bridge(
+            user_input=user_input,
+            trains=trains,
+            stations=stations,
+            dry_run=dry_run
+        )
 
         # 构建响应
         response = {
-            "success": result.success,
-            "scene_spec": result.scene_spec.model_dump() if result.scene_spec else None,
-            "task_plan": result.task_plan.model_dump() if result.task_plan else None,
-            "debug_trace": result.debug_trace,
-            "message": result.message
+            "success": not fallback_triggered and (workflow_result.success if workflow_result else False),
+            "mode": "rule_workflow_bridge",
+            "bridge_enabled": bridge_enabled,
+            "fallback_triggered": fallback_triggered
         }
 
-        if result.error:
-            response["error"] = result.error
+        if workflow_result:
+            response["scene_type"] = workflow_result.scene_spec.scene_type if workflow_result.scene_spec else None
+            response["task_id"] = workflow_result.task_plan.task_id if workflow_result.task_plan else None
+            response["task_plan"] = workflow_result.task_plan.model_dump() if workflow_result.task_plan else None
+            response["solver_result"] = workflow_result.solver_result.model_dump() if workflow_result.solver_result else None
+            response["debug_trace"] = workflow_result.debug_trace
+
+            # 添加 fallback 标记到 debug_trace
+            if fallback_triggered and response["debug_trace"]:
+                response["debug_trace"]["solver"] = response["debug_trace"].get("solver", {})
+                response["debug_trace"]["solver"]["fallback_used"] = True
+                response["debug_trace"]["solver"]["fallback_reason"] = "MIP求解失败，使用备用求解器"
+
+            response["message"] = workflow_result.message
 
         return jsonify(response)
 
     except Exception as e:
-        logger.exception(f"workflow_debug处理异常: {str(e)}")
+        logger.exception(f"rule_workflow_debug处理异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+# ============== 多轮对话 API ==============
+
+@app.route('/api/workflow/start', methods=['POST'])
+def workflow_start():
+    """
+    启动LLM驱动的4层工作流（多轮对话第一轮）
+
+    请求体:
+    {
+        "user_input": "用户自然语言描述",
+        "snapshot_info": {...}
+    }
+
+    响应:
+    {
+        "session_id": "会话ID",
+        "current_layer": 1,
+        "progress": "执行中: 数据建模层",
+        "messages": [
+            {"role": "user", "content": "用户输入"},
+            {"role": "system", "content": "[第1层] 识别场景..."}
+        ]
+    }
+    """
+    try:
+        data = request.json
+        user_input = data.get('user_input', '')
+        snapshot_info = data.get('snapshot_info', {})
+
+        if not user_input:
+            return jsonify({
+                "success": False,
+                "message": "请输入调度需求"
+            })
+
+        logger.info(f"启动多轮工作流，输入: {user_input[:50]}...")
+
+        # 导入LLM工作流引擎
+        from railway_agent.llm_workflow_engine import layer1_data_modeling
+
+        # 执行第1层
+        result = layer1_data_modeling(user_input, snapshot_info)
+
+        # 转换Pydantic模型为字典（用于JSON序列化）
+        from railway_agent.llm_workflow_engine import safe_json_dumps
+        result_dict = {
+            "accident_card": result.get("accident_card", {}).model_dump() if hasattr(result.get("accident_card", {}), "model_dump") else result.get("accident_card", {}),
+            "network_snapshot": result.get("network_snapshot", {}).model_dump() if hasattr(result.get("network_snapshot", {}), "model_dump") else result.get("network_snapshot", {}),
+            "can_solve": result.get("dispatch_context_metadata", {}).can_solve if hasattr(result.get("dispatch_context_metadata", {}), "can_solve") else True,
+            "missing_info": result.get("dispatch_context_metadata", {}).missing_info if hasattr(result.get("dispatch_context_metadata", {}), "missing_info") else []
+        }
+
+        # 检查信息是否完整
+        accident_card = result.get("accident_card", {})
+        is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else result_dict.get("can_solve", True)
+        missing_fields = accident_card.missing_fields if hasattr(accident_card, "missing_fields") else result_dict.get("missing_info", [])
+
+        # 创建会话并保存第1层结果
+        session_mgr = get_session_manager()
+        session_id = session_mgr.create_session(user_input, snapshot_info)
+        session_mgr.update_layer_result(session_id, 1, result_dict)
+
+        # 获取会话状态
+        status = session_mgr.get_session_status(session_id)
+
+        # 构建响应
+        response = {
+            "success": True,
+            "session_id": session_id,
+            "current_layer": 1,
+            "progress": status["progress"],
+            "messages": status["messages"],
+            "layer1_result": result_dict
+        }
+
+        # 如果信息不完整，返回提示信息要求补充
+        if not is_complete and missing_fields:
+            response["needs_more_info"] = True
+            response["missing_fields"] = missing_fields
+            response["message"] = f"请补充以下信息：{', '.join(missing_fields)}"
+            response["can_proceed"] = False
+        else:
+            response["needs_more_info"] = False
+            response["can_proceed"] = True
+            response["message"] = "信息完整，可继续执行后续流程"
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.exception(f"workflow_start处理异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+@app.route('/api/workflow/next', methods=['POST'])
+def workflow_next():
+    """
+    继续执行多轮对话（从当前层继续到下一层）
+
+    请求体:
+    {
+        "session_id": "会话ID",
+        "continue_layer": true/false  # 是否继续执行下一层
+    }
+
+    响应:
+    {
+        "session_id": "会话ID",
+        "current_layer": 2,
+        "messages": [...],
+        "layer2_result": {...}
+    }
+    """
+    try:
+        data = request.json
+        session_id = data.get('session_id', '')
+        continue_execution = data.get('continue_layer', True)
+
+        if not session_id:
+            return jsonify({
+                "success": False,
+                "message": "缺少session_id"
+            })
+
+        # 获取会话
+        session_mgr = get_session_manager()
+        status = session_mgr.get_session_status(session_id)
+
+        if status is None:
+            return jsonify({
+                "success": False,
+                "message": "会话不存在"
+            })
+
+        current_layer = status["current_layer"]
+
+        # 如果用户尝试继续但L1信息不完整，则拒绝
+        if current_layer == 1 and continue_execution:
+            l1_result = status.get("layer1_result", {})
+            can_solve = l1_result.get("can_solve", True)
+            missing_info = l1_result.get("missing_info", [])
+            
+            if not can_solve and missing_info:
+                return jsonify({
+                    "success": False,
+                    "message": f"信息不完整，请先补充以下信息：{', '.join(missing_info)}",
+                    "needs_more_info": True,
+                    "missing_fields": missing_info
+                })
+
+        # 根据当前层执行下一层
+        if current_layer == 1:
+            # 执行第2层
+            from railway_agent.llm_workflow_engine import layer2_planner
+            from models.workflow_models import AccidentCard, NetworkSnapshot
+
+            # 从第1层结果构建对象
+            l1_result = status["layer1_result"]
+            accident_card = AccidentCard(**l1_result.get("accident_card", {}))
+            network_snapshot = NetworkSnapshot(**l1_result.get("network_snapshot", {}))
+
+            from models.workflow_models import DispatchContextMetadata
+            dispatch_metadata = DispatchContextMetadata(
+                train_count=network_snapshot.train_count,
+                station_count=13,
+                time_window_start="2024-01-15T10:00:00",
+                time_window_end="2024-01-15T12:00:00"
+            )
+
+            result = layer2_planner(accident_card, network_snapshot, dispatch_metadata)
+            session_mgr.update_layer_result(session_id, 2, result)
+
+            status = session_mgr.get_session_status(session_id)
+
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "current_layer": 2,
+                "progress": status["progress"],
+                "messages": status["messages"],
+                "layer2_result": {"skill_dispatch": result.get("skill_dispatch", {}), "reasoning": result.get("reasoning", "")}
+            })
+
+        elif current_layer == 2:
+            # 执行第3层
+            from railway_agent.llm_workflow_engine import layer3_solver_execution
+            from railway_agent.llm_workflow_engine import safe_json_dumps
+
+            l2_result = status["layer2_result"]
+            skill_dispatch = l2_result.get("skill_dispatch", {})
+            main_skill = skill_dispatch.get("主技能", "mip_scheduler")
+            # 提取 planning_intent
+            planning_intent = l2_result.get("planning_intent", "recalculate_corridor_schedule")
+            
+            l1_result = status["layer1_result"]
+            # 转换为Pydantic模型
+            from models.workflow_models import AccidentCard, NetworkSnapshot
+            accident_card = AccidentCard(**l1_result.get("accident_card", {}))
+            network_snapshot = NetworkSnapshot(**l1_result.get("network_snapshot", {}))
+
+            # 获取数据
+            trains = get_trains_pydantic()[:50]
+            stations = get_stations_pydantic()
+
+            result = layer3_solver_execution(
+                planning_intent,
+                accident_card,
+                network_snapshot,
+                trains,
+                stations
+            )
+            # 转换为字典 (支持Pydantic模型)
+            def to_dict(obj):
+                if hasattr(obj, 'model_dump'):
+                    return obj.model_dump()
+                elif hasattr(obj, '__dict__'):
+                    return obj.__dict__
+                elif isinstance(obj, dict):
+                    return {k: to_dict(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [to_dict(i) for i in obj]
+                else:
+                    return obj
+            result_dict = to_dict(result)
+            session_mgr.update_layer_result(session_id, 3, result_dict)
+
+            status = session_mgr.get_session_status(session_id)
+
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "current_layer": 3,
+                "progress": status["progress"],
+                "messages": status["messages"],
+                "layer3_result": result_dict
+            })
+
+        elif current_layer == 3:
+            # 执行第4层
+            from railway_agent.llm_workflow_engine import layer4_evaluation
+
+            l3_result = status["layer3_result"]
+
+            # 构建solver_response的简化对象
+            class SimpleSolverResponse:
+                def __init__(self, data):
+                    self.success = data.get("success", False)
+                    self.total_delay_minutes = data.get("total_delay_minutes", 0)
+                    self.max_delay_minutes = data.get("max_delay_minutes", 0)
+                    self.adjusted_schedule = data.get("adjusted_schedule", [])
+                    self.message = data.get("message", "")
+
+                def model_dump(self):
+                    return {
+                        "success": self.success,
+                        "total_delay_minutes": self.total_delay_minutes,
+                        "max_delay_minutes": self.max_delay_minutes,
+                        "adjusted_schedule": self.adjusted_schedule,
+                        "message": self.message
+                    }
+
+            solver_response = SimpleSolverResponse(l3_result)
+            result = layer4_evaluation(l3_result, solver_response)
+            # 转换为字典
+            result_dict = {
+                "evaluation_report": result.get("evaluation_report", {}).model_dump() if hasattr(result.get("evaluation_report", {}), "model_dump") else result.get("evaluation_report", {}),
+                "ranking_result": result.get("ranking_result", {}).model_dump() if hasattr(result.get("ranking_result", {}), "model_dump") else result.get("ranking_result", {}),
+                "rollback_feedback": result.get("rollback_feedback", {}).model_dump() if hasattr(result.get("rollback_feedback", {}), "model_dump") else result.get("rollback_feedback", {})
+            }
+            session_mgr.update_layer_result(session_id, 4, result_dict)
+
+            status = session_mgr.get_session_status(session_id)
+
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "current_layer": 4,
+                "progress": status["progress"],
+                "messages": status["messages"],
+                "layer4_result": result_dict,
+                "is_complete": status["is_complete"]
+            })
+
+        else:
+            return jsonify({
+                "success": False,
+                "message": f"当前层 {current_layer} 已完成，无法继续"
+            })
+
+    except Exception as e:
+        logger.exception(f"workflow_next处理异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+@app.route('/api/workflow/status', methods=['GET'])
+def workflow_status():
+    """获取会话状态"""
+    session_id = request.args.get('session_id', '')
+
+    if not session_id:
+        return jsonify({
+            "success": False,
+            "message": "缺少session_id"
+        })
+
+    session_mgr = get_session_manager()
+    status = session_mgr.get_session_status(session_id)
+
+    if status is None:
+        return jsonify({
+            "success": False,
+            "message": "会话不存在"
+        })
+
+    return jsonify({
+        "success": True,
+        "session_id": status["session_id"],
+        "current_layer": status["current_layer"],
+        "progress": status["progress"],
+        "is_complete": status["is_complete"],
+        "messages": status["messages"]
+    })
+
+
+@app.route('/api/workflow/reset', methods=['POST'])
+def workflow_reset():
+    """重置/删除会话"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id:
+        return jsonify({
+            "success": False,
+            "message": "缺少session_id"
+        })
+
+    session_mgr = get_session_manager()
+    deleted = session_mgr.delete_session(session_id)
+
+    return jsonify({
+        "success": deleted,
+        "message": "会话已删除" if deleted else "会话不存在"
+    })
+
+
+@app.route('/api/preprocess_debug', methods=['POST'])
+def preprocess_debug():
+    """
+    预处理调试API
+    返回完整的预处理过程信息，用于调试
+    """
+    try:
+        data = request.json
+        raw_input = data.get('input', '')
+
+        if not raw_input:
+            return jsonify({
+                "success": False,
+                "message": "请提供输入内容"
+            })
+
+        logger.info(f"收到preprocess_debug请求: {raw_input[:50]}...")
+
+        # 调用预处理服务
+        preprocess_service = get_preprocess_service()
+        debug_response = preprocess_service.preprocess_debug(raw_input)
+
+        # 返回调试响应
+        response_adapter = get_response_adapter()
+        
+        return jsonify({
+            "success": True,
+            "request_id": debug_response.request_id,
+            "raw_user_request": debug_response.raw_user_request,
+            "canonical_request": debug_response.canonical_request,
+            "evidence_list": debug_response.evidence_list,
+            "completeness": debug_response.completeness,
+            "processing_steps": debug_response.processing_steps,
+            "message": "预处理调试完成"
+        })
+
+    except Exception as e:
+        logger.exception(f"preprocess_debug处理异常: {str(e)}")
         return jsonify({
             "success": False,
             "message": str(e)

@@ -27,6 +27,8 @@ from railway_agent.tool_registry import ToolRegistry, ToolCall
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# Feature flag for workflow engine bridge
+RULE_AGENT_USE_WORKFLOW = os.getenv("RULE_AGENT_USE_WORKFLOW", "0") == "1"
 
 # ============================================
 # Agent结果数据类（与QwenAgent保持一致）
@@ -375,16 +377,55 @@ class RuleAgent:
     def analyze(self, delay_injection: Dict[str, Any], user_prompt: str = "") -> AgentResult:
         """
         分析场景并执行调度（与QwenAgent接口一致）
-        
+
         Args:
             delay_injection: 延误注入数据
             user_prompt: 用户输入的原始文本（可选）
-            
+
         Returns:
             AgentResult: 执行结果
         """
         start_time = time.time()
-        
+
+        # Phase 1: 检查是否启用 workflow 桥接
+        if RULE_AGENT_USE_WORKFLOW:
+            try:
+                # 尝试使用 workflow 桥接
+                from railway_agent.rule_workflow_bridge import (
+                    run_rule_workflow_bridge,
+                    map_workflow_result_to_agent_result,
+                    is_bridge_enabled
+                )
+
+                if is_bridge_enabled():
+                    # 调用桥接
+                    workflow_result, fallback_triggered = run_rule_workflow_bridge(
+                        user_input=delay_injection,
+                        trains=self.trains,
+                        stations=self.stations,
+                        dry_run=False
+                    )
+
+                    if not fallback_triggered and workflow_result:
+                        # Workflow 成功，映射结果
+                        mapped = map_workflow_result_to_agent_result(workflow_result)
+
+                        # 转换为 AgentResult
+                        return AgentResult(
+                            success=mapped.get("success", False),
+                            recognized_scenario=mapped.get("recognized_scenario", "unknown"),
+                            selected_skill=mapped.get("selected_skill", ""),
+                            reasoning=mapped.get("reasoning", ""),
+                            dispatch_result=mapped.get("dispatch_result"),
+                            model_response=mapped.get("reasoning", ""),
+                            computation_time=time.time() - start_time
+                        )
+                    # 否则 fallback 到旧逻辑
+                    logger.info("RuleAgent: fallback to old logic (workflow failed)")
+            except Exception as e:
+                logger.warning(f"RuleAgent workflow bridge error: {e}, fallback to old logic")
+
+        # Phase 2: 旧逻辑（默认或 fallback）
         try:
             # Step 1: 场景识别
             scenario_type = delay_injection.get("scenario_type", "")

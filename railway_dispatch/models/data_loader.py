@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 铁路调度系统 - 数据加载模块
-统一读取真实数据(trains.json, stations.json)，所有程序都从这里读取数据
+统一读取数据，所有程序都从这里读取数据
 
-注意：
-- data/ 目录包含处理后的真实列车和车站数据
-- real_data/ 目录包含原始数据文件
+数据目录结构：
+- data/ 包含所有数据文件
+  - trains.json: 处理后的列车数据
+  - stations.json: 处理后的车站数据  
+  - min_running_time_matrix.csv: 区间最小运行时间
+  - plan_timetable.csv: 原始时刻表
+  - station_alias.json: 真实车站别名
+  - train_id_mapping.csv: 列车ID映射
+  - scenarios/: 场景数据
+  - knowledge/: 知识库
 """
 
 import json
@@ -14,10 +21,8 @@ import csv
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-# 数据目录路径
+# 统一数据目录路径
 DATA_DIR = Path(__file__).parent.parent / "data"
-# 真实数据目录路径 (在项目根目录)
-REAL_DATA_DIR = Path(__file__).parent.parent.parent / "real_data"
 
 # 缓存已加载的数据
 _cache = {}
@@ -31,16 +36,20 @@ def get_data_path(filename: str) -> Path:
 def load_trains() -> List[Dict[str, Any]]:
     """
     加载列车数据
+    优先使用真实数据文件（plan_timetable），如果没有则使用trains.json
     Returns:
         List of train data dictionaries
     """
     if "trains" in _cache:
         return _cache["trains"]
 
-    # 优先使用真实数据
-    if is_using_real_data():
-        return load_real_trains()
+    # 优先尝试加载原始时刻表数据
+    timetable_file = DATA_DIR / "plan_timetable.csv"
+    if timetable_file.exists():
+        _cache["trains"] = _load_trains_from_timetable()
+        return _cache["trains"]
 
+    # 回退到使用处理后的trains.json
     train_file = get_data_path("trains.json")
     if not train_file.exists():
         raise FileNotFoundError(f"列车数据文件不存在: {train_file}")
@@ -52,108 +61,22 @@ def load_trains() -> List[Dict[str, Any]]:
     return trains
 
 
-def load_stations() -> List[Dict[str, Any]]:
+def _load_trains_from_timetable() -> List[Dict[str, Any]]:
     """
-    加载车站数据
-    Returns:
-        List of station data dictionaries
+    从原始时刻表加载列车数据
     """
-    if "stations" in _cache:
-        return _cache["stations"]
-
-    # 优先使用真实数据
-    if is_using_real_data():
-        return load_real_stations()
-
-    station_file = get_data_path("stations.json")
-    if not station_file.exists():
-        raise FileNotFoundError(f"车站数据文件不存在: {station_file}")
-
-    with open(station_file, "r", encoding="utf-8") as f:
-        stations = json.load(f)
-
-    _cache["stations"] = stations
-    return stations
-
-
-def load_real_stations() -> List[Dict[str, Any]]:
-    """
-    从真实数据文件夹加载车站数据
-    Returns:
-        List of station data dictionaries
-    """
-    if "real_stations" in _cache:
-        return _cache["real_stations"]
-
-    station_file = REAL_DATA_DIR / "station_alias.json"
-    if not station_file.exists():
-        raise FileNotFoundError(f"真实车站数据文件不存在: {station_file}")
-
-    with open(station_file, "r", encoding="utf-8") as f:
-        content = f.read()
-        # 修复中文逗号问题
-        content = content.replace('，', ',')
-        real_stations = json.loads(content)
-
-    # 标准站码映射
-    station_code_map = {
-        '北京西': 'BJX',
-        '杜家坎线路所': 'DJK',
-        '涿州东': 'ZBD',
-        '高碑店东': 'GBD',
-        '徐水东': 'XSD',
-        '保定东': 'BDD',
-        '定州东': 'DZD',
-        '正定机场': 'ZDJ',
-        '石家庄': 'SJP',
-        '高邑西': 'GYX',
-        '邢台东': 'XTD',
-        '邯郸东': 'HDD',
-        '安阳东': 'AYD'
-    }
-
-    # 转换格式 - 使用简化的车站数据（无platforms等字段）
-    stations = []
-    for s in real_stations:
-        station_name = s["station_name"]
-        station_code = station_code_map.get(station_name, station_name[:3])
-        track_count = s.get("track_count", 4) or 4
-
-        station = {
-            "station_code": station_code,
-            "station_name": station_name,
-            "track_count": track_count
-        }
-        stations.append(station)
-
-    _cache["real_stations"] = stations
-    return stations
-
-
-def load_real_trains() -> List[Dict[str, Any]]:
-    """
-    从真实数据文件夹加载列车数据
-    Returns:
-        List of train data dictionaries
-    """
-    if "real_trains" in _cache:
-        return _cache["real_trains"]
-
-    # 加载车站数据以获取车站信息
-    stations = load_real_stations()
+    stations = load_stations()
     station_names = [s["station_name"] for s in stations]
-    # 创建站名到站码的映射
     station_code_map = {s["station_name"]: s["station_code"] for s in stations}
 
     # 加载列车ID映射
-    train_mapping_file = REAL_DATA_DIR / "train_id_mapping.csv"
+    train_mapping_file = DATA_DIR / "train_id_mapping.csv"
     if not train_mapping_file.exists():
-        raise FileNotFoundError(f"真实列车ID映射文件不存在: {train_mapping_file}")
+        raise FileNotFoundError(f"列车ID映射文件不存在: {train_mapping_file}")
 
     train_no_map = {}
     with open(train_mapping_file, "r", encoding="utf-8") as f:
         content = f.read()
-        # 修复可能的BOM问题
         if content.startswith('\ufeff'):
             content = content[1:]
         reader = csv.DictReader(content.splitlines())
@@ -161,17 +84,11 @@ def load_real_trains() -> List[Dict[str, Any]]:
             if "train_id" in row and "train_no" in row:
                 train_no_map[row["train_id"]] = row["train_no"]
 
-    # 加载时刻表 - 尝试多个可能的文件名
-    timetable_file = REAL_DATA_DIR / "plan_timetable (2).csv"
-    if not timetable_file.exists():
-        timetable_file = REAL_DATA_DIR / "plan_timetable.csv"
-    if not timetable_file.exists():
-        raise FileNotFoundError(f"真实时刻表文件不存在: {timetable_file}")
-
+    # 加载时刻表
+    timetable_file = DATA_DIR / "plan_timetable.csv"
     trains = []
     with open(timetable_file, "r", encoding="utf-8") as f:
         content = f.read()
-        # 修复可能的BOM问题
         if content.startswith('\ufeff'):
             content = content[1:]
         reader = csv.DictReader(content.splitlines())
@@ -206,29 +123,129 @@ def load_real_trains() -> List[Dict[str, Any]]:
                     }
                 })
 
-    _cache["real_trains"] = trains
     return trains
 
 
-def load_real_min_running_time() -> List[int]:
+def load_stations() -> List[Dict[str, Any]]:
     """
-    从真实数据文件夹加载区间最小运行时间
+    加载车站数据
+    优先使用真实数据文件（station_alias.json），如果没有则使用stations.json
+    Returns:
+        List of station data dictionaries
+    """
+    if "stations" in _cache:
+        return _cache["stations"]
+
+    # 优先尝试从station_alias.json加载真实数据
+    station_file = DATA_DIR / "station_alias.json"
+    if station_file.exists():
+        _cache["stations"] = _load_stations_from_alias()
+        return _cache["stations"]
+
+    # 回退到使用处理后的stations.json
+    station_file = get_data_path("stations.json")
+    if not station_file.exists():
+        raise FileNotFoundError(f"车站数据文件不存在: {station_file}")
+
+    with open(station_file, "r", encoding="utf-8") as f:
+        stations = json.load(f)
+
+    _cache["stations"] = stations
+    return stations
+
+
+def _load_stations_from_alias() -> List[Dict[str, Any]]:
+    """
+    从station_alias.json加载车站数据
+    """
+    if "real_stations" in _cache:
+        return _cache["real_stations"]
+
+    station_file = DATA_DIR / "station_alias.json"
+    with open(station_file, "r", encoding="utf-8") as f:
+        content = f.read()
+        # 修复中文逗号问题
+        content = content.replace('，', ',')
+        real_stations = json.loads(content)
+
+    # 标准站码映射
+    station_code_map = {
+        '北京西': 'BJX',
+        '杜家坎线路所': 'DJK',
+        '涿州东': 'ZBD',
+        '高碑店东': 'GBD',
+        '徐水东': 'XSD',
+        '保定东': 'BDD',
+        '定州东': 'DZD',
+        '正定机场': 'ZDJ',
+        '石家庄': 'SJP',
+        '高邑西': 'GYX',
+        '邢台东': 'XTD',
+        '邯郸东': 'HDD',
+        '安阳东': 'AYD'
+    }
+
+    # 转换格式
+    stations = []
+    for s in real_stations:
+        station_name = s["station_name"]
+        station_code = station_code_map.get(station_name, station_name[:3])
+        track_count = s.get("track_count", 4) or 4
+
+        station = {
+            "station_code": station_code,
+            "station_name": station_name,
+            "track_count": track_count
+        }
+        stations.append(station)
+
+    _cache["real_stations"] = stations
+    return stations
+
+
+def load_real_trains() -> List[Dict[str, Any]]:
+    """
+    从真实数据文件夹加载列车数据（已废弃，请使用load_trains）
+    Returns:
+        List of train data dictionaries
+    """
+    # 调用统一的load_trains
+    return load_trains()
+
+
+def get_real_data():
+    """
+    获取所有真实数据（已废弃，请直接使用load_trains, load_stations, load_min_running_time）
+    Returns:
+        dict with trains, stations, min_running_time
+    """
+    return {
+        "trains": load_trains(),
+        "stations": load_stations(),
+        "min_running_time": load_min_running_time()
+    }
+
+
+def load_min_running_time() -> List[int]:
+    """
+    加载区间最小运行时间
     Returns:
         List of minimum running times in minutes
     """
-    if "real_min_running_time" in _cache:
-        return _cache["real_min_running_time"]
+    if "min_running_time" in _cache:
+        return _cache["min_running_time"]
 
-    min_time_file = REAL_DATA_DIR / "min_running_time_matrix (2).csv"
+    min_time_file = DATA_DIR / "min_running_time_matrix.csv"
     if not min_time_file.exists():
-        min_time_file = REAL_DATA_DIR / "min_running_time_matrix.csv"
+        min_time_file = DATA_DIR / "min_running_time_matrix.csv"
     if not min_time_file.exists():
-        raise FileNotFoundError(f"真实最小运行时间文件不存在: {min_time_file}")
+        # 如果文件不存在，返回默认最小时间
+        _cache["min_running_time"] = [5] * 12  # 12个区间，默认5分钟
+        return _cache["min_running_time"]
 
     min_times = []
     with open(min_time_file, "r", encoding="utf-8") as f:
         content = f.read()
-        # 修复可能的BOM问题
         if content.startswith('\ufeff'):
             content = content[1:]
         reader = csv.reader(content.splitlines())
@@ -237,21 +254,8 @@ def load_real_min_running_time() -> List[int]:
             if row and row[0]:
                 min_times.append(int(row[0]))
 
-    _cache["real_min_running_time"] = min_times
+    _cache["min_running_time"] = min_times
     return min_times
-
-
-def get_real_data():
-    """
-    获取所有真实数据
-    Returns:
-        dict with trains, stations, min_running_time
-    """
-    return {
-        "trains": load_real_trains(),
-        "stations": load_real_stations(),
-        "min_running_time": load_real_min_running_time()
-    }
 
 
 def use_real_data(enable: bool = True):

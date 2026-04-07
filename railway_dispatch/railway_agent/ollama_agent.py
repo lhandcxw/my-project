@@ -4,7 +4,7 @@
 使用Ollama API调用本地模型
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 import json
 import time
@@ -353,6 +353,69 @@ def create_ollama_agent(
         model = DEFAULT_MODEL
 
     return OllamaAgent(scheduler, ollama_url, model)
+
+
+# ============================================
+# Phase 3: 工作流兼容钩子（预留）
+# ============================================
+
+def parse_scene_spec_from_llm_output(model_output: Union[str, dict]) -> dict:
+    """
+    从 LLM 输出解析场景规格（未来接 workflow 的兼容钩子）
+
+    Args:
+        model_output: LLM 输出（str 或 dict）
+
+    Returns:
+        dict: 场景规格 dict
+    """
+    if isinstance(model_output, dict):
+        return {
+            "scene_type": model_output.get("scene_type", ""),
+            "scene_id": model_output.get("scene_id", ""),
+            "description": model_output.get("description", ""),
+            "location": model_output.get("location", {}),
+            "time_info": model_output.get("time_info", {})
+        }
+    elif isinstance(model_output, str):
+        try:
+            parsed = json.loads(model_output)
+            if isinstance(parsed, dict):
+                return parse_scene_spec_from_llm_output(parsed)
+        except:
+            pass
+        return {}
+    else:
+        return {}
+
+
+def parse_task_plan_from_llm_output(model_output: Union[str, dict]) -> dict:
+    """
+    从 LLM 输出解析任务计划（未来接 workflow 的兼容钩子）
+
+    Args:
+        model_output: LLM 输出（str 或 dict）
+
+    Returns:
+        dict: 任务计划 dict
+    """
+    if isinstance(model_output, dict):
+        return {
+            "task_id": model_output.get("task_id", ""),
+            "scene_spec": model_output.get("scene_spec", {}),
+            "subtasks": model_output.get("subtasks", []),
+            "status": model_output.get("status", "planned")
+        }
+    elif isinstance(model_output, str):
+        try:
+            parsed = json.loads(model_output)
+            if isinstance(parsed, dict):
+                return parse_task_plan_from_llm_output(parsed)
+        except:
+            pass
+        return {}
+    else:
+        return {}
 
 
 # ============================================
