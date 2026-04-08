@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-LLM驱动的工作流引擎模块 v2.0
+LLM驱动的工作流引擎模块 v2.1（修正版）
 基于适配器模式的重构版本
 
-架构说明：
+架构说明（修正后）：
 - L0：预处理层 - 在 preprocessing/ 模块实现
-- L1：数据建模层 - 使用 Layer1DataModeling
+- SnapshotBuilder：构建 NetworkSnapshot（确定性逻辑）
+- L1：数据建模层 - 使用 Layer1DataModeling（只构建 AccidentCard）
 - L2：Planner层 - 使用 Layer2Planner
 - L3：Solver执行层 - 使用 Layer3Solver
 - L4：评估层 - 使用 Layer4Evaluation
 
-v2.0改进：
-- 应用Prompt管理器和LLM Prompt适配器
-- 拆分各层逻辑到独立模块
-- 删除冗余调试信息
-- 统一数据模型
+v2.1 修正：
+- 正确的流程：L0 → SnapshotBuilder → L1 → L2 → L3 → L4
+- 明确 SnapshotBuilder 为唯一构建 NetworkSnapshot 的入口
+- L1 只负责数据建模（AccidentCard）
+- 消除 NetworkSnapshot 的重复构建
 """
 
 from typing import Dict, Any, Optional, List
@@ -22,7 +23,7 @@ import logging
 from datetime import datetime
 import uuid
 
-from models.workflow_models import WorkflowResult
+from models.workflow_models import WorkflowResult, DispatchContextMetadata
 from models.preprocess_models import WorkflowResponse
 from railway_agent.workflow import (
     Layer1DataModeling,
@@ -30,6 +31,7 @@ from railway_agent.workflow import (
     Layer3Solver,
     Layer4Evaluation
 )
+from railway_agent.snapshot_builder import get_snapshot_builder
 from models.data_loader import load_trains, load_stations
 
 logger = logging.getLogger(__name__)
@@ -37,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 class LLMWorkflowEngineV2:
     """
-    LLM工作流引擎 v2.0
-    使用分层模块和适配器模式
+    LLM工作流引擎 v2.1（修正版）
+    正确的流程：L0 → SnapshotBuilder → L1 → L2 → L3 → L4
     """
 
     def __init__(self):
@@ -47,6 +49,7 @@ class LLMWorkflowEngineV2:
         self.layer2 = Layer2Planner()
         self.layer3 = Layer3Solver()
         self.layer4 = Layer4Evaluation()
+        self.snapshot_builder = get_snapshot_builder()
 
         # 数据加载
         self.trains = load_trains()
@@ -56,44 +59,47 @@ class LLMWorkflowEngineV2:
         self,
         user_input: str,
         canonical_request: Optional[Any] = None,
-        snapshot_info: Optional[Dict[str, Any]] = None,
         enable_rag: bool = True
     ) -> WorkflowResult:
         """
-        执行完整工作流（L1-L4）
+        执行完整工作流（修正流程：L0 → SnapshotBuilder → L1 → L2 → L3 → L4）
 
         Args:
             user_input: 用户输入
             canonical_request: L0预处理结果（可选）
-            snapshot_info: 快照信息
             enable_rag: 是否启用RAG
 
         Returns:
             WorkflowResult: 工作流结果
         """
-        # 初始化快照信息
-        if snapshot_info is None:
-            snapshot_info = {
-                "request_id": str(uuid.uuid4()),
-                "time_window": {
-                    "start": "06:00",
-                    "end": "24:00"
-                }
-            }
-
         try:
-            # L1: 数据建模层
-            logger.info("开始L1: 数据建模层")
+            # 步骤1：L1 - 数据建模层（只构建 AccidentCard）
+            logger.info("========== 步骤1：L1 数据建模层 ==========")
             l1_result = self.layer1.execute(
                 user_input=user_input,
-                snapshot_info=snapshot_info,
                 canonical_request=canonical_request,
                 enable_rag=enable_rag
             )
 
             accident_card = l1_result["accident_card"]
-            network_snapshot = l1_result["network_snapshot"]
-            dispatch_metadata = l1_result["dispatch_context_metadata"]
+
+            # 步骤2：SnapshotBuilder - 构建 NetworkSnapshot
+            logger.info("========== 步骤2：SnapshotBuilder 构建 NetworkSnapshot ==========")
+            if canonical_request:
+                network_snapshot = self.snapshot_builder.build(canonical_request)
+            else:
+                # 如果没有 canonical_request，使用默认时间窗口
+                network_snapshot = self.snapshot_builder.build(
+                    canonical_request,
+                    time_window={"start": "06:00", "end": "24:00"}
+                )
+
+            # 构建调度元数据
+            dispatch_metadata = DispatchContextMetadata(
+                can_solve=accident_card.is_complete,
+                missing_info=accident_card.missing_fields,
+                observation_corridor=network_snapshot.solving_window.get("observation_corridor", "")
+            )
 
             # 检查是否可以进入求解
             if not dispatch_metadata.can_solve:
@@ -104,8 +110,8 @@ class LLMWorkflowEngineV2:
                     dispatch_metadata.missing_info
                 )
 
-            # L2: Planner层
-            logger.info("开始L2: Planner层")
+            # 步骤3：L2 - Planner层
+            logger.info("========== 步骤3：L2 Planner层 ==========")
             l2_result = self.layer2.execute(
                 accident_card=accident_card,
                 network_snapshot=network_snapshot,
@@ -116,8 +122,8 @@ class LLMWorkflowEngineV2:
             planning_intent = l2_result["planning_intent"]
             skill_dispatch = l2_result["skill_dispatch"]
 
-            # L3: Solver执行层
-            logger.info("开始L3: Solver执行层")
+            # 步骤4：L3 - Solver执行层
+            logger.info("========== 步骤4：L3 Solver执行层 ==========")
             l3_result = self.layer3.execute(
                 planning_intent=planning_intent,
                 accident_card=accident_card,
@@ -126,8 +132,8 @@ class LLMWorkflowEngineV2:
                 stations=self.stations
             )
 
-            # L4: 评估层
-            logger.info("开始L4: 评估层")
+            # 步骤5：L4 - 评估层
+            logger.info("========== 步骤5：L4 评估层 ==========")
             l4_result = self.layer4.execute(
                 skill_execution_result=l3_result["skill_execution_result"],
                 solver_response=l3_result.get("solver_response"),
@@ -137,6 +143,8 @@ class LLMWorkflowEngineV2:
             # 构建最终结果
             return self._build_success_result(
                 user_input=user_input,
+                accident_card=accident_card,
+                network_snapshot=network_snapshot,
                 l1_result=l1_result,
                 l2_result=l2_result,
                 l3_result=l3_result,
@@ -151,19 +159,11 @@ class LLMWorkflowEngineV2:
         self,
         user_input: str,
         canonical_request: Optional[Any] = None,
-        snapshot_info: Optional[Dict[str, Any]] = None,
         enable_rag: bool = True
     ) -> Dict[str, Any]:
         """仅执行L1层"""
-        if snapshot_info is None:
-            snapshot_info = {
-                "request_id": str(uuid.uuid4()),
-                "time_window": {"start": "06:00", "end": "24:00"}
-            }
-
         return self.layer1.execute(
             user_input=user_input,
-            snapshot_info=snapshot_info,
             canonical_request=canonical_request,
             enable_rag=enable_rag
         )
@@ -221,6 +221,8 @@ class LLMWorkflowEngineV2:
     def _build_success_result(
         self,
         user_input: str,
+        accident_card,
+        network_snapshot,
         l1_result: Dict[str, Any],
         l2_result: Dict[str, Any],
         l3_result: Dict[str, Any],
@@ -239,7 +241,8 @@ class LLMWorkflowEngineV2:
             message=f"调度完成: {l4_result.get('policy_decision', {}).get('reason', '')}",
             debug_trace={
                 "user_input": user_input,
-                "accident_card": l1_result["accident_card"].model_dump(),
+                "accident_card": accident_card.model_dump(),
+                "network_snapshot": network_snapshot.model_dump(),
                 "planning_intent": l2_result["planning_intent"],
                 "skill_dispatch": l2_result["skill_dispatch"],
                 "solver_result": l3_result["skill_execution_result"],
@@ -281,7 +284,7 @@ class LLMWorkflowEngineV2:
 
 def create_workflow_engine() -> LLMWorkflowEngineV2:
     """
-    创建工作流引擎实例（兼容旧接口）
+    创建工作流引擎实例
 
     Returns:
         LLMWorkflowEngineV2: 工作流引擎实例
@@ -290,4 +293,4 @@ def create_workflow_engine() -> LLMWorkflowEngineV2:
 
 
 # 导出旧版本LLMCaller（保持向后兼容）
-from .llm_workflow_engine import LLMCaller, get_llm_caller
+from .adapters.llm_adapter import LLMCaller, get_llm_caller

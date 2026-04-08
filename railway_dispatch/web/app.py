@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.data_models import Train, Station, DelayInjection, ScenarioType, InjectedDelay, DelayLocation
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
 from solver.mip_scheduler import MIPScheduler
-from railway_agent.dispatch_skills import create_skills, execute_skill
+from railway_agent import create_skills, execute_skill
 from railway_agent.session_manager import get_session_manager, SessionManager
 from evaluation.evaluator import Evaluator
 
@@ -41,19 +41,19 @@ sys.path.insert(0, project_root)
 # 导入运行图生成模块（经典铁路运行图风格：横轴时间，纵轴车站）
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
-# 导入Agent
-from railway_agent.rule_agent import RuleAgent, create_rule_agent
-from railway_agent.tool_registry import ToolRegistry
+# 导入新架构 Agent
+from railway_agent import RuleAgent, create_rule_agent, ToolRegistry
 
 # 导入预处理服务
 from railway_agent.preprocess_service import get_preprocess_service
 from railway_agent.adapters.response_adapter import get_response_adapter
 
-# QwenAgent延迟导入（需要时再加载）
+# QwenAgent延迟导入（已迁移到新架构，使用统一Agent）
 def get_qwen_agent_module():
-    """延迟导入QwenAgent（避免在RuleAgent模式下加载modelscope）"""
-    from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
-    return QwenAgent, create_qwen_agent
+    """获取Qwen Agent模块（新架构）"""
+    # 新架构使用统一的Agent，支持多种模式
+    from railway_agent import RuleAgent, create_rule_agent
+    return RuleAgent, create_rule_agent
 
 app = Flask(__name__)
 CORS(app)  # 启用跨域支持
@@ -98,51 +98,23 @@ os.environ['MODELSCOPE_API_TOKEN'] = 'ms-4e02888f-95d6-4fd1-b07c-4897386cf13c'
 
 def get_qwen_agent():
     """
-    获取或创建Agent实例
-    
-    根据AGENT_MODE配置选择Agent类型：
-    - "rule": 使用RuleAgent（固定规则，无需大模型）
-    - "qwen": 使用QwenAgent（需要大模型）
-    - "auto": 优先Qwen，失败则回退到RuleAgent
+    获取或创建Agent实例（新架构v2）
+
+    新架构说明：
+    - 所有Agent模式（rule/qwen/auto）都使用统一的新架构Agent
+    - 新架构Agent内部包含工作流引擎，支持LLM调用
+    - 多轮对话和单轮对话都能正常工作
     """
     global qwen_agent
-    
+
     if qwen_agent is not None:
         return qwen_agent
-    
-    # Rule模式：使用固定规则Agent
-    if AGENT_MODE == "rule":
-        logger.info("使用RuleAgent模式（固定规则，无需大模型）")
-        qwen_agent = create_rule_agent(trains=trains, stations=stations)
-        logger.info("RuleAgent 初始化完成")
-        return qwen_agent
-    
-    # Qwen模式：尝试加载大模型
-    if AGENT_MODE in ["qwen", "auto"]:
-        try:
-            logger.info(f"正在初始化QwenAgent，模型路径: {MODEL_PATH}")
-            # 延迟导入QwenAgent（避免在RuleAgent模式下加载modelscope）
-            _, create_qwen_agent_func = get_qwen_agent_module()
-            qwen_agent = create_qwen_agent_func(model_path=MODEL_PATH, trains=trains, stations=stations)
-            if qwen_agent is None:
-                logger.warning("QwenAgent创建失败（可能未配置模型路径）")
-                if AGENT_MODE == "auto":
-                    logger.info("回退到RuleAgent模式")
-                    qwen_agent = create_rule_agent(trains=trains, stations=stations)
-                    logger.info("RuleAgent 初始化完成")
-            else:
-                logger.info("QwenAgent 初始化完成")
-            return qwen_agent
-        except Exception as e:
-            logger.error(f"QwenAgent 初始化失败: {e}")
-            if AGENT_MODE == "auto":
-                logger.info("回退到RuleAgent模式")
-                qwen_agent = create_rule_agent(trains=trains, stations=stations)
-                logger.info("RuleAgent 初始化完成")
-                return qwen_agent
-            return None
-    
-    return None
+
+    # 新架构：使用统一的Agent（RuleAgent），内部包含工作流引擎
+    logger.info(f"初始化新架构Agent，模式: {AGENT_MODE}")
+    qwen_agent = create_rule_agent(trains=trains, stations=stations)
+    logger.info("新架构Agent初始化完成（支持单轮对话和多轮对话）")
+    return qwen_agent
 
 
 def get_original_schedule():
@@ -150,16 +122,17 @@ def get_original_schedule():
     schedule = {}
     for train in trains:
         stops = []
-        for stop in train.schedule.stops:
-            stops.append({
-                "station_code": stop.station_code,
-                "station_name": stop.station_name,
-                "arrival_time": stop.arrival_time,
-                "departure_time": stop.departure_time,
-                "original_arrival": stop.arrival_time,
-                "original_departure": stop.departure_time,
-                "delay_seconds": 0
-            })
+        if train.schedule and train.schedule.stops:
+            for stop in train.schedule.stops:
+                stops.append({
+                    "station_code": stop.station_code,
+                    "station_name": stop.station_name,
+                    "arrival_time": stop.arrival_time,
+                    "departure_time": stop.departure_time,
+                    "original_arrival": stop.arrival_time,
+                    "original_departure": stop.departure_time,
+                    "delay_seconds": 0
+                })
         schedule[train.train_id] = stops
     return schedule
 
@@ -1270,7 +1243,7 @@ def dispatch():
                 if selected_trains:
                     for train in trains:
                         if train.train_id == selected_trains[0]:
-                            valid_stations_for_train = [s.station_code for s in train.schedule.stops]
+                            valid_stations_for_train = [s.station_code for s in train.schedule.stops] if train.schedule and train.schedule.stops else []
                             break
 
                 # 如果选择的站点不在列车的停靠列表中，使用第一站
@@ -1624,13 +1597,17 @@ def parse_user_prompt(prompt: str) -> dict:
                 break
 
         actual_station_code = detected_station_code
-        if train:
+        if train and train.schedule:
             # 检查列车是否停靠在选定车站
-            train_stations = [stop.station_code for stop in train.schedule.stops]
-            if detected_station_code not in train_stations:
+            train_stations = [stop.station_code for stop in train.schedule.stops] if train.schedule.stops else []
+            if detected_station_code not in train_stations and train_stations:
                 # 使用列车的第一个停靠站
                 actual_station_code = train.schedule.stops[0].station_code
                 logger.warning(f"列车 {train_id} 不停靠在 {detected_station_code}，使用 {actual_station_code} 作为延误车站")
+        elif not train:
+            logger.warning(f"列车 {train_id} 不在列车列表中，使用默认车站 {detected_station_code}")
+        elif not train.schedule:
+            logger.warning(f"列车 {train_id} 没有时刻表信息，使用默认车站 {detected_station_code}")
 
         injected_delays.append({
             "train_id": train_id,
@@ -1939,19 +1916,73 @@ def workflow_start():
 
         logger.info(f"启动多轮工作流，输入: {user_input[:50]}...")
 
-        # 导入LLM工作流引擎
-        from railway_agent.llm_workflow_engine import layer1_data_modeling
+        # 导入新架构工作流引擎
+        from railway_agent.llm_workflow_engine_v2 import LLMWorkflowEngineV2, create_workflow_engine
 
-        # 执行第1层
-        result = layer1_data_modeling(user_input, snapshot_info)
+        # 创建工作流引擎
+        workflow_engine = create_workflow_engine()
 
-        # 转换Pydantic模型为字典（用于JSON序列化）
-        from railway_agent.llm_workflow_engine import safe_json_dumps
+        # 执行第1层（数据建模）
+        result = workflow_engine.execute_layer1(user_input=user_input, canonical_request=snapshot_info)
+
+        # 构建 NetworkSnapshot（使用 SnapshotBuilder）
+        from railway_agent.snapshot_builder import get_snapshot_builder
+        from models.workflow_models import NetworkSnapshot
+        from datetime import datetime
+
+        snapshot_builder = get_snapshot_builder()
+        try:
+            # 尝试从 accident_card 构建 canonical_request
+            accident_card = result.get("accident_card")
+            if accident_card and hasattr(accident_card, 'model_dump'):
+                # 创建简化的 canonical_request
+                from models.preprocess_models import CanonicalDispatchRequest, LocationInfo, CompletenessInfo
+                from models.common_enums import RequestSourceType, SceneTypeCode
+
+                acc_data = accident_card.model_dump()
+                canonical_req = CanonicalDispatchRequest(
+                    source_type=RequestSourceType.NATURAL_LANGUAGE,
+                    raw_text=user_input,
+                    scene_type_code=SceneTypeCode.SUDDEN_FAILURE if "突发" in user_input or "风" in user_input else SceneTypeCode.TEMP_SPEED_LIMIT,
+                    location=LocationInfo(
+                        station_code=acc_data.get('location_code', ''),
+                        station_name=acc_data.get('location_name', '')
+                    ),
+                    affected_train_ids=acc_data.get('affected_train_ids', []),
+                    event_time=datetime.now().isoformat(),
+                    completeness=CompletenessInfo(
+                        can_enter_solver=acc_data.get('is_complete', False),
+                        missing_fields=acc_data.get('missing_fields', [])
+                    )
+                )
+                network_snapshot = snapshot_builder.build(canonical_req)
+            else:
+                # 创建默认的 network_snapshot
+                network_snapshot = NetworkSnapshot(
+                    snapshot_time=datetime.now(),
+                    solving_window={"observation_corridor": "BJX-AYD", "planning_time_window": {"start": "06:00", "end": "24:00"}},
+                    candidate_train_ids=[],
+                    trains=[],
+                    stations=[],
+                    sections=[]
+                )
+        except Exception as e:
+            logger.warning(f"构建 NetworkSnapshot 失败: {e}，使用默认值")
+            network_snapshot = NetworkSnapshot(
+                snapshot_time=datetime.now(),
+                solving_window={"observation_corridor": "BJX-AYD", "planning_time_window": {"start": "06:00", "end": "24:00"}},
+                candidate_train_ids=[],
+                trains=[],
+                stations=[],
+                sections=[]
+            )
+
+        # 转换为字典格式（用于JSON序列化）
         result_dict = {
             "accident_card": result.get("accident_card", {}).model_dump() if hasattr(result.get("accident_card", {}), "model_dump") else result.get("accident_card", {}),
-            "network_snapshot": result.get("network_snapshot", {}).model_dump() if hasattr(result.get("network_snapshot", {}), "model_dump") else result.get("network_snapshot", {}),
-            "can_solve": result.get("dispatch_context_metadata", {}).can_solve if hasattr(result.get("dispatch_context_metadata", {}), "can_solve") else True,
-            "missing_info": result.get("dispatch_context_metadata", {}).missing_info if hasattr(result.get("dispatch_context_metadata", {}), "missing_info") else [],
+            "network_snapshot": network_snapshot.model_dump(),
+            "can_solve": result.get("accident_card", {}).is_complete if hasattr(result.get("accident_card", {}), "is_complete") else True,
+            "missing_info": result.get("accident_card", {}).missing_fields if hasattr(result.get("accident_card", {}), "missing_fields") else [],
             "llm_response_type": result.get("llm_response_type", "未知")
         }
 
@@ -2040,6 +2071,19 @@ def workflow_next():
             })
 
         current_layer = status["current_layer"]
+        is_complete = status.get("is_complete", False)
+
+        # 如果工作流已完成，返回完成状态
+        if is_complete or current_layer >= 4:
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "current_layer": current_layer,
+                "progress": status["progress"],
+                "is_complete": True,
+                "messages": status["messages"],
+                "message": "工作流已完成"
+            })
 
         # 如果用户尝试继续但L1信息不完整，则拒绝
         if current_layer == 1 and continue_execution:
@@ -2058,15 +2102,37 @@ def workflow_next():
         # 根据当前层执行下一层
         if current_layer == 1:
             # 执行第2层
-            from railway_agent.llm_workflow_engine import layer2_planner
-            from models.workflow_models import AccidentCard, NetworkSnapshot
+            from models.workflow_models import AccidentCard, NetworkSnapshot, DispatchContextMetadata
+            from railway_agent.snapshot_builder import get_snapshot_builder
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+            from datetime import datetime
 
             # 从第1层结果构建对象
             l1_result = status["layer1_result"]
             accident_card = AccidentCard(**l1_result.get("accident_card", {}))
-            network_snapshot = NetworkSnapshot(**l1_result.get("network_snapshot", {}))
 
-            from models.workflow_models import DispatchContextMetadata
+            # 构建或获取 network_snapshot
+            network_snapshot_data = l1_result.get("network_snapshot", {})
+            if not network_snapshot_data or not network_snapshot_data.get("snapshot_time"):
+                # 如果没有 network_snapshot，使用 SnapshotBuilder 构建一个默认的
+                snapshot_builder = get_snapshot_builder()
+                network_snapshot = NetworkSnapshot(
+                    snapshot_time=datetime.now(),
+                    solving_window={
+                        "observation_corridor": "BJX-AYD",
+                        "planning_time_window": {"start": "06:00", "end": "24:00"}
+                    },
+                    candidate_train_ids=accident_card.affected_train_ids or [],
+                    excluded_train_ids=[],
+                    trains=[],
+                    train_count=len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,
+                    stations=[],
+                    sections=[],
+                    headways={},
+                    current_delays={}
+                )
+            else:
+                network_snapshot = NetworkSnapshot(**network_snapshot_data)
             dispatch_metadata = DispatchContextMetadata(
                 train_count=network_snapshot.train_count,
                 station_count=13,
@@ -2074,7 +2140,13 @@ def workflow_next():
                 time_window_end="2024-01-15T12:00:00"
             )
 
-            result = layer2_planner(accident_card, network_snapshot, dispatch_metadata)
+            # 使用新架构工作流引擎
+            workflow_engine = create_workflow_engine()
+            result = workflow_engine.execute_layer2(
+                accident_card=accident_card,
+                network_snapshot=network_snapshot,
+                dispatch_metadata=dispatch_metadata
+            )
             session_mgr.update_layer_result(session_id, 2, result)
 
             status = session_mgr.get_session_status(session_id)
@@ -2094,18 +2166,11 @@ def workflow_next():
 
         elif current_layer == 2:
             # 执行第3层
-            from railway_agent.llm_workflow_engine import layer3_solver_execution
-            from railway_agent.llm_workflow_engine import safe_json_dumps
-
-            l2_result = status["layer2_result"]
-            skill_dispatch = l2_result.get("skill_dispatch", {})
-            main_skill = skill_dispatch.get("主技能", "mip")
-            # 提取 planning_intent
-            planning_intent = l2_result.get("planning_intent", "recalculate_corridor_schedule")
-            
-            l1_result = status["layer1_result"]
-            # 转换为Pydantic模型
             from models.workflow_models import AccidentCard, NetworkSnapshot
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+
+            # 从第1层结果构建对象
+            l1_result = status["layer1_result"]
             accident_card = AccidentCard(**l1_result.get("accident_card", {}))
             network_snapshot = NetworkSnapshot(**l1_result.get("network_snapshot", {}))
 
@@ -2113,12 +2178,14 @@ def workflow_next():
             trains = get_trains_pydantic()[:50]
             stations = get_stations_pydantic()
 
-            result = layer3_solver_execution(
-                planning_intent,
-                accident_card,
-                network_snapshot,
-                trains,
-                stations
+            # 使用新架构工作流引擎
+            workflow_engine = create_workflow_engine()
+            result = workflow_engine.execute_layer3(
+                planning_intent="recalculate_corridor_schedule",
+                accident_card=accident_card,
+                network_snapshot=network_snapshot,
+                trains=trains,
+                stations=stations
             )
             # 转换为字典 (支持Pydantic模型)
             def to_dict(obj):
@@ -2148,9 +2215,12 @@ def workflow_next():
 
         elif current_layer == 3:
             # 执行第4层
-            from railway_agent.llm_workflow_engine import layer4_evaluation
-
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
             l3_result = status["layer3_result"]
+
+            # 获取 skill_execution_result 和 solver_response
+            skill_execution_result = l3_result.get("skill_execution_result", {}) if isinstance(l3_result, dict) else {}
+            solver_response_data = l3_result.get("solver_response", {}) if isinstance(l3_result, dict) else {}
 
             # 构建solver_response的简化对象
             class SimpleSolverResponse:
@@ -2170,8 +2240,14 @@ def workflow_next():
                         "message": self.message
                     }
 
-            solver_response = SimpleSolverResponse(l3_result)
-            result = layer4_evaluation(l3_result, solver_response)
+            solver_response = SimpleSolverResponse(solver_response_data)
+
+            # 使用新架构工作流引擎
+            workflow_engine = create_workflow_engine()
+            result = workflow_engine.execute_layer4(
+                skill_execution_result=skill_execution_result,
+                solver_response=solver_response
+            )
             # 转换为字典
             result_dict = {
                 "evaluation_report": result.get("evaluation_report", {}).model_dump() if hasattr(result.get("evaluation_report", {}), "model_dump") else result.get("evaluation_report", {}),
@@ -2303,17 +2379,21 @@ def preprocess_debug():
 
 
 if __name__ == '__main__':
-    logger.info("=" * 50)
-    logger.info("铁路调度Agent系统 v1.0")
-    logger.info("=" * 50)
-    logger.info(f"Agent模式: {AGENT_MODE}")
-    if AGENT_MODE == "rule":
-        logger.info("使用固定规则Agent，无需加载大模型")
-    elif AGENT_MODE == "qwen":
-        logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
-    else:
-        logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
-    logger.info("访问地址: http://localhost:8081")
-    logger.info("按 Ctrl+C 停止服务")
-    logger.info("=" * 50)
-    app.run(host='0.0.0.0', port=8081, debug=True)
+    # 避免Flask reloader导致的重复启动
+    import os
+    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+        logger.info("=" * 50)
+        logger.info("铁路调度Agent系统 v1.0")
+        logger.info("=" * 50)
+        logger.info(f"Agent模式: {AGENT_MODE}")
+        if AGENT_MODE == "rule":
+            logger.info("使用固定规则Agent，无需加载大模型")
+        elif AGENT_MODE == "qwen":
+            logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
+        else:
+            logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
+        logger.info("访问地址: http://localhost:8081")
+        logger.info("按 Ctrl+C 停止服务")
+        logger.info("=" * 50)
+    # 关闭debug模式以避免重复启动，但保留自动重载功能
+    app.run(host='0.0.0.0', port=8081, debug=False)

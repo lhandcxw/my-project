@@ -44,7 +44,7 @@ class Layer2Planner:
         Returns:
             Dict: 包含planning_intent的字典
         """
-        logger.info("========== 第二层：Planner层 ==========")
+        logger.info("[L2] Planner层")
 
         # 构建Prompt上下文
         context = PromptContext(

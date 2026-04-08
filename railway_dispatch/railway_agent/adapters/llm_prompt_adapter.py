@@ -17,7 +17,7 @@ from models.prompts import (
     FineTuningSample
 )
 from railway_agent.prompts import get_prompt_manager
-from railway_agent.llm_workflow_engine import get_llm_caller
+from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.rag_retriever import get_retriever
 
 logger = logging.getLogger(__name__)

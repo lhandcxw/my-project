@@ -43,7 +43,7 @@ class Layer4Evaluation:
         Returns:
             Dict: 包含评估报告和决策的字典
         """
-        logger.info("========== 第四层：评估层 ==========")
+        logger.info("[L4] 评估层")
 
         # 如果求解失败，直接返回回退反馈
         if not skill_execution_result.get("success", False):

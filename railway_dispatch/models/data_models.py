@@ -62,9 +62,10 @@ class Train(BaseModel):
     def get_all_times(self) -> Dict[str, int]:
         """获取列车所有经停站的到发时间(秒)"""
         times = {}
-        for stop in self.schedule.stops:
-            times[f"{stop.station_code}_arrival"] = self.time_to_seconds(stop.arrival_time)
-            times[f"{stop.station_code}_departure"] = self.time_to_seconds(stop.departure_time)
+        if self.schedule and self.schedule.stops:
+            for stop in self.schedule.stops:
+                times[f"{stop.station_code}_arrival"] = self.time_to_seconds(stop.arrival_time)
+                times[f"{stop.station_code}_departure"] = self.time_to_seconds(stop.departure_time)
         return times
 
 

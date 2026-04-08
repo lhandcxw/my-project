@@ -6,7 +6,7 @@
 数据目录结构：
 - data/ 包含所有数据文件
   - trains.json: 处理后的列车数据
-  - stations.json: 处理后的车站数据  
+  - stations.json: 处理后的车站数据
   - min_running_time_matrix.csv: 区间最小运行时间
   - plan_timetable.csv: 原始时刻表
   - station_alias.json: 真实车站别名
@@ -18,8 +18,11 @@
 import json
 import os
 import csv
+import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # 统一数据目录路径
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -440,67 +443,85 @@ def get_trains_pydantic():
     trains = []
 
     for t in trains_data:
-        stops = []
-        for s in t["schedule"]["stops"]:
-            # 检查字段是否存在，如果存在则使用实际值
-            has_is_stopped = "is_stopped" in s
-            has_stop_duration = "stop_duration" in s
-            
-            if has_is_stopped and has_stop_duration:
-                # 两个字段都存在，直接使用
-                is_stopped = s["is_stopped"]
-                stop_duration = s["stop_duration"]
-            elif has_stop_duration:
-                # 只有stop_duration，用它来判断
-                stop_duration = s["stop_duration"]
-                is_stopped = stop_duration > 0
-            elif has_is_stopped:
-                # 只有is_stopped，计算stop_duration
-                is_stopped = s["is_stopped"]
-                # 计算停站时间
-                arr_parts = s["arrival_time"].split(':')
-                dep_parts = s["departure_time"].split(':')
-                if len(arr_parts) == 2:
-                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
-                else:
-                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
-                if len(dep_parts) == 2:
-                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
-                else:
-                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
-                stop_duration = dep_sec - arr_sec
-            else:
-                # 都没有，根据到达和发车时间计算
-                arr_parts = s["arrival_time"].split(':')
-                dep_parts = s["departure_time"].split(':')
-                if len(arr_parts) == 2:
-                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
-                else:
-                    arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
-                if len(dep_parts) == 2:
-                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
-                else:
-                    dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
-                stop_duration = dep_sec - arr_sec
-                is_stopped = stop_duration > 0
-            
-            stops.append(
-                TrainStop(
-                    station_code=s["station_code"],
-                    station_name=s["station_name"],
-                    arrival_time=s["arrival_time"],
-                    departure_time=s["departure_time"],
-                    is_stopped=is_stopped,
-                    stop_duration=stop_duration
-                )
-            )
+        # 安全检查：确保 schedule 字段存在且是字典
+        schedule_data = t.get("schedule", {})
+        if not isinstance(schedule_data, dict):
+            logger.warning(f"列车 {t.get('train_id', 'UNKNOWN')} 的 schedule 字段不是字典，跳过")
+            continue
 
-        train = Train(
-            train_id=t["train_id"],
-            train_type=t.get("train_type", "高速动车组"),
-            schedule=TrainSchedule(stops=stops)
-        )
-        trains.append(train)
+        stops_data = schedule_data.get("stops", [])
+        if not isinstance(stops_data, list):
+            logger.warning(f"列车 {t.get('train_id', 'UNKNOWN')} 的 stops 不是列表，跳过")
+            continue
+
+        stops = []
+        for s in stops_data:
+            try:
+                # 检查字段是否存在，如果存在则使用实际值
+                has_is_stopped = "is_stopped" in s
+                has_stop_duration = "stop_duration" in s
+
+                if has_is_stopped and has_stop_duration:
+                    # 两个字段都存在，直接使用
+                    is_stopped = s["is_stopped"]
+                    stop_duration = s["stop_duration"]
+                elif has_stop_duration:
+                    # 只有stop_duration，用它来判断
+                    stop_duration = s["stop_duration"]
+                    is_stopped = stop_duration > 0
+                elif has_is_stopped:
+                    # 只有is_stopped，计算stop_duration
+                    is_stopped = s["is_stopped"]
+                    # 计算停站时间
+                    arr_parts = s["arrival_time"].split(':')
+                    dep_parts = s["departure_time"].split(':')
+                    if len(arr_parts) == 2:
+                        arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
+                    else:
+                        arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
+                    if len(dep_parts) == 2:
+                        dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
+                    else:
+                        dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
+                    stop_duration = dep_sec - arr_sec
+                else:
+                    # 都没有，根据到达和发车时间计算
+                    arr_parts = s["arrival_time"].split(':')
+                    dep_parts = s["departure_time"].split(':')
+                    if len(arr_parts) == 2:
+                        arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60
+                    else:
+                        arr_sec = int(arr_parts[0]) * 3600 + int(arr_parts[1]) * 60 + int(arr_parts[2])
+                    if len(dep_parts) == 2:
+                        dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60
+                    else:
+                        dep_sec = int(dep_parts[0]) * 3600 + int(dep_parts[1]) * 60 + int(dep_parts[2])
+                    stop_duration = dep_sec - arr_sec
+                    is_stopped = stop_duration > 0
+
+                stops.append(
+                    TrainStop(
+                        station_code=s["station_code"],
+                        station_name=s["station_name"],
+                        arrival_time=s["arrival_time"],
+                        departure_time=s["departure_time"],
+                        is_stopped=is_stopped,
+                        stop_duration=stop_duration
+                    )
+                )
+            except Exception as e:
+                logger.error(f"处理列车 {t.get('train_id', 'UNKNOWN')} 的停靠站时出错: {e}，跳过该停靠站")
+                continue
+
+        if stops:
+            train = Train(
+                train_id=t["train_id"],
+                train_type=t.get("train_type", "高速动车组"),
+                schedule=TrainSchedule(stops=stops)
+            )
+            trains.append(train)
+        else:
+            logger.warning(f"列车 {t.get('train_id', 'UNKNOWN')} 没有有效的停靠站，跳过")
 
     return trains
 

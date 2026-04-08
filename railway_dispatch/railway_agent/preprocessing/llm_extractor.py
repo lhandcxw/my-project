@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 
 from models.common_enums import SceneTypeCode, FaultTypeCode
-from railway_agent.llm_workflow_engine import get_llm_caller
+from railway_agent.adapters.llm_adapter import get_llm_caller
 
 logger = logging.getLogger(__name__)
 

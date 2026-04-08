@@ -5,7 +5,7 @@ Prompt管理器模块
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
 
@@ -126,7 +126,7 @@ class PromptManager:
         self,
         template_id: str,
         output: Dict[str, Any]
-    ) -> tuple[bool, List[str]]:
+    ) -> Tuple[bool, List[str]]:
         """
         验证输出是否符合模板要求
 
@@ -135,7 +135,7 @@ class PromptManager:
             output: 输出字典
 
         Returns:
-            tuple[bool, List[str]]: (是否有效, 错误列表)
+            Tuple[bool, List[str]]: (是否有效, 错误列表)
         """
         template = self.get_template(template_id)
         if template is None:
@@ -218,6 +218,13 @@ class PromptManager:
             Dict: 上下文字典
         """
         import json
+        from datetime import datetime
+
+        def json_serial(obj):
+            """JSON序列化辅助函数，处理datetime等特殊类型"""
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f"Type {type(obj)} not serializable")
 
         context_dict = {
             "user_input": context.user_input or "",
@@ -230,42 +237,42 @@ class PromptManager:
         # 添加复杂对象
         if context.canonical_request:
             context_dict["canonical_request"] = json.dumps(
-                context.canonical_request, ensure_ascii=False, indent=2
+                context.canonical_request, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["canonical_request"] = "{}"
 
         if context.accident_card:
             context_dict["accident_card"] = json.dumps(
-                context.accident_card, ensure_ascii=False, indent=2
+                context.accident_card, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["accident_card"] = "{}"
 
         if context.network_snapshot:
             context_dict["network_snapshot"] = json.dumps(
-                context.network_snapshot, ensure_ascii=False, indent=2
+                context.network_snapshot, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["network_snapshot"] = "{}"
 
         if context.dispatch_context:
             context_dict["dispatch_context"] = json.dumps(
-                context.dispatch_context, ensure_ascii=False, indent=2
+                context.dispatch_context, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["dispatch_context"] = "{}"
 
         if context.solver_result:
             context_dict["solver_result"] = json.dumps(
-                context.solver_result, ensure_ascii=False, indent=2
+                context.solver_result, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["solver_result"] = "{}"
 
         if context.execution_result:
             context_dict["execution_result"] = json.dumps(
-                context.execution_result, ensure_ascii=False, indent=2
+                context.execution_result, ensure_ascii=False, indent=2, default=json_serial
             )
         else:
             context_dict["execution_result"] = "{}"

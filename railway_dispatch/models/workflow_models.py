@@ -282,6 +282,8 @@ class EvaluationReport(BaseModel):
     solving_time_seconds: float = Field(default=0.0, description="运行时间(秒)")
     risk_warnings: List[str] = Field(default_factory=list, description="风险提示")
     constraint_satisfaction: Dict[str, bool] = Field(default_factory=dict, description="约束满足情况")
+    llm_summary: str = Field(default="", description="LLM生成的评估摘要")
+    feasibility_score: float = Field(default=0.8, description="可行性评分(0-1)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
 
 

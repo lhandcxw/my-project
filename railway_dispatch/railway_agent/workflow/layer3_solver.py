@@ -46,7 +46,7 @@ class Layer3Solver:
         Returns:
             Dict: 包含求解结果的字典
         """
-        logger.info("========== 第三层：求解技能层 ==========")
+        logger.info("[L3] 求解技能层")
 
         # 选择求解器
         main_skill = self.select_solver(
@@ -56,7 +56,7 @@ class Layer3Solver:
             is_complete=accident_card.is_complete
         )
 
-        logger.info(f"第三层执行: planning_intent={planning_intent}, 选择的求解器={main_skill}")
+        logger.info(f"[L3] 求解器={main_skill}")
 
         # 获取求解器实例
         solver = self._get_solver(main_skill)

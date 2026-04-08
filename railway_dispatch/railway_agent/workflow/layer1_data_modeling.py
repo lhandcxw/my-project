@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 """
 第一层：数据建模层
-从调度员描述中生成事故卡片，确定性逻辑构建网络快照
+从调度员描述中生成事故卡片
+
+职责说明（修正后）：
+- LLM提取事故信息（scene_category, fault_type, location_code等）
+- 回退推断逻辑（当LLM失败时）
+- 构建AccidentCard
+- **不**构建 NetworkSnapshot（由 SnapshotBuilder 负责）
+
+v4.1 修正：
+- 移除 _build_network_snapshot 方法
+- L1 只负责数据建模（AccidentCard）
+- NetworkSnapshot 由 SnapshotBuilder 单一入口构建
 """
 
 import logging
-import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 import re
 
-from models.workflow_models import (
-    AccidentCard,
-    NetworkSnapshot,
-    DispatchContextMetadata
-)
+from models.workflow_models import AccidentCard
 from models.common_enums import fault_code_to_label
 from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
@@ -25,7 +31,8 @@ logger = logging.getLogger(__name__)
 class Layer1DataModeling:
     """
     第一层：数据建模层
-    使用LLM提取事故信息，确定性逻辑构建网络快照
+    使用LLM提取事故信息，构建 AccidentCard
+    不构建 NetworkSnapshot（由 SnapshotBuilder 负责）
     """
 
     def __init__(self):
@@ -35,7 +42,6 @@ class Layer1DataModeling:
     def execute(
         self,
         user_input: str,
-        snapshot_info: Dict[str, Any],
         canonical_request: Optional[Any] = None,
         enable_rag: bool = True
     ) -> Dict[str, Any]:
@@ -44,25 +50,23 @@ class Layer1DataModeling:
 
         Args:
             user_input: 用户输入
-            snapshot_info: 快照信息
             canonical_request: L0预处理结果（可选）
             enable_rag: 是否启用RAG
 
         Returns:
-            Dict: 包含accident_card和network_snapshot的字典
+            Dict: 包含 accident_card 的字典
         """
-        logger.info("========== 第一层：数据建模层 ==========")
+        logger.info("[L1] 数据建模层")
 
         # 如果有L0预处理结果，直接使用
         if canonical_request and canonical_request.scene_type_code:
-            return self._use_preprocessed_result(canonical_request, snapshot_info)
+            return self._use_preprocessed_result(canonical_request)
 
         # 构建Prompt上下文
         context = PromptContext(
-            request_id=snapshot_info.get("request_id", ""),
+            request_id="",  # 由外部提供
             user_input=user_input,
-            source_type="natural_language",
-            variables=snapshot_info
+            source_type="natural_language"
         )
 
         # 调用LLM提取事故卡片
@@ -81,34 +85,17 @@ class Layer1DataModeling:
             logger.warning("LLM提取失败，使用回退逻辑")
             accident_card = self._fallback_extraction(user_input)
 
-        # 确定性逻辑构建网络快照
-        network_snapshot = self._build_network_snapshot(
-            accident_card.location_code,
-            accident_card.affected_section,
-            snapshot_info
-        )
-
-        # 构建调度元数据
-        dispatch_metadata = DispatchContextMetadata(
-            can_solve=accident_card.is_complete,
-            missing_info=accident_card.missing_fields,
-            observation_corridor=network_snapshot.solving_window.get("observation_corridor", "")
-        )
-
         logger.info(f"第一层完成: scene_category={accident_card.scene_category}, is_complete={accident_card.is_complete}")
 
         return {
             "accident_card": accident_card,
-            "network_snapshot": network_snapshot,
-            "dispatch_context_metadata": dispatch_metadata,
             "llm_response": response.raw_response,
             "llm_response_type": response.model_used
         }
 
     def _use_preprocessed_result(
         self,
-        canonical_request: Any,
-        snapshot_info: Dict[str, Any]
+        canonical_request: Any
     ) -> Dict[str, Any]:
         """使用L0预处理结果"""
         scene_label = canonical_request.scene_type_label or "临时限速"
@@ -126,22 +113,10 @@ class Layer1DataModeling:
             missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
         )
 
-        network_snapshot = self._build_network_snapshot(
-            accident_card.location_code,
-            accident_card.affected_section,
-            snapshot_info
-        )
-
-        dispatch_metadata = DispatchContextMetadata(
-            can_solve=True,
-            missing_info=[],
-            observation_corridor=network_snapshot.solving_window.get("observation_corridor", "")
-        )
+        logger.info(f"第一层完成(L0): scene_category={accident_card.scene_category}")
 
         return {
             "accident_card": accident_card,
-            "network_snapshot": network_snapshot,
-            "dispatch_context_metadata": dispatch_metadata,
             "llm_response": "使用L0预处理结果"
         }
 
@@ -291,56 +266,4 @@ class Layer1DataModeling:
             is_complete=is_complete,
             missing_fields=missing_fields,
             start_time=datetime.now()
-        )
-
-    def _build_network_snapshot(
-        self,
-        location_code: str,
-        affected_section: str,
-        snapshot_info: Dict[str, Any]
-    ) -> NetworkSnapshot:
-        """确定性逻辑构建网络快照"""
-        from models.data_loader import get_station_codes
-
-        # 获取车站顺序
-        station_codes = get_station_codes()
-
-        # 确定观察区间
-        if location_code and location_code in station_codes:
-            loc_idx = station_codes.index(location_code)
-            start_idx = max(0, loc_idx - 2)
-            end_idx = min(len(station_codes) - 1, loc_idx + 2)
-            observation_corridor = f"{station_codes[start_idx]}-{station_codes[end_idx]}"
-        elif affected_section and "-" in affected_section:
-            observation_corridor = affected_section
-        else:
-            observation_corridor = snapshot_info.get("observation_corridor", "")
-
-        # 统计受影响列车
-        observation_window_codes = []
-        if location_code and location_code in station_codes:
-            loc_idx = station_codes.index(location_code)
-            start_idx = max(0, loc_idx - 2)
-            end_idx = min(len(station_codes), loc_idx + 3)
-            observation_window_codes = station_codes[start_idx:end_idx]
-
-        from models.data_loader import load_trains
-        trains = load_trains()
-        affected_trains = []
-        for train in trains:
-            stops = train.get("schedule", {}).get("stops", [])
-            for stop in stops:
-                stop_code = stop.get("station_code")
-                if stop_code and observation_window_codes and stop_code in observation_window_codes:
-                    affected_trains.append(train["train_id"])
-                    break
-
-        return NetworkSnapshot(
-            snapshot_time=datetime.now(),
-            solving_window={
-                "observation_corridor": observation_corridor,
-                "planning_time_window": snapshot_info.get("time_window", {})
-            },
-            train_count=len(affected_trains),
-            current_delays=snapshot_info.get("current_delays", {})
         )

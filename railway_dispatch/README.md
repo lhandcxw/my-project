@@ -1,6 +1,22 @@
 # 铁路调度Agent系统
 
-基于大模型和整数规划的智能铁路调度优化系统（v4.0）。
+基于大模型和整数规划的智能铁路调度优化系统（v4.1）。
+
+## v4.1 更新日志
+
+**架构修复**：
+- 修复工作流流程问题：明确 L0 → SnapshotBuilder → L1 → L2 → L3 → L4 的正确流程
+- SnapshotBuilder 成为唯一构建 NetworkSnapshot 的入口
+- L1 数据建模层只负责构建 AccidentCard，不再构建 NetworkSnapshot
+- 删除冗余代码和文件（v2、v2_fixed版本文件），只保留最新版本
+- 更新所有文档以反映正确的架构
+
+**工作流职责明确**：
+- SnapshotBuilder: 确定性构建 NetworkSnapshot（观察窗口、候选列车、排除列车、求解窗口）
+- L1 数据建模层: 只构建 AccidentCard（事故卡片）
+- L2 Planner: 决策 planning_intent
+- L3 Solver: 选择并执行求解器
+- L4 Evaluation: 评估和最终决策
 
 ## v4.0 更新日志
 
@@ -213,7 +229,8 @@ prompt_manager.export_fine_tuning_samples("fine_tuning_data.jsonl")
 
 点击「LLM多轮对话」标签页，体验5层LLM决策的完整流程：
 - L0: 预处理 - 统一输入转换为标准请求
-- L1: 数据建模 - LLM辅助判断场景类型，NetworkSnapshot由确定性逻辑切出
+- **SnapshotBuilder**: 构建网络快照 - 确定性构建 NetworkSnapshot（唯一入口）
+- L1: 数据建模 - 只构建 AccidentCard（事故卡片）
 - L2: Planner - LLM决策 planning_intent（问题类型与处理意图）
 - L3: Solver - SolverPolicyAdapter 根据 intent 选择求解器并执行
 - L4: Evaluation - LLM提供解释/摘要/风险提示，PolicyEngine做最终决策
@@ -229,10 +246,24 @@ prompt_manager.export_fine_tuning_samples("fine_tuning_data.jsonl")
 | 层级 | 功能 | 职责 | 说明 |
 |------|------|------|------|
 | L0 预处理 | 输入标准化 | 将不同输入转换为 CanonicalDispatchRequest | 新增层 |
-| L1 数据建模 | 生成事故卡片 | LLM辅助判断场景类型 | NetworkSnapshot由确定性逻辑切出 |
+| SnapshotBuilder | 构建网络快照 | 确定性构建 NetworkSnapshot | 唯一构建入口 |
+| L1 数据建模 | 生成事故卡片 | 只构建 AccidentCard | 不构建 NetworkSnapshot |
 | L2 Planner | 技能意图决策 | LLM决策 planning_intent | 不直接选择求解器 |
 | L3 Solver | 求解器选择与执行 | SolverPolicyAdapter 根据 intent 选择求解器 | L2/L3 分离 |
 | L4 Evaluation | 评估解释与决策 | LLM提供解释，PolicyEngine做最终决策 | LLM不做最终决策 |
+
+### v4.1 架构修复
+
+#### 工作流流程修正
+- 修正流程顺序：L0 → SnapshotBuilder → L1 → L2 → L3 → L4
+- SnapshotBuilder 成为唯一构建 NetworkSnapshot 的入口
+- L1 数据建模层只负责构建 AccidentCard，不再构建 NetworkSnapshot
+- 明确各层职责，避免重复构建
+
+#### 代码精简
+- 删除所有 v2、v2_fixed 版本的冗余文件
+- 只保留一个最新版本的代码
+- 在原文件基础上更新，不创建新文件
 
 ### v4.0新特性
 
@@ -285,10 +316,10 @@ prompt_manager.export_fine_tuning_samples("fine_tuning_data.jsonl")
   - 微调样本收集和导出
 
 ### 2. 工作流分层模块（v4.0新增） (`railway_agent/workflow/`)
-- `layer1_data_modeling.py`: 数据建模层
+- `layer1_data_modeling.py`: 数据建模层（v4.1 修复）
   - LLM提取事故信息
   - 回退推断逻辑
-  - 确定性构建NetworkSnapshot
+  - **只构建 AccidentCard，不构建 NetworkSnapshot**
 - `layer2_planner.py`: Planner层
   - LLM决策planning_intent
   - 基于规则构建skill_dispatch
@@ -381,6 +412,16 @@ data/
 - **RAG检索**: 关键词匹配（可升级为向量检索）
 
 ## 版本
+
+- **v4.1** (2026-04-08):
+  - 修复工作流流程：明确 L0 → SnapshotBuilder → L1 → L2 → L3 → L4
+  - SnapshotBuilder 成为唯一构建 NetworkSnapshot 的入口
+  - L1 只构建 AccidentCard，不再构建 NetworkSnapshot
+  - 删除冗余文件（v2、v2_fixed 版本）
+  - 更新所有文档以反映正确架构
+  - **代码优化**：删除 6 个未使用的冗余文件
+  - **问题修复**：修复 rag_retriever.py 和 prompt_manager.py 的语法/兼容性问题
+  - 详见 [项目优化总结](../PROJECT_OPTIMIZATION_SUMMARY.md)
 
 - **v4.0** (2026-04-07):
   - 新增Prompt管理系统（PromptManager + PromptTemplate）

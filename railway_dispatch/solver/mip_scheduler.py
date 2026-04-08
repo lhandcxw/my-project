@@ -164,6 +164,7 @@ class MIPScheduler:
         # 收集受影响的列车信息
         affected_trains = set()
         injected_stations = {}  # {(train_id, station_code): initial_delay}
+        invalid_train_ids = []  # 记录无效的列车ID
 
         # 1. 初始延误约束（修正：只约束发车时间）
         for injected in delay_injection.injected_delays:
@@ -171,8 +172,11 @@ class MIPScheduler:
             station_code = injected.location.station_code or "BJX"
             initial_delay = injected.initial_delay_seconds
 
+            # 验证列车ID是否存在
             train = next((t for t in self.trains if t.train_id == train_id), None)
             if train is None:
+                logger.warning(f"列车ID {train_id} 不在时刻表数据中，跳过此列车")
+                invalid_train_ids.append(train_id)
                 continue
 
             affected_trains.add(train_id)
@@ -186,6 +190,21 @@ class MIPScheduler:
                         prob += departure[train_id, station_code] >= scheduled_dep + initial_delay
                         prob += delay[train_id, station_code] >= initial_delay
                         break
+
+        # 检查是否有有效的受影响列车
+        if not affected_trains:
+            if invalid_train_ids:
+                error_msg = f"所有受影响的列车ID {invalid_train_ids} 都不在时刻表数据中"
+            else:
+                error_msg = "没有指定受影响的列车"
+            logger.error(error_msg)
+            return SolveResult(
+                success=False,
+                optimized_schedule={},
+                delay_statistics={},
+                computation_time=time.time() - start_time,
+                message=error_msg
+            )
 
         # 2. 区间运行时间约束（修正：取消上界）
         for t in self.trains:
@@ -289,8 +308,9 @@ class MIPScheduler:
                     if train_stations and station_code == train_stations[0]:
                         prob += delay[train_id, station_code] <= 0
 
-        # 求解
-        prob.solve()
+        # 求解（抑制冗长输出）
+        from pulp import PULP_CBC_CMD
+        prob.solve(PULP_CBC_CMD(msg=False))
 
         if LpStatus[prob.status] != 'Optimal':
             return SolveResult(

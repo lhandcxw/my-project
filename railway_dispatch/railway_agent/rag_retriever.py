@@ -10,6 +10,9 @@ import os
 import re
 from typing import List, Dict, Optional
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DomainKnowledge:
@@ -60,7 +63,8 @@ class RAGRetriever:
         加载增强的领域知识库
         包含真实高铁调度场景的知识
         """
-        return {
+        # 基础知识
+        knowledge = {
             "场景类型": """
 ## 场景类型定义（真实高铁调度）
 
@@ -264,9 +268,39 @@ class RAGRetriever:
    - 旅客乘降：常规停站
    - 技术作业：列车检查、换端等
    - 机外停车：避让、待避等
-   - 越行作业：快速列车越行慢速列车
+                   - 越行作业：快速列车越行慢速列车
 """
         }
+
+        # 从文件加载额外知识
+        knowledge.update(self._load_knowledge_files())
+
+        return knowledge
+
+    def _load_knowledge_files(self) -> Dict[str, str]:
+        """
+        从知识库目录加载额外的知识文件
+        """
+        file_knowledge = {}
+
+        # 定义要加载的文件
+        knowledge_files = {
+            "station_knowledge.txt": "车站知识",
+            "timetable_knowledge.txt": "时刻表知识",
+            "operational_rules.txt": "操作规则"
+        }
+
+        for filename, key in knowledge_files.items():
+            filepath = os.path.join(self.knowledge_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        file_knowledge[key] = f.read()
+                    logger.info(f"成功加载知识库文件: {filename}")
+                except Exception as e:
+                    logger.warning(f"加载知识库文件失败 {filename}: {e}")
+
+        return file_knowledge
 
     def retrieve(self, query: str, top_k: int = 3) -> List[Dict[str, str]]:
         """
@@ -380,10 +414,12 @@ class RAGRetriever:
         if "描述：" in base_prompt:
             parts = base_prompt.split("描述：", 1)
             if len(parts) == 2:
-                enhanced_prompt = f"{parts[0]}描述：{parts[1].split('\n\n', 1)[0]}\n"
+                # 先提取 split 结果，避免在 f-string 中使用反斜杠
+                second_part_split = parts[1].split('\n\n', 1)
+                enhanced_prompt = f"{parts[0]}描述：{second_part_split[0]}\n"
                 enhanced_prompt += "\n".join(knowledge_parts)
-                if "\n\n" in parts[1]:
-                    enhanced_prompt += "\n\n" + parts[1].split("\n\n", 1)[1]
+                if len(second_part_split) > 1:
+                    enhanced_prompt += "\n\n" + second_part_split[1]
                 return enhanced_prompt
 
         # 默认：在开头插入知识

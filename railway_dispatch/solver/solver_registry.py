@@ -31,7 +31,7 @@ class SolverRegistry:
             solver: 求解器实例
         """
         cls._solvers[name] = solver
-        logger.info(f"Registered solver: {name}")
+        logger.debug(f"Registered solver: {name}")
 
     @classmethod
     def register_class(cls, name: str, solver_class: Type[BaseSolver]):
@@ -43,7 +43,7 @@ class SolverRegistry:
             solver_class: 求解器类
         """
         cls._solver_classes[name] = solver_class
-        logger.info(f"Registered solver class: {name}")
+        logger.debug(f"Registered solver class: {name}")
 
     @classmethod
     def get_solver(cls, name: str) -> Optional[BaseSolver]:

@@ -1,38 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-railway_agent - 铁路调度Agent模块
-包含Qwen Agent、Rule Agent、Tool注册表、Prompts和Skills
+railway_agent - 铁路调度Agent模块（新架构v2）
+包含新架构Agent、技能注册表、适配器和技能
 """
 
-# RuleAgent不依赖modelscope，可以独立使用
-from railway_agent.rule_agent import RuleAgent, create_rule_agent, AgentResult
-from railway_agent.dispatch_skills import (
+# 新架构 Agent 和接口
+from railway_agent.agents import RuleAgent, create_rule_agent, AgentResult
+from railway_agent.adapters.skill_registry import SkillRegistry, get_skill_registry
+from railway_agent.adapters.skills import (
     BaseDispatchSkill,
     TemporarySpeedLimitSkill,
     SuddenFailureSkill,
+    SectionInterruptSkill,
+    GetTrainStatusSkill,
+    QueryTimetableSkill,
     create_skills,
     execute_skill,
     DispatchSkillOutput
 )
-from railway_agent.tool_registry import ToolRegistry, ToolCall
 
-# 调度比较技能
-from railway_agent.comparison_skill import (
-    SchedulerComparisonSkill,
-    create_comparison_skill
-)
+# 调度比较技能（如果存在）
+try:
+    from railway_agent.comparison_skill import (
+        SchedulerComparisonSkill,
+        create_comparison_skill
+    )
+    HAS_COMPARISON_SKILL = True
+except ImportError:
+    HAS_COMPARISON_SKILL = False
 
-# QwenAgent依赖modelscope，延迟导入以避免在RuleAgent模式下加载
-def get_qwen_agent_class():
-    """延迟导入QwenAgent类"""
-    from railway_agent.qwen_agent import QwenAgent, create_qwen_agent
-    return QwenAgent, create_qwen_agent
-
-# 为了向后兼容，保留QwenAgent的导入（但会在导入时触发modelscope）
-# 如果只需要RuleAgent，可以只导入RuleAgent相关类
+# 为了向后兼容，ToolRegistry 指向 SkillRegistry
+ToolRegistry = SkillRegistry
 
 __all__ = [
-    # Rule Agent (推荐，无需大模型)
+    # Rule Agent (新架构，无需大模型)
     "RuleAgent",
     "create_rule_agent",
     "AgentResult",
@@ -40,15 +41,22 @@ __all__ = [
     "BaseDispatchSkill",
     "TemporarySpeedLimitSkill",
     "SuddenFailureSkill",
+    "SectionInterruptSkill",
+    "GetTrainStatusSkill",
+    "QueryTimetableSkill",
     "create_skills",
     "execute_skill",
     "DispatchSkillOutput",
-    # Tools
-    "ToolRegistry",
-    "ToolCall",
-    # Comparison Skill
-    "SchedulerComparisonSkill",
-    "create_comparison_skill",
-    # Qwen Agent (需要大模型)
-    "get_qwen_agent_class"
+    # Tools (SkillRegistry)
+    "SkillRegistry",
+    "get_skill_registry",
+    "ToolRegistry",  # 兼容旧接口
+    # Comparison Skill (可选）
 ]
+
+# 如果有比较技能，也导出
+if HAS_COMPARISON_SKILL:
+    __all__.extend([
+        "SchedulerComparisonSkill",
+        "create_comparison_skill"
+    ])
