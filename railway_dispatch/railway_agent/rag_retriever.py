@@ -3,13 +3,13 @@
 领域知识RAG检索器
 用于为LLM提供铁路调度领域的专业知识
 
-当前实现：简单的关键词匹配
-后续可升级为向量检索（使用embedding模型）
+v3.2增强：添加真实高铁调度场景的领域知识
 """
 
 import os
 import re
 from typing import List, Dict, Optional
+import json
 
 
 class DomainKnowledge:
@@ -31,6 +31,7 @@ class DomainKnowledge:
 class RAGRetriever:
     """
     RAG检索器 - 为LLM提供领域知识
+    v3.2增强：支持真实高铁调度场景
     """
 
     def __init__(self, knowledge_dir: Optional[str] = None):
@@ -47,169 +48,355 @@ class RAGRetriever:
             )
         self.knowledge_dir = knowledge_dir
         self._ensure_knowledge_dir()
-        self.knowledge_base = self._load_knowledge()
+        self.knowledge_base = self._load_enhanced_knowledge()
 
     def _ensure_knowledge_dir(self):
         """确保知识库目录存在"""
         if not os.path.exists(self.knowledge_dir):
             os.makedirs(self.knowledge_dir, exist_ok=True)
 
-    def _load_knowledge(self) -> Dict[str, str]:
-        """加载领域知识库"""
+    def _load_enhanced_knowledge(self) -> Dict[str, str]:
+        """
+        加载增强的领域知识库
+        包含真实高铁调度场景的知识
+        """
         return {
             "场景类型": """
-## 场景类型定义
+## 场景类型定义（真实高铁调度）
 
 1. 临时限速 (TEMPORARY_SPEED_LIMIT)
-   - 原因：暴雨、大风、冰雪等天气因素
-   - 影响：区间内列车需减速运行
-   - 典型位置：XSD-BDD区间、BDD-DZD区间
+   - 原因：暴雨、大风、冰雪、异物侵入等
+   - 典型限速值：60km/h, 80km/h, 120km/h
+   - 影响：区间内列车需减速运行，影响追踪间隔
+   - 京广高铁常见位置：
+     * XSD-BDD区间（暴雨多发）
+     * BDD-DZD区间（大风多发）
+     * GYX-XTD区间（冬季冰雪）
    - 推荐求解器：mip_scheduler（优化调整）
 
 2. 突发故障 (SUDDEN_FAILURE)
-   - 原因：设备故障、线路异常等
-   - 影响：列车延误或停运
-   - 典型位置：任一区间或车站
-   - 推荐求解器：fcfs_scheduler（快速响应）
+   - 原因：接触网故障、信号故障、列车故障、线路异常
+   - 常见类型：
+     * 接触网故障：导致电力供应中断
+     * 信号故障：影响列车运行安全
+     * 列车故障：列车无法正常运行
+   - 影响：单列或多列列车延误，可能触发连锁延误
+   - 推荐求解器：fcfs_scheduler（快速响应）或 max_delay_first_scheduler（优先延误列车）
 
 3. 区间封锁 (SECTION_INTERRUPT)
-   - 原因：严重事故、施工等
-   - 影响：区间内列车无法运行
+   - 原因：严重事故、接触网断线、线路损毁、施工
+   - 影响：区间内列车无法运行，需要绕行或停运
+   - 处理方式：
+     * 区间封锁期间不调度新列车
+     * 已在区间内的列车就近停靠
+     * 通过其他线路绕行（如可行）
    - 推荐求解器：noop_scheduler（仅记录不调度）
 """,
             "求解器选择": """
-## 求解器选择规则
+## 求解器选择规则（真实场景）
 
-1. mip_scheduler (混合整数规划)
-   - 适用场景：临时限速、优化调整
-   - 优点：全局最优、考虑多目标
-   - 缺点：计算时间长
-   - 规模限制：建议50列以内
+1. mip_scheduler (混合整数规划求解器)
+   - 适用场景：
+     * 临时限速场景（需优化调整时刻表）
+     * 列车数量≤10且信息完整的场景
+     * 需要全局最优解的场景
+   - 优点：
+     * 全局最优，考虑多目标优化
+     * 精确满足约束条件
+     * 可以处理复杂的调度约束
+   - 缺点：
+     * 计算时间长（秒级到分钟级）
+     * 对大规模问题（>100列）效率下降
+   - 推荐使用：
+     * 临时限速场景：优先使用
+     * 突发故障（≤10列）：可以使用
+     * 区间封锁：不适用
 
-2. fcfs_scheduler (先到先服务)
-   - 适用场景：突发故障、快速响应
-   - 优点：计算快速、简单可靠
-   - 缺点：不考虑全局优化
-   - 规模限制：无（可处理大规模）
+2. fcfs_scheduler (先到先服务调度器)
+   - 适用场景：
+     * 突发故障场景（需要快速响应）
+     * 列车数量>10的场景
+     * 信息不完整或需要粗略调整的场景
+   - 优点：
+     * 计算快速（毫秒级）
+     * 简单可靠，易于实现
+     * 可处理大规模问题
+   - 缺点：
+     * 不考虑全局优化
+     * 可能产生次优解
+     * 对复杂约束处理能力有限
+   - 推荐使用：
+     * 突发故障：优先使用
+     * 临时限速（>10列）：可以使用
+     * 区间封锁：不适用
 
-3. max_delay_first_scheduler (最大延误优先)
-   - 适用场景：延误传播、优先级调度
-   - 优点：减少最大延误
-   - 缺点：可能产生更多延误列车
-   - 适用场景：高延误场景
+3. max_delay_first_scheduler (最大延误优先调度器)
+   - 适用场景：
+     * 延误传播场景
+     * 需要优先处理延误列车的场景
+     * 延误已较严重（>30分钟）的场景
+   - 优点：
+     * 减少最大延误
+     * 防止延误进一步扩散
+     * 对严重延误列车优先恢复
+   - 缺点：
+     * 可能导致更多列车延误
+     * 需要频繁更新延误信息
+   - 推荐使用：
+     * 高延误场景（>30分钟）
+     * 需要快速恢复严重延误
 
-4. noop_scheduler (空操作)
-   - 适用场景：区间封锁、无需调度
-   - 用途：记录故障信息，不执行调度
+4. noop_scheduler (空操作调度器)
+   - 适用场景：
+     * 区间封锁场景
+     * 只需记录情况无需调整的场景
+   - 优点：
+     * 计算最快
+     * 不产生新的调整
+   - 推荐使用：
+     * 区间封锁：唯一推荐
 """,
-            "调度规则": """
-## 铁路调度基本规则
+            "京广高铁网络": """
+## 京广高铁北京西-安阳东段网络信息
 
-1. 追踪间隔
-   - 同向追踪间隔：通常8-10分钟
-   - 区间闭塞：必须确认区段空闲
+1. 线路概况
+   - 全长约500公里
+   - 设计速度350km/h
+   - 运营速度300km/h
+   - 车站数量：13个
+   - 列车数量：147列（G字头高速动车组）
 
-2. 优先级别
-   - 动车组 > 普通列车
-   - 大站直达 > 普通停靠
-   - 高等级车次优先
+2. 车站列表（自北向南）
+   - BJX: 北京西
+   - DJK: 杜家坎线路所
+   - ZBD: 涿州东
+   - GBD: 高碑店东
+   - XSD: 徐水东
+   - BDD: 保定东
+   - DZD: 定州东
+   - ZDJ: 正定机场
+   - SJP: 石家庄
+   - GYX: 高邑西
+   - XTD: 邢台东
+   - HDD: 邯郸东
+   - AYD: 安阳东
 
-3. 车站会让
-   - 优先使用有避让线的车站
-   - 考虑列车等级和延误情况
+3. 关键区间（常见限速/故障位置）
+   - XSD-BDD: 保定地区，暴雨多发
+   - BDD-DZD: 冀中平原，大风多发
+   - SJP-GYX: 石家庄南，冬季冰雪
+   - XTD-HDD: 冀南地区，气候多变
 
-4. 限速要求
-   - 临时限速：通常60-120km/h
-   - 限速区段需重新计算运行时分
+4. 列车运行特点
+   - G字头列车：高速动车组
+   - 平均停站：5-9个站
+   - 典型停站时间：2-3分钟
+   - 追踪间隔：3-5分钟
 """,
-            "车站信息": """
-## 车站数据（京广高铁北京-安阳段）
+            "调度约束": """
+## 高铁调度核心约束
 
-北京西(BJX) → 杜家坎线路所(DJK) → 涿州东(ZBD) → 高碑店东(GBD) → 徐水东(XSD) → 保定东(BDD) → 定州东(DZD) → 正定机场(ZDJ) → 石家庄(SJP) → 高邑西(GYX) → 邢台东(XTD) → 邯郸东(HDD) → 安阳东(AYD)
+1. 时间约束
+   - 到发时间关系：到达时间 + 停站时间 ≤ 发车时间
+   - 最小停站时间：一般2分钟（作业时间）
+   - 最大停站时间：一般不超过10分钟（防止占用站台）
 
-共13个站点，包含1个线路所（杜家坎）。
+2. 空间约束（安全间隔）
+   - 同向追踪间隔：3-5分钟（根据速度）
+   - 对向避让间隔：10-15分钟
+   - 进站间隔：2-3分钟
+   - 出站间隔：2-3分钟
+
+3. 容量约束
+   - 车站股道容量：每站2-4条到发线
+   - 站台占用：每条股道同时只能一列车停靠
+   - 区间通过能力：每小时12-20列
+
+4. 列车运行时间
+   - 最小运行时间：必须满足区间运行时间
+   - 图定运行时间：一般比最小时间长10-20%
+   - 临时限速：根据限速值调整运行时间
+
+5. 调整原则
+   - 优先级：G1次>G2次>G3次（车次号越小优先级越高）
+   - 高速列车优先：>G字头>D字头
+   - 正点优先：已延误列车的调整幅度受限
+   - 安全优先：所有调整不得违反安全约束
+""",
+            "延误处理": """
+## 延误处理策略
+
+1. 延误分类
+   - 轻微延误：<10分钟，简单调整
+   - 中等延误：10-30分钟，重点调整
+   - 严重延误：>30分钟，优先恢复
+
+2. 延误恢复策略
+   - 顺延调整：延误列车后续到发时间顺延
+   - 压缩停站：适当缩短停站时间（不低于最小停站时间）
+   - 改变越行：调整越行关系，优先正点列车
+   - 侧线避让：延误列车在侧线避让后续列车
+
+3. 延误传播控制
+   - 识别关键列车：延误可能触发连锁延误的列车
+   - 设置缓冲：在关键节点设置时间缓冲
+   - 分段调整：将大范围延误分段处理
+
+4. 风险提示
+   - 延误超过30分钟：可能触发退票、改签等操作
+   - 延误超过60分钟：可能触发备用列车、停运等措施
+   - 多车延误：需防范延误连锁反应
+""",
+            "车站作业": """
+## 车站作业时间标准
+
+1. 停站作业时间
+   - 高速列车（G字头）：2-3分钟
+   - 动车组（D字头）：3-5分钟
+   - 普速列车：5-8分钟
+
+2. 最小停站时间
+   - 旅客乘降：2分钟
+   - 机外停车：1分钟
+   - 技术停车：5分钟
+
+3. 作业类型
+   - 旅客乘降：常规停站
+   - 技术作业：列车检查、换端等
+   - 机外停车：避让、待避等
+   - 越行作业：快速列车越行慢速列车
 """
         }
 
-    def retrieve(self, query: str, top_k: int = 2) -> str:
+    def retrieve(self, query: str, top_k: int = 3) -> List[Dict[str, str]]:
         """
-        根据查询检索相关知识
+        检索相关知识
 
         Args:
-            query: 用户查询
-            top_k: 返回最相关的top_k条知识
+            query: 查询文本
+            top_k: 返回结果数量
 
         Returns:
-            str: 检索到的领域知识
+            List[Dict]: 检索到的知识文档列表
         """
-        # 简单的关键词匹配
+        results = []
         query_lower = query.lower()
 
-        # 计算每个知识库条目与查询的相关性
-        relevance_scores = {}
+        # 计算每个知识的相关性分数
+        scores = []
         for key, content in self.knowledge_base.items():
-            score = 0
-            # 检查关键词匹配
-            if '限速' in query or 'speed' in query_lower:
-                if '限速' in content:
-                    score += 3
-            if '故障' in query or 'failure' in query_lower:
-                if '故障' in content:
-                    score += 3
-            if '封锁' in query or 'interrupt' in query_lower:
-                if '封锁' in content:
-                    score += 3
-            if '求解器' in query or 'solver' in query_lower:
-                if '求解器' in content:
-                    score += 3
-            if '调度' in query or 'dispatch' in query_lower:
-                if '调度' in content:
-                    score += 2
-            if '车站' in query or 'station' in query_lower:
-                if '车站' in content:
-                    score += 2
-            # 默认匹配度
-            if score == 0:
-                score = 1
-            relevance_scores[key] = score
+            score = self._calculate_relevance(query_lower, content)
+            if score > 0:
+                scores.append((key, content, score))
 
-        # 按相关性排序
-        sorted_keys = sorted(relevance_scores.items(), key=lambda x: x[1], reverse=True)
-        top_keys = [k for k, _ in sorted_keys[:top_k]]
+        # 按分数排序
+        scores.sort(key=lambda x: x[2], reverse=True)
 
-        # 拼接检索到的知识
-        retrieved = "\n\n".join([self.knowledge_base[k] for k in top_keys])
+        # 返回top_k结果
+        for key, content, score in scores[:top_k]:
+            results.append({
+                "key": key,
+                "content": content,
+                "score": score,
+                "metadata": {
+                    "source": "domain_knowledge_base",
+                    "type": "static_knowledge"
+                }
+            })
 
-        return retrieved
+        return results
+
+    def _calculate_relevance(self, query: str, content: str) -> float:
+        """
+        计算查询与知识的相关性分数
+
+        Args:
+            query: 查询文本（小写）
+            content: 知识内容
+
+        Returns:
+            float: 相关性分数
+        """
+        score = 0.0
+        content_lower = content.lower()
+
+        # 关键词匹配
+        keywords = ["临时限速", "突发故障", "区间封锁", "mip", "fcfs",
+                   "延误", "调度", "车站", "区间", "列车", "限速", "故障"]
+        for kw in keywords:
+            if kw in query:
+                if kw in content_lower:
+                    score += 1.0
+
+        # 场景类型匹配
+        if "临时限速" in query and "临时限速" in content_lower:
+            score += 2.0
+        if "突发故障" in query and "突发故障" in content_lower:
+            score += 2.0
+        if "区间封锁" in query and "区间封锁" in content_lower:
+            score += 2.0
+
+        # 求解器匹配
+        if "mip" in query and "mip_scheduler" in content_lower:
+            score += 2.0
+        if "fcfs" in query and "fcfs_scheduler" in content_lower:
+            score += 2.0
+
+        # 车站匹配
+        station_codes = ["bjx", "djk", "zbd", "gbd", "xsd", "bdd",
+                        "dzd", "zdj", "sjp", "gyx", "xtd", "hdd", "ayd"]
+        for code in station_codes:
+            if code in query and code in content_lower:
+                score += 1.5
+
+        return score
 
     def format_prompt_with_knowledge(self, base_prompt: str, query: str) -> str:
         """
-        将检索到的知识格式化到prompt中
+        将检索到的知识注入到prompt中
 
         Args:
             base_prompt: 基础prompt
-            query: 用户查询
+            query: 查询文本
 
         Returns:
-            str: 包含领域知识的完整prompt
+            str: 增强后的prompt
         """
-        knowledge = self.retrieve(query)
-        return f"""【领域知识】
-{knowledge}
+        # 检索相关知识
+        documents = self.retrieve(query, top_k=3)
 
-【用户请求】
-{base_prompt}
+        if not documents:
+            return base_prompt
 
-请根据以上领域知识，结合用户请求进行推理和决策。"""
+        # 格式化知识
+        knowledge_parts = ["\n相关领域知识：\n"]
+        for i, doc in enumerate(documents, 1):
+            knowledge_parts.append(f"【知识{i}】")
+            knowledge_parts.append(doc["content"])
+            knowledge_parts.append("\n")
+
+        # 将知识插入到prompt中
+        # 策略：在问题描述后插入知识
+        if "描述：" in base_prompt:
+            parts = base_prompt.split("描述：", 1)
+            if len(parts) == 2:
+                enhanced_prompt = f"{parts[0]}描述：{parts[1].split('\n\n', 1)[0]}\n"
+                enhanced_prompt += "\n".join(knowledge_parts)
+                if "\n\n" in parts[1]:
+                    enhanced_prompt += "\n\n" + parts[1].split("\n\n", 1)[1]
+                return enhanced_prompt
+
+        # 默认：在开头插入知识
+        return "\n".join(knowledge_parts) + "\n\n" + base_prompt
 
 
-# 全局RAG检索器实例
-_default_retriever = None
+# 全局实例
+_rag_retriever: Optional[RAGRetriever] = None
 
 
 def get_retriever() -> RAGRetriever:
-    """获取默认的RAG检索器实例"""
-    global _default_retriever
-    if _default_retriever is None:
-        _default_retriever = RAGRetriever()
-    return _default_retriever
+    """获取全局RAG检索器实例"""
+    global _rag_retriever
+    if _rag_retriever is None:
+        _rag_retriever = RAGRetriever()
+    return _rag_retriever

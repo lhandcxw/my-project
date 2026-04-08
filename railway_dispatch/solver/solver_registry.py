@@ -56,7 +56,23 @@ class SolverRegistry:
         Returns:
             BaseSolver: 求解器实例，如果不存在返回 None
         """
-        return cls._solvers.get(name)
+        # 先从实例字典获取
+        solver = cls._solvers.get(name)
+        if solver is not None:
+            return solver
+        
+        # 如果实例不存在，尝试从类字典创建
+        solver_class = cls._solver_classes.get(name)
+        if solver_class:
+            try:
+                solver = solver_class()
+                cls.register(name, solver)  # 缓存实例
+                return solver
+            except Exception as e:
+                logger.warning(f"创建求解器实例失败 {name}: {e}")
+                return None
+        
+        return None
 
     @classmethod
     def list_solvers(cls) -> list:

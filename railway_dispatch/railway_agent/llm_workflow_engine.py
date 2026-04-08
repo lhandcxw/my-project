@@ -53,22 +53,28 @@ class LLMCaller:
     # ModelScope 模型ID (使用1.8B模型，比0.5B更强)
     MODELSCOPE_MODEL_ID = "Qwen/Qwen2.5-1.8B"
 
-    # 可用的Ollama模型（优先0.8B，如不可用则回退到0.5B）
-    OLLAMA_MODEL = "qwen2.5:0.8b"  # 用户指定版本
+    # 可用的Ollama模型（当前可用的是0.5b）
+    OLLAMA_MODEL = "qwen2.5:0.5b"  # 使用实际已下载的模型
 
-    def __init__(self, model_path: str = None, use_ollama: bool = False):
+    # ModelScope 本地缓存路径（让 ModelScope 自动检测）
+    MODELSCOPE_CACHE_DIR = None  # ModelScope 会自动查找 ~/.cache/modelscope
+
+    def __init__(self, model_path: str = None, use_ollama: bool = False, use_modelscope: bool = True):
         """
         初始化LLM调用器
 
         Args:
             model_path: ModelScope模型ID或本地路径
-            use_ollama: 是否优先使用Ollama（默认False，优先使用ModelScope）
+            use_ollama: 是否优先使用Ollama
+            use_modelscope: 是否使用ModelScope（当ollama不可用时）
         """
         self.model_path = model_path
         self.use_ollama = use_ollama
+        self.use_modelscope = use_modelscope
         self.model = None
         self.tokenizer = None
         self._ollama_available = None
+        self._modelscope_loaded = False
 
     def _check_ollama(self) -> bool:
         """检查Ollama是否可用"""
@@ -97,25 +103,38 @@ class LLMCaller:
             return
 
         # 回退到ModelScope
+        if not self.use_modelscope:
+            logger.info("未启用ModelScope，使用模拟响应")
+            return
+            
         try:
             from modelscope import AutoModelForCausalLM, AutoTokenizer
             import torch
 
             model_id = self.model_path if self.model_path else self.MODELSCOPE_MODEL_ID
             logger.info(f"正在从ModelScope加载模型: {model_id}")
+            
+            # 尝试从本地缓存加载（你已经下载了模型）
+            cache_dir = self.MODELSCOPE_CACHE_DIR
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 torch_dtype="auto",
-                device_map="cpu"
+                device_map="cpu",
+                cache_dir=cache_dir
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_id,
+                cache_dir=cache_dir
+            )
             logger.info("ModelScope模型加载完成")
+            self._modelscope_loaded = True
         except Exception as e:
             logger.warning(f"ModelScope模型加载失败: {e}，将使用模拟模式")
             self.model = None
             self.tokenizer = None
+        self._last_response_type = None  # 记录上次响应的类型
 
-    def call(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
+    def call(self, prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> tuple:
         """
         调用LLM生成响应
 
@@ -125,12 +144,14 @@ class LLMCaller:
             temperature: 温度参数
 
         Returns:
-            str: LLM响应文本
+            tuple: (响应文本, 响应类型说明) - 响应类型: "ollama", "modelscope", "mock"
         """
         # 优先尝试Ollama
         if self.use_ollama and self._check_ollama():
             try:
-                return self._call_ollama(prompt, max_tokens, temperature)
+                response = self._call_ollama(prompt, max_tokens, temperature)
+                self._last_response_type = "ollama"
+                return response, "Ollama本地模型"
             except Exception as e:
                 logger.warning(f"Ollama调用失败: {e}")
 
@@ -140,9 +161,17 @@ class LLMCaller:
 
         if self.model is None or self.tokenizer is None:
             logger.warning("模型未加载，使用模拟响应")
-            return self._mock_response(prompt)
+            self._last_response_type = "mock"
+            return self._mock_response(prompt), "模拟响应 (模型不可用)"
 
-        return self._call_modelscope(prompt, max_tokens, temperature)
+        try:
+            response = self._call_modelscope(prompt, max_tokens, temperature)
+            self._last_response_type = "modelscope"
+            return response, "ModelScope远程模型"
+        except Exception as e:
+            logger.warning(f"ModelScope调用失败: {e}，使用模拟响应")
+            self._last_response_type = "mock"
+            return self._mock_response(prompt), "模拟响应 (调用失败)"
 
     def _call_ollama(self, prompt: str, max_tokens: int, temperature: float) -> str:
         """调用Ollama API"""
@@ -161,7 +190,19 @@ class LLMCaller:
             },
             timeout=120
         )
+        
+        # 检查响应状态
+        if response.status_code != 200:
+            logger.error(f"Ollama API返回错误状态: {response.status_code}, body: {response.text}")
+            return ""
+            
         result = response.json()
+        
+        # 检查响应结构
+        if 'response' not in result:
+            logger.error(f"Ollama响应缺少response字段: {result}")
+            return ""
+            
         return result.get('response', '')
 
     def _call_modelscope(self, prompt: str, max_tokens: int, temperature: float) -> str:
@@ -211,13 +252,13 @@ class LLMCaller:
 
         if "技能规划助手" in prompt or "skill_dispatch" in prompt or ("主技能" in prompt and "调用顺序" in prompt):
             # 第二层 - Planner
-            return '{"skill_dispatch": {"是否进入技能求解": true, "主技能": "mip_scheduler", "辅助技能": [], "调用顺序": ["mip_scheduler"], "阻塞项": [], "需补充信息": []}, "reasoning": "根据临时限速场景，选择MIP求解器"}'
+            return '{"skill_dispatch": {"是否进入技能求解": true, "主技能": "mip", "辅助技能": [], "调用顺序": ["mip"], "阻塞项": [], "需补充信息": []}, "reasoning": "根据临时限速场景，选择MIP求解器", "planning_intent": "recalculate_corridor_schedule"}'
         elif "调度方案评估" in prompt or "execution_result" in prompt:
             # 第四层 - 评估
             return '{"evaluation_report": {"solution_id": "solution_001", "is_feasible": true, "total_delay_minutes": 10, "max_delay_minutes": 10, "solving_time_seconds": 1.5, "risk_warnings": [], "constraint_satisfaction": {}}, "ranking_result": {"recommended_solution": "solution_001", "alternative_solutions": [], "ranking_criteria": "min_max_delay"}, "rollback_feedback": {"needs_rerun": false, "rollback_reason": "", "suggested_fixes": []}}'
         else:
-            # 第一层 - 数据建模（默认）
-            return '{"accident_card": {"scene_category": "临时限速", "fault_type": "暴雨", "affected_section": "XSD-BDD", "start_time": "2024-01-15T10:00:00", "is_complete": true}, "network_snapshot": {"observation_corridor": "XSD-BDD", "train_count": 1}}'
+            # 第一层 - 数据建模（默认）- 注意需要完整的 NetworkSnapshot 字段
+            return '{"accident_card": {"scene_category": "临时限速", "fault_type": "暴雨", "affected_section": "XSD-BDD", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "reported_delay_minutes": 10, "start_time": "2024-01-15T10:00:00", "is_complete": true}, "network_snapshot": {"snapshot_time": "2024-01-15T10:00:00", "observation_corridor": "XSD-BDD", "train_count": 1, "solving_window": {"corridor_id": "XSD-BDD", "window_start": "2024-01-15T10:00:00", "window_end": "2024-01-15T12:00:00"}, "candidate_train_ids": ["G1563"], "trains": []}}'
 
 
 # ============== 工具函数 ==============
@@ -249,10 +290,17 @@ _rag_retriever: Optional[RAGRetriever] = None
 
 
 def get_llm_caller() -> LLMCaller:
-    """获取全局LLM调用器实例"""
+    """获取全局LLM调用器实例（优先Ollama，备选ModelScope）"""
     global _llm_caller
     if _llm_caller is None:
-        _llm_caller = LLMCaller()
+        # 默认启用 Ollama（让它自动检测），同时启用 ModelScope 作为备选
+        _llm_caller = LLMCaller(use_ollama=True, use_modelscope=True)
+        # 尝试加载 ModelScope 模型（后台预加载）
+        try:
+            _llm_caller.load_model()
+            logger.info("ModelScope模型预加载完成")
+        except Exception as e:
+            logger.warning(f"ModelScope模型预加载失败: {e}")
     return _llm_caller
 
 
@@ -425,7 +473,8 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
     llm = get_llm_caller()
     print(f"[DEBUG] 第一层调用LLM+RAG，prompt长度={len(prompt)}")
     print(f"[DEBUG] 第一层prompt前200字: {prompt[:200]}")
-    response = llm.call(prompt, max_tokens=512)
+    response, response_type = llm.call(prompt, max_tokens=512)
+    print(f"[DEBUG] 第一层LLM响应类型: {response_type}")
     print(f"[DEBUG] 第一层LLM原始响应: {response[:300]}")
 
     logger.info(f"第一层LLM响应: {response[:200]}...")
@@ -447,6 +496,10 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
             else:
                 json_str = response
 
+        # 检查是否为空响应
+        if not json_str.strip():
+            raise json.JSONDecodeError("Empty response", "", 0)
+            
         result = json.loads(json_str)
         logger.info(f"第一层解析结果keys: {result.keys()}")
 
@@ -514,94 +567,19 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
             if not has_event:
                 missing.append("事件类型")
             acc_card_data["missing_fields"] = missing
-        
-        # 从LLM响应中提取列车ID列表
-        affected_train_ids = acc_card_data.get("affected_train_ids", [])
-        reported_delay = acc_card_data.get("reported_delay_minutes")
-        
-        # 将 scene_type_code 转换为中文场景类别
-        scene_type_mapping = {
-            "TEMP_SPEED_LIMIT": "临时限速",
-            "SUDDEN_FAILURE": "突发故障",
-            "SECTION_INTERRUPT": "区间封锁"
-        }
-        scene_category = scene_type_mapping.get(
-            canonical_request.scene_type_code.value if canonical_request.scene_type_code else None,
-            "临时限速"
+
+        # 使用LLM解析的结果直接创建 AccidentCard
+        accident_card = AccidentCard(
+            fault_type=acc_card_data.get("fault_type", "未知"),
+            scene_category=acc_card_data.get("scene_category", "临时限速"),
+            affected_section=acc_card_data.get("affected_section", ""),
+            location_code=acc_card_data.get("location_code", ""),
+            location_name=acc_card_data.get("location_name", ""),
+            affected_train_ids=acc_card_data.get("affected_train_ids", []),
+            is_complete=acc_card_data.get("is_complete", False),
+            missing_fields=acc_card_data.get("missing_fields", []),
+            start_time=datetime.fromisoformat(acc_card_data.get("start_time", "2024-01-15T10:00:00")) if acc_card_data.get("start_time") else datetime.now()
         )
-
-        # 将 fault_type 转换为中文
-        fault_type_mapping = {
-            "RAIN": "暴雨",
-            "WIND": "大风",
-            "SNOW": "降雪",
-            "EQUIPMENT_FAILURE": "设备故障",
-            "SIGNAL_FAILURE": "信号故障",
-            "CATENARY_FAILURE": "接触网故障",
-            "TRACK_CONDITION": "线路条件",
-            "MANUAL_RESTRICTION": "人工限速",
-            "DELAY": "延误",
-            "UNKNOWN": "未知"
-        }
-        fault_type = fault_type_mapping.get(
-            canonical_request.fault_type.value if canonical_request.fault_type else None,
-            "暴雨"
-        )
-
-        # 从 location 提取位置信息
-        location_code = canonical_request.location.station_code if canonical_request.location else ""
-        location_name = canonical_request.location.station_name if canonical_request.location else ""
-
-        # 构建 affected_section
-        if location_code:
-            affected_section = f"{location_code}-{location_code}"
-        else:
-            affected_section = ""
-
-            # 从 scene_type_code 映射到中文场景类别
-            scene_category_map = {
-                "TEMP_SPEED_LIMIT": "临时限速",
-                "SUDDEN_FAILURE": "突发故障",
-                "SECTION_INTERRUPT": "区间封锁"
-            }
-            scene_category = scene_category_map.get(
-                canonical_request.scene_type_code.value if canonical_request.scene_type_code else None,
-                "临时限速"
-            )
-
-            # 从 fault_type 映射到中文故障类型
-            fault_type_map = {
-                "RAIN": "暴雨",
-                "WIND": "大风",
-                "SNOW": "降雪",
-                "EQUIPMENT_FAILURE": "设备故障",
-                "SIGNAL_FAILURE": "信号故障",
-                "CATENARY_FAILURE": "接触网故障"
-            }
-            fault_type = fault_type_map.get(
-                canonical_request.fault_type.value if canonical_request.fault_type else None,
-                "未知"
-            )
-
-            # 获取位置信息
-            location_code = canonical_request.location.station_code if canonical_request.location else None
-            location_name = canonical_request.location.station_name if canonical_request.location else None
-
-            # 计算 affected_section
-            affected_section = ""
-            if location_code:
-                affected_section = f"{location_code}-{location_code}"
-
-            accident_card = AccidentCard(
-                fault_type=fault_type,
-                scene_category=scene_category,
-                affected_section=affected_section,
-                location_code=location_code or "",
-                location_name=location_name or "",
-                affected_train_ids=canonical_request.affected_train_ids or [],
-                is_complete=canonical_request.completeness.can_enter_solver if canonical_request.completeness else False,
-                missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
-            )
 
         # 使用确定性逻辑构建NetworkSnapshot（不是LLM生成）
         network_snapshot = _build_network_snapshot_deterministic(
@@ -623,11 +601,12 @@ def layer1_data_modeling(user_input: str, snapshot_info: Dict[str, Any], canonic
             "accident_card": accident_card,
             "network_snapshot": network_snapshot,
             "dispatch_context_metadata": dispatch_metadata,
-            "llm_response": response
+            "llm_response": response,
+            "llm_response_type": response_type
         }
 
     except json.JSONDecodeError as e:
-        logger.error(f"第一层JSON解析失败: {e}，使用默认值")
+        logger.error(f"第一层JSON解析失败: {e}，原始响应: {response[:500] if response else '空响应'}")
 
         # 返回默认事故卡片
         default_accident_card = AccidentCard(
@@ -696,22 +675,22 @@ class SolverPolicyAdapter:
         """
         # 规则1：区间封锁 -> 不求解
         if scene_category == "区间封锁" or planning_intent == "handle_section_block":
-            return "noop_scheduler"
-        
+            return "noop"
+
         # 规则2：信息不完整 -> FCFS
         if not is_complete:
-            return "fcfs_scheduler"
-        
+            return "fcfs"
+
         # 规则3：列车数量少（<=3）且信息完整 -> MIP
         if train_count <= 3 and is_complete:
-            return "mip_scheduler"
-        
+            return "mip"
+
         # 规则4：列车数量多 -> FCFS
         if train_count > 10:
-            return "fcfs_scheduler"
-        
+            return "fcfs"
+
         # 规则5：默认 -> MIP
-        return "mip_scheduler"
+        return "mip"
 
 
 def layer2_planner(
@@ -750,7 +729,8 @@ def layer2_planner(
     # 调用LLM
     llm = get_llm_caller()
     print(f"[DEBUG] 第二层调用LLM+RAG，prompt长度={len(prompt)}")
-    response = llm.call(prompt, max_tokens=512)
+    response, response_type = llm.call(prompt, max_tokens=512)
+    print(f"[DEBUG] 第二层LLM响应类型: {response_type}")
     print(f"[DEBUG] 第二层LLM原始响应: {response[:300]}")
 
     logger.info(f"第二层LLM响应: {response[:200]}...")
@@ -783,14 +763,12 @@ def layer2_planner(
             if "主技能" in result:
                 # 兼容旧格式：根据主技能反推 intent
                 main_skill = result.get("主技能", "")
-                if main_skill == "mip_scheduler":
+                if main_skill in ("mip_scheduler", "mip"):
                     planning_intent = "recalculate_corridor_schedule"
-                elif main_skill == "fcfs_scheduler":
+                elif main_skill in ("fcfs_scheduler", "fcfs"):
                     planning_intent = "recover_from_disruption"
-                elif main_skill == "noop_scheduler":
+                elif main_skill in ("noop_scheduler", "noop"):
                     planning_intent = "handle_section_block"
-
-        logger.info(f"第二层完成: planning_intent={planning_intent}")
 
         logger.info(f"第二层完成: planning_intent={planning_intent}")
 
@@ -804,7 +782,7 @@ def layer2_planner(
 
         if "主技能" in skill_dispatch_result:
             # 使用 LLM 返回的求解器
-            main_skill = skill_dispatch_result.get("主技能", "mip_scheduler")
+            main_skill = skill_dispatch_result.get("主技能", "mip")
 
             # 根据场景类型强制修正（因为 LLM 经常返回错误的求解器）
             scene = accident_card.scene_category
@@ -812,16 +790,16 @@ def layer2_planner(
 
             # 临时限速场景应该用 MIP（强制覆盖LLM的错误选择）
             if scene == "临时限速":
-                logger.warning(f"临时限速场景强制使用mip_scheduler（原LLM返回: {main_skill}）")
-                main_skill = "mip_scheduler"
+                logger.warning(f"临时限速场景强制使用mip（原LLM返回: {main_skill}）")
+                main_skill = "mip"
             # 突发故障场景应该用 FCFS
             elif scene == "突发故障":
-                logger.warning(f"突发故障场景强制使用fcfs_scheduler（原LLM返回: {main_skill}）")
-                main_skill = "fcfs_scheduler"
+                logger.warning(f"突发故障场景强制使用fcfs（原LLM返回: {main_skill}）")
+                main_skill = "fcfs"
             # 区间封锁场景应该用 noop
             elif scene == "区间封锁":
-                logger.warning(f"区间封锁场景强制使用noop_scheduler（原LLM返回: {main_skill}）")
-                main_skill = "noop_scheduler"
+                logger.warning(f"区间封锁场景强制使用noop（原LLM返回: {main_skill}）")
+                main_skill = "noop"
 
             logger.info(f"[DEBUG L2] 最终主技能: {main_skill}")
 
@@ -849,13 +827,28 @@ def layer2_planner(
             # 没有 skill_dispatch，根据 planning_intent 映射
             skill_dispatch = {
                 "是否进入技能求解": True,
-                "主技能": "mip_scheduler" if planning_intent == "recalculate_corridor_schedule" else 
-                         "fcfs_scheduler" if planning_intent == "recover_from_disruption" else 
-                         "noop_scheduler",
+                "主技能": "mip" if planning_intent == "recalculate_corridor_schedule" else 
+                         "fcfs" if planning_intent == "recover_from_disruption" else 
+                         "noop",
                 "辅助技能": [],
-                "调用顺序": ["mip_scheduler"] if planning_intent == "recalculate_corridor_schedule" else 
-                           ["fcfs_scheduler"] if planning_intent == "recover_from_disruption" else 
-                           ["noop_scheduler"],
+                "调用顺序": ["mip"] if planning_intent == "recalculate_corridor_schedule" else 
+                           ["fcfs"] if planning_intent == "recover_from_disruption" else 
+                           ["noop"],
+                "阻塞项": [],
+                "需补充信息": []
+            }
+        else:
+            # LLM 返回的格式既没有 skill_dispatch 也没有主技能，根据 planning_intent 映射
+            # 这是最常见的情况（如当前返回: {"planning_intent": "recover_from_disruption", ...}）
+            skill_dispatch = {
+                "是否进入技能求解": True,
+                "主技能": "mip" if planning_intent == "recalculate_corridor_schedule" else 
+                         "fcfs" if planning_intent == "recover_from_disruption" else 
+                         "noop" if planning_intent == "handle_section_block" else "mip",
+                "辅助技能": [],
+                "调用顺序": ["mip"] if planning_intent == "recalculate_corridor_schedule" else 
+                           ["fcfs"] if planning_intent == "recover_from_disruption" else 
+                           ["noop"] if planning_intent == "handle_section_block" else ["mip"],
                 "阻塞项": [],
                 "需补充信息": []
             }
@@ -866,7 +859,8 @@ def layer2_planner(
             "问题描述": result.get("问题描述", ""),
             "建议窗口": result.get("建议窗口", ""),
             "reasoning": result.get("reasoning", ""),
-            "llm_response": response
+            "llm_response": response,
+            "llm_response_type": response_type
         }
 
     except json.JSONDecodeError as e:
@@ -886,13 +880,13 @@ def layer2_planner(
         # 兼容新旧格式
         skill_dispatch = {
             "是否进入技能求解": True,
-            "主技能": "mip_scheduler" if default_intent == "recalculate_corridor_schedule" else 
-                     "fcfs_scheduler" if default_intent == "recover_from_disruption" else 
-                     "noop_scheduler",
+            "主技能": "mip" if default_intent == "recalculate_corridor_schedule" else 
+                     "fcfs" if default_intent == "recover_from_disruption" else 
+                     "noop",
             "辅助技能": [],
-            "调用顺序": ["mip_scheduler"] if default_intent == "recalculate_corridor_schedule" else 
-                       ["fcfs_scheduler"] if default_intent == "recover_from_disruption" else 
-                       ["noop_scheduler"],
+            "调用顺序": ["mip"] if default_intent == "recalculate_corridor_schedule" else 
+                       ["fcfs"] if default_intent == "recover_from_disruption" else 
+                       ["noop"],
             "阻塞项": [],
             "需补充信息": []
         }
@@ -903,7 +897,8 @@ def layer2_planner(
             "问题描述": f"JSON解析失败({e})",
             "建议窗口": "",
             "reasoning": "JSON解析失败，使用默认intent",
-            "llm_response": response
+            "llm_response": response,
+            "llm_response_type": response_type if 'response_type' in dir() else "未知"
         }
 
 
@@ -956,9 +951,9 @@ def layer3_solver_execution(
         from solver.mip_adapter import MIPSolverAdapter
         from solver.fcfs_adapter import FCFSSolverAdapter
 
-        if main_skill == "mip_scheduler":
+        if main_skill == "mip":
             solver = MIPSolverAdapter()
-        elif main_skill == "fcfs_scheduler":
+        elif main_skill == "fcfs":
             solver = FCFSSolverAdapter()
         else:
             solver = MIPSolverAdapter()  # 默认
@@ -1176,7 +1171,8 @@ def layer4_evaluation(
     llm = get_llm_caller()
     print(f"[DEBUG] 第四层调用LLM+RAG，prompt长度={len(prompt)}")
     print(f"[DEBUG] 第四层prompt前200字: {prompt[:200]}")
-    response = llm.call(prompt, max_tokens=512)
+    response, response_type = llm.call(prompt, max_tokens=512)
+    print(f"[DEBUG] 第四层LLM响应类型: {response_type}")
     print(f"[DEBUG] 第四层LLM原始响应: {response[:300]}")
 
     logger.info(f"第四层LLM响应: {response[:200]}...")
@@ -1241,7 +1237,8 @@ def layer4_evaluation(
             "evaluation_report": evaluation_report,
             "ranking_result": None,  # L4不再做排序，由Policy决定
             "rollback_feedback": rollback_feedback,
-            "llm_summary": llm_summary
+            "llm_summary": llm_summary,
+            "llm_response_type": response_type
         }
 
     except json.JSONDecodeError as e:
@@ -1263,7 +1260,8 @@ def layer4_evaluation(
             "evaluation_report": default_evaluation,
             "ranking_result": None,
             "rollback_feedback": default_rollback,
-            "llm_summary": "JSON解析失败，使用默认评估"
+            "llm_summary": "JSON解析失败，使用默认评估",
+            "llm_response_type": response_type if 'response_type' in dir() else "未知"
         }
 
 

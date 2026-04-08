@@ -9,7 +9,7 @@ os.environ["RULE_AGENT_USE_WORKFLOW"] = "1"
 
 
 
-from flask import Flask, render_template_string, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response
 from flask_cors import CORS
 import json
 import base64
@@ -391,7 +391,7 @@ HTML_TEMPLATE = '''
 <body>
     <header>
         <div class="container">
-            <h1>🚄 铁路调度Agent系统</h1>
+            <h1>Railway Dispatch Agent</h1>
             <p>基于整数规划的智能铁路调度优化系统</p>
         </div>
     </header>
@@ -399,36 +399,36 @@ HTML_TEMPLATE = '''
     <div class="container">
         <!-- 标签页 -->
         <div class="tabs">
-            <button class="tab active" onclick="showTab('dispatch', event)">🤖 智能调度</button>
-            <button class="tab" onclick="showTab('llm_workflow', event)">🔀 LLM多轮对话</button>
-            <button class="tab" onclick="showTab('comparison', event)">📊 调度比较</button>
+            <button class="tab active" onclick="showTab('dispatch', event)">智能调度</button>
+            <button class="tab" onclick="showTab('llm_workflow', event)">LLM工作流</button>
+            <button class="tab" onclick="showTab('comparison', event)">对比</button>
         </div>
 
         <!-- 智能调度 - 统一入口 -->
         <div id="dispatch" class="tab-content active">
             <!-- 输入区域 -->
             <div class="card">
-                <h2>📝 输入调度需求</h2>
+                <h2>输入调度请求</h2>
 
                 <!-- 智能对话输入 -->
                 <div style="margin-bottom: 20px;">
-                    <h3 style="color: #1565C0; margin-bottom: 10px;">💬 智能对话输入</h3>
+                    <h3 style="color: #1565C0; margin-bottom: 10px;">Smart Input</h3>
                     <p style="color: #666; font-size: 0.9em; margin-bottom: 10px;">用自然语言描述您的需求，如"G1001在天津西延误10分钟"</p>
                     <div class="grid" style="margin-bottom: 10px;">
-                        <button class="btn" style="background: #e3f2fd; color: #1565C0;" onclick="fillPrompt('限速')">🚄 临时限速</button>
-                        <button class="btn" style="background: #ffebee; color: #c62828;" onclick="fillPrompt('故障')">🚨 突发故障</button>
-                        <button class="btn" style="background: #f3e5f5; color: #7b1fa2;" onclick="fillPrompt('延误')">📋 延误调整</button>
+                    <button class="btn" style="background: #e3f2fd; color: #1565C0;" onclick="fillPrompt('限速')">临时限速</button>
+                        <button class="btn" style="background: #ffebee; color: #c62828;" onclick="fillPrompt('故障')">突发故障</button>
+                        <button class="btn" style="background: #f3e5f5; color: #7b1fa2;" onclick="fillPrompt('延误')">延误调整</button>
                     </div>
                     <textarea id="dispatchPrompt" rows="3" placeholder="描述您的调度需求..."></textarea>
                     <div class="grid" style="margin-top: 10px;">
-                        <button class="btn btn-primary" onclick="sendDispatch()">🚀 开始智能调度</button>
-                        <button class="btn btn-success" onclick="sendDispatchWithComparison()">📊 调度方法比较</button>
+                        <button class="btn btn-primary" onclick="sendDispatch()">开始智能调度</button>
+                        <button class="btn btn-success" onclick="sendDispatchWithComparison()">对比方法</button>
                     </div>
                 </div>
 
                 <div style="border-top: 1px dashed #ddd; padding-top: 20px;">
                     <h3 style="color: #666; margin-bottom: 10px; cursor: pointer;" onclick="toggleFormInput()">
-                        📋 表单输入 <span id="formToggleIcon" style="font-size: 0.8em;">▼ 点击展开</span>
+                        表单输入 <span id="formToggleIcon" style="font-size: 0.8em;">▼ 点击展开</span>
                     </h3>
                     <div id="formInputSection" style="display: none;">
                     <div class="grid-2">
@@ -472,7 +472,7 @@ HTML_TEMPLATE = '''
                         </div>
                     </div>
 
-                    <button class="btn btn-success" onclick="runFormDispatch()" style="width: 100%;">🚀 执行调度</button>
+                    <button class="btn btn-success" onclick="runFormDispatch()" style="width: 100%;">执行调度</button>
                     </div>
                 </div>
 
@@ -486,7 +486,7 @@ HTML_TEMPLATE = '''
             <div id="dispatchResult" style="display: none;">
                 <!-- 分析结果 -->
                 <div class="card">
-                    <h2>📊 分析结果</h2>
+                    <h2>分析结果</h2>
                     <div class="grid">
                         <div class="metric">
                             <div class="metric-value" id="resultScenario">-</div>
@@ -502,10 +502,10 @@ HTML_TEMPLATE = '''
                         </div>
                     </div>
 
-                    <h4 style="margin: 15px 0 10px;">🤔 Agent推理过程</h4>
+                    <h4 style="margin: 15px 0 10px;">Agent Reasoning</h4>
                     <div id="resultReasoning" style="background: #f5f5f5; padding: 15px; border-radius: 5px; max-height: 150px; overflow-y: auto; white-space: pre-wrap;"></div>
 
-                    <h4 style="margin: 15px 0 10px;">📈 延误统计</h4>
+                    <h4 style="margin: 15px 0 10px;">Delay Statistics</h4>
                     <div class="grid">
                         <div class="metric">
                             <div class="metric-value" id="resultMaxDelay">-</div>
@@ -527,7 +527,7 @@ HTML_TEMPLATE = '''
                 <!-- 调度比较结果（新增） -->
                 <div id="comparisonResultSection" style="display: none;">
                     <div class="card">
-                        <h2>🏆 调度方法比较结果</h2>
+                        <h2>Comparison Result</h2>
                         <div id="comparisonRanking"></div>
                         <div id="comparisonRecommendations" style="margin-top: 15px;"></div>
                     </div>
@@ -535,13 +535,13 @@ HTML_TEMPLATE = '''
 
                 <!-- 时刻表 -->
                 <div class="card">
-                    <h2>📅 优化后时刻表</h2>
+                    <h2>Optimized Timetable</h2>
                     <div id="scheduleTable" style="overflow-x: auto;"></div>
                 </div>
 
                 <!-- 运行图 -->
                 <div class="card">
-                    <h2>📈 运行图对比</h2>
+                    <h2>Train Diagram</h2>
                     <div id="diagramContainer" style="text-align: center;"></div>
                 </div>
             </div>
@@ -550,7 +550,7 @@ HTML_TEMPLATE = '''
         <!-- LLM多轮对话标签页 -->
         <div id="llm_workflow" class="tab-content">
             <div class="card">
-                <h2>🔀 LLM驱动的4层工作流</h2>
+                <h2>LLM 4-Layer Workflow</h2>
                 <p style="color: #666; margin-bottom: 15px;">
                     多轮对话模式，每层由LLM决策：数据建模 → Planner → 求解 → 评估
                 </p>
@@ -563,13 +563,13 @@ HTML_TEMPLATE = '''
                 <!-- 输入区域 -->
                 <div style="display: flex; gap: 10px; margin-bottom: 15px;">
                     <input type="text" id="llmChatInput" placeholder="输入调度需求，如：北京至石家庄区间暴雨限速" style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
-                    <button class="btn btn-primary" onclick="startLlmWorkflow()">🚀 开始</button>
+                    <button class="btn btn-primary" onclick="startLlmWorkflow()">开始</button>
                 </div>
 
                 <!-- 控制按钮 -->
                 <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                    <button class="btn btn-success" id="continueBtn" onclick="continueLlmWorkflow()" disabled>▶ 继续执行下一层</button>
-                    <button class="btn btn-secondary" id="resetBtn" onclick="resetLlmWorkflow()" disabled>🔄 重置会话</button>
+                    <button class="btn btn-success" id="continueBtn" onclick="continueLlmWorkflow()" disabled>继续执行下一层</button>
+                    <button class="btn btn-secondary" id="resetBtn" onclick="resetLlmWorkflow()" disabled>重置会话</button>
                 </div>
 
                 <!-- 进度显示 -->
@@ -588,7 +588,7 @@ HTML_TEMPLATE = '''
 
                 <!-- 结果详情 -->
                 <div id="llmResultSection" style="display: none;">
-                    <h3 style="color: #2e7d32;">📋 执行结果</h3>
+                    <h3 style="color: #2e7d32;">Execution Result</h3>
                     <pre id="llmResultContent" style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 0.85em;"></pre>
                 </div>
             </div>
@@ -607,7 +607,7 @@ HTML_TEMPLATE = '''
         <!-- 调度比较标签页 -->
         <div id="comparison" class="tab-content">
             <div class="card">
-                <h2>📊 调度方法比较</h2>
+                <h2>Dispatch Comparison</h2>
                 <p style="color: #666; margin-bottom: 15px;">比较FCFS（先到先服务）、MIP（整数规划）、最大延误优先、基线（无调整）等多种调度方法，根据您的偏好选择最优方案</p>
                 
                 <div class="form-group">
@@ -644,7 +644,7 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
                 
-                <button class="btn btn-primary" onclick="runComparison()" style="width: 100%;">🔍 开始比较</button>
+                <button class="btn btn-primary" onclick="runComparison()" style="width: 100%;">Start Comparison</button>
             </div>
             
             <!-- 比较结果加载 -->
@@ -656,7 +656,7 @@ HTML_TEMPLATE = '''
             <!-- 比较结果展示 -->
             <div id="comparisonResultDisplay" style="display: none;">
                 <div class="card">
-                    <h2>📋 比较报告</h2>
+                    <h2>对比报告</h2>
                     <div id="comparisonReport"></div>
                 </div>
             </div>
@@ -995,14 +995,25 @@ HTML_TEMPLATE = '''
 
                     // 显示结果详情
                     const resultContent = document.getElementById('llmResultContent');
+
+                    // 显示LLM响应类型
+                    let responseTypeInfo = "";
+                    if (currentLayer === 1 && result.layer1_result && result.layer1_result.llm_response_type) {
+                        responseTypeInfo = "\n\n[LLM Response Type: " + result.layer1_result.llm_response_type + "]";
+                    } else if (currentLayer === 2 && result.layer2_result && result.layer2_result.llm_response_type) {
+                        responseTypeInfo = "\n\n[LLM Response Type: " + result.layer2_result.llm_response_type + "]";
+                    } else if (currentLayer === 4 && result.layer4_result && result.layer4_result.llm_response_type) {
+                        responseTypeInfo = "\n\n[LLM Response Type: " + result.layer4_result.llm_response_type + "]";
+                    }
+
                     if (currentLayer === 1) {
-                        resultContent.textContent = JSON.stringify(result.layer1_result, null, 2);
+                        resultContent.textContent = JSON.stringify(result.layer1_result, null, 2) + responseTypeInfo;
                     } else if (currentLayer === 2) {
-                        resultContent.textContent = JSON.stringify(result.layer2_result, null, 2);
+                        resultContent.textContent = JSON.stringify(result.layer2_result, null, 2) + responseTypeInfo;
                     } else if (currentLayer === 3) {
                         resultContent.textContent = JSON.stringify(result.layer3_result, null, 2);
                     } else if (currentLayer === 4) {
-                        resultContent.textContent = JSON.stringify(result.layer4_result, null, 2);
+                        resultContent.textContent = JSON.stringify(result.layer4_result, null, 2) + responseTypeInfo;
                         document.getElementById('continueBtn').disabled = true;
                         document.getElementById('llmProgress').textContent = '已完成';
                     } else {
@@ -1119,7 +1130,7 @@ HTML_TEMPLATE = '''
             rankingDiv.innerHTML = rankingHtml;
             
             // 显示推荐
-            let recHtml = '<div class="recommendation"><h4>💡 推荐建议</h4><ul>';
+            let recHtml = '<div class="recommendation"><h4>推荐方案</h4><ul>';
             for (let rec of stats.recommendations || []) {
                 recHtml += '<li>' + rec + '</li>';
             }
@@ -1177,7 +1188,7 @@ HTML_TEMPLATE = '''
             if (result.comparison && result.comparison.recommendation) {
                 const rec = result.comparison.recommendation;
                 html += '<div class="recommendation" style="margin-bottom: 20px;">';
-                html += '<h4>🏆 推荐方案: ' + rec.scheduler_name + '</h4>';
+                html += '<h4>推荐方案: ' + rec.scheduler_name + '</h4>';
                 html += '<div class="grid">';
                 html += '<div class="metric"><div class="metric-value">' + rec.key_metrics.max_delay_minutes + '分钟</div><div class="metric-label">最大延误</div></div>';
                 html += '<div class="metric"><div class="metric-value">' + rec.key_metrics.avg_delay_minutes + '分钟</div><div class="metric-label">平均延误</div></div>';
@@ -1187,7 +1198,7 @@ HTML_TEMPLATE = '''
             
             // 所有方案
             if (result.comparison && result.comparison.all_options) {
-                html += '<h4 style="margin: 15px 0 10px;">📊 所有方案对比</h4>';
+                html += '<h4 style="margin: 15px 0 10px;">所有方法对比</h4>';
                 html += '<table class="schedule-table"><thead><tr><th>排名</th><th>调度器</th><th>最大延误</th><th>平均延误</th><th>计算时间</th></tr></thead><tbody>';
                 for (let opt of result.comparison.all_options) {
                     const winner = opt.rank === 1 ? ' ⭐' : '';
@@ -1198,7 +1209,7 @@ HTML_TEMPLATE = '''
             
             // 分析建议
             if (result.comparison && result.comparison.analysis) {
-                html += '<h4 style="margin: 15px 0 10px;">💡 分析建议</h4><ul>';
+                html += '<h4 style="margin: 15px 0 10px;">分析</h4><ul>';
                 for (let a of result.comparison.analysis) {
                     html += '<li>' + a + '</li>';
                 }
@@ -1213,11 +1224,10 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-
 @app.route('/')
 def index():
-    return render_template_string(
-        HTML_TEMPLATE,
+    return render_template(
+        'index.html',
         train_ids=train_ids,
         station_codes=station_codes,
         station_names=station_names
@@ -1941,7 +1951,8 @@ def workflow_start():
             "accident_card": result.get("accident_card", {}).model_dump() if hasattr(result.get("accident_card", {}), "model_dump") else result.get("accident_card", {}),
             "network_snapshot": result.get("network_snapshot", {}).model_dump() if hasattr(result.get("network_snapshot", {}), "model_dump") else result.get("network_snapshot", {}),
             "can_solve": result.get("dispatch_context_metadata", {}).can_solve if hasattr(result.get("dispatch_context_metadata", {}), "can_solve") else True,
-            "missing_info": result.get("dispatch_context_metadata", {}).missing_info if hasattr(result.get("dispatch_context_metadata", {}), "missing_info") else []
+            "missing_info": result.get("dispatch_context_metadata", {}).missing_info if hasattr(result.get("dispatch_context_metadata", {}), "missing_info") else [],
+            "llm_response_type": result.get("llm_response_type", "未知")
         }
 
         # 检查信息是否完整
@@ -2074,7 +2085,11 @@ def workflow_next():
                 "current_layer": 2,
                 "progress": status["progress"],
                 "messages": status["messages"],
-                "layer2_result": {"skill_dispatch": result.get("skill_dispatch", {}), "reasoning": result.get("reasoning", "")}
+                "layer2_result": {
+                    "skill_dispatch": result.get("skill_dispatch", {}),
+                    "reasoning": result.get("reasoning", ""),
+                    "llm_response_type": result.get("llm_response_type", "未知")
+                }
             })
 
         elif current_layer == 2:
@@ -2084,7 +2099,7 @@ def workflow_next():
 
             l2_result = status["layer2_result"]
             skill_dispatch = l2_result.get("skill_dispatch", {})
-            main_skill = skill_dispatch.get("主技能", "mip_scheduler")
+            main_skill = skill_dispatch.get("主技能", "mip")
             # 提取 planning_intent
             planning_intent = l2_result.get("planning_intent", "recalculate_corridor_schedule")
             
@@ -2161,7 +2176,8 @@ def workflow_next():
             result_dict = {
                 "evaluation_report": result.get("evaluation_report", {}).model_dump() if hasattr(result.get("evaluation_report", {}), "model_dump") else result.get("evaluation_report", {}),
                 "ranking_result": result.get("ranking_result", {}).model_dump() if hasattr(result.get("ranking_result", {}), "model_dump") else result.get("ranking_result", {}),
-                "rollback_feedback": result.get("rollback_feedback", {}).model_dump() if hasattr(result.get("rollback_feedback", {}), "model_dump") else result.get("rollback_feedback", {})
+                "rollback_feedback": result.get("rollback_feedback", {}).model_dump() if hasattr(result.get("rollback_feedback", {}), "model_dump") else result.get("rollback_feedback", {}),
+                "llm_response_type": result.get("llm_response_type", "未知")
             }
             session_mgr.update_layer_result(session_id, 4, result_dict)
 
