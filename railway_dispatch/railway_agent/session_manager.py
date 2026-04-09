@@ -184,6 +184,7 @@ class SessionManager:
 
         return {
             "session_id": session.session_id,
+            "original_input": session.user_input,
             "progress": session.get_progress(),
             "current_layer": session.current_layer,
             "is_complete": session.is_complete,

@@ -69,7 +69,9 @@ class FCFSScheduler:
 
     def _get_stations_for_train(self, train: Train) -> List[str]:
         """获取列车经停的车站列表"""
-        return [stop.station_code for stop in train.schedule.stops]
+        if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+            return []
+        return [stop.station_code for stop in train.schedule.stops if hasattr(stop, 'station_code')]
 
     def _time_to_seconds(self, time_str: str) -> int:
         """将时间字符串转换为秒数"""
@@ -92,6 +94,8 @@ class FCFSScheduler:
         """加载区间最小运行时间"""
         section_times = {}
         for train in self.trains:
+            if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+                continue
             stops = train.schedule.stops
             for i in range(len(stops) - 1):
                 from_station = stops[i].station_code
@@ -139,6 +143,8 @@ class FCFSScheduler:
 
     def _get_original_stop_duration(self, train: Train, station_code: str) -> int:
         """获取列车在指定站的原始停站时间（秒）"""
+        if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+            return 180  # 默认3分钟停站时间
         for stop in train.schedule.stops:
             if stop.station_code == station_code:
                 # 优先使用新字段stop_duration
@@ -185,6 +191,8 @@ class FCFSScheduler:
         # 初始化所有列车的基本时刻表（按计划时间）
         for train in self.trains:
             train_stations = []
+            if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+                continue
             for stop in train.schedule.stops:
                 station_code = stop.station_code
                 arr_sec = self._time_to_seconds(stop.arrival_time)
@@ -384,6 +392,8 @@ class FCFSScheduler:
             train_schedule = []
             train_has_delay = False
 
+            if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+                continue
             for stop in train.schedule.stops:
                 station_code = stop.station_code
                 arr_sec, dep_sec = schedule[(train.train_id, station_code)]

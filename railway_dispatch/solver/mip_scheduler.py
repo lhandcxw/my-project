@@ -62,7 +62,9 @@ class MIPScheduler:
         self.min_running_times = self._load_min_running_times()
 
     def _get_stations_for_train(self, train: Train) -> List[str]:
-        return [stop.station_code for stop in train.schedule.stops]
+        if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+            return [stop.station_code for stop in train.schedule.stops if hasattr(stop, 'station_code')]
+        return []
 
     def _time_to_seconds(self, time_str: str) -> int:
         parts = time_str.split(':')
@@ -82,6 +84,8 @@ class MIPScheduler:
     def _load_min_running_times(self) -> Dict[Tuple[str, str], int]:
         section_times = {}
         for train in self.trains:
+            if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+                continue
             stops = train.schedule.stops
             for i in range(len(stops) - 1):
                 from_station = stops[i].station_code
@@ -100,6 +104,8 @@ class MIPScheduler:
 
     def _get_original_stop_duration(self, train: Train, station_code: str) -> int:
         """获取列车在指定站的原始停站时间（秒）"""
+        if not train.schedule or not train.schedule.stops or not isinstance(train.schedule.stops, (list, tuple)):
+            return 180  # 默认3分钟停站时间
         for stop in train.schedule.stops:
             if stop.station_code == station_code:
                 # 优先使用新字段stop_duration
@@ -182,7 +188,7 @@ class MIPScheduler:
             affected_trains.add(train_id)
             injected_stations[(train_id, station_code)] = initial_delay
 
-            if station_code in self.station_codes:
+            if station_code in self.station_codes and train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
                 for stop in train.schedule.stops:
                     if stop.station_code == station_code:
                         scheduled_dep = self._time_to_seconds(stop.departure_time)
@@ -228,6 +234,8 @@ class MIPScheduler:
 
             trains_with_time = []
             for t in trains_at_station:
+                if not t.schedule or not t.schedule.stops or not isinstance(t.schedule.stops, (list, tuple)):
+                    continue
                 for stop in t.schedule.stops:
                     if stop.station_code == station_code:
                         trains_with_time.append((t, self._time_to_seconds(stop.departure_time)))
@@ -327,6 +335,8 @@ class MIPScheduler:
 
         for t in self.trains:
             train_schedule = []
+            if not t.schedule or not t.schedule.stops or not isinstance(t.schedule.stops, (list, tuple)):
+                continue
             for stop in t.schedule.stops:
                 station_code = stop.station_code
                 arr_key = (t.train_id, station_code)

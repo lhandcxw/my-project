@@ -122,14 +122,16 @@ class NoOpScheduler:
         schedule = {}
         for train in self.trains:
             stops = []
-            for stop in train.schedule.stops:
-                stops.append({
-                    "station_code": stop.station_code,
-                    "station_name": stop.station_name,
-                    "arrival_time": stop.arrival_time,
-                    "departure_time": stop.departure_time,
-                    "delay_seconds": 0
-                })
+            if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+                for stop in train.schedule.stops:
+                    if hasattr(stop, 'station_code'):
+                        stops.append({
+                            "station_code": stop.station_code,
+                            "station_name": getattr(stop, 'station_name', stop.station_code),
+                            "arrival_time": getattr(stop, 'arrival_time', ''),
+                            "departure_time": getattr(stop, 'departure_time', ''),
+                            "delay_seconds": 0
+                        })
             schedule[train.train_id] = stops
         return schedule
 

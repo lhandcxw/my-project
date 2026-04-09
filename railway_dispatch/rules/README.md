@@ -32,8 +32,8 @@ else: LARGE
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| headway_time | 120 秒 (2分钟) | 追踪间隔时间 |
-| min_headway_time | 120 秒 (2分钟) | 最小安全间隔 |
+| headway_time | 180 秒 (3分钟) | 追踪间隔时间 |
+| min_headway_time | 180 秒 (3分钟) | 最小安全间隔 |
 
 **约束条件**：
 ```
@@ -61,13 +61,13 @@ max_time = 计划运行时间 × 1.2（允许20%缓冲）
 min_time <= (到达时间 - 发车时间) <= max_time
 ```
 
-### 3.2 预设数据区间运行时间（示例）
+### 3.2 真实数据区间运行时间
 
 | 区间 | 计划运行时间 |
 |------|-------------|
 | 徐水东 -> 保定东 | 10 分钟 (600秒) |
 | 保定东 -> 定州东 | 15 分钟 (900秒) |
-| 定州东 -> 正定机 | 9 分钟 (540秒) |
+| 定州东 -> 正定机场 | 9 分钟 (540秒) |
 
 ---
 
@@ -118,8 +118,8 @@ departure[t, s] - arrival[t, s] >= platform_occupancy_time - min_stop_time
 **参数**：
 | 参数 | 说明 |
 |------|------|
-| limit_speed_kmh | 限速值 (km/h) |
-| duration_minutes | 持续时间 (分钟) |
+| limit_speed_kmh | 限速值 |
+| duration_minutes | 持续时间（分钟） |
 | affected_section | 影响区间 |
 
 **处理策略**：
@@ -138,7 +138,7 @@ departure[t, s] - arrival[t, s] >= platform_occupancy_time - min_stop_time
 | 参数 | 说明 |
 |------|------|
 | failure_type | 故障类型 |
-| estimated_repair_time | 预计修复时间 (分钟) |
+| estimated_repair_time | 预计修复时间（分钟） |
 | failure_location | 故障位置 |
 
 **处理策略**：
@@ -146,9 +146,22 @@ departure[t, s] - arrival[t, s] >= platform_occupancy_time - min_stop_time
 - 待避决策
 - 优化求解
 
-### 6.3 区间中断场景 (section_interrupt) - 预留
+### 6.3 区间中断场景 (section_interrupt)
 
-**注意**：当前版本暂不支持。
+**特征**：
+- 区间完全无法通行
+- 影响所有经过列车
+- 需要绕行或等待
+
+**参数**：
+| 参数 | 说明 |
+|------|------|
+| interrupt_location | 中断位置 |
+| interrupt_reason | 中断原因 |
+
+**处理策略**：
+- 使用 noop_scheduler（仅记录）
+- 不进行调整
 
 ---
 
@@ -168,11 +181,12 @@ departure[t, s] - arrival[t, s] >= platform_occupancy_time - min_stop_time
 | 参数 | 最大值 | 说明 |
 |------|--------|------|
 | n_stations | 13 | 车站数量 |
-| n_trains | ~50 | 列车数量（MIP求解器限制） |
+| n_trains | 147 | 列车总数（MIP建议≤50） |
 
 **说明**：
-- 真实数据模式：建议不超过50列（超过可能产生不可行解）
+- 真实数据模式：147列列车
 - Web应用默认使用前50列列车以保证MIP求解可行
+- 超过50列可能产生不可行解
 
 ---
 
@@ -205,7 +219,61 @@ actual_delay = actual_departure - scheduled_departure
 
 ---
 
-## 10. 参考文献
+## 10. 使用示例
+
+### 10.1 验证调度方案
+
+```python
+from rules.validator import Validator
+
+# 创建验证器
+validator = Validator(trains, stations)
+
+# 验证调度方案
+validation_report = validator.validate(optimized_schedule)
+
+# 检查结果
+if validation_report.is_valid:
+    print("方案通过验证")
+else:
+    print("方案存在问题：")
+    for issue in validation_report.issues:
+        print(f"  - {issue.description}")
+```
+
+### 10.2 调整约束参数
+
+```python
+from rules.validator import Validator
+
+# 自定义参数
+validator = Validator(
+    trains=trains,
+    stations=stations,
+    headway_time=120,      # 2分钟追踪间隔
+    max_station_slack=300,  # 5分钟车站冗余
+    max_section_slack=180   # 3分钟区间冗余
+)
+
+validation_report = validator.validate(schedule)
+```
+
+---
+
+## 11. 常见问题
+
+**Q: 为什么要有冗余时间约束？**
+A: 冗余时间是时刻表预留的弹性空间，用于吸收延误，避免小延误导致连锁反应。
+
+**Q: 追踪间隔如何确定？**
+A: 根据实际铁路运营安全要求，一般高铁为3分钟，可根据实际情况调整。
+
+**Q: 不同场景的约束有何不同？**
+A: 临时限速需要调整运行时间，突发故障需要延误传播分析，区间中断使用noop策略。
+
+---
+
+## 12. 参考文献
 
 - 架构文档: `railway_dispatch_agent_architecture.md`
 - 求解器模块: `solver/mip_scheduler.py`
@@ -214,4 +282,4 @@ actual_delay = actual_departure - scheduled_departure
 ---
 
 *文档版本：v1.1*
-*更新时间：2026-03-24*
+*更新时间：2026-04-08*

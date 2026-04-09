@@ -185,6 +185,18 @@
                     <button class="btn btn-primary" onclick="startLlmWorkflow()">开始</button>
                 </div>
 
+                <!-- 补充信息区域（信息不完整时显示）-->
+                <div id="supplementSection" style="display: none; background: #fff3e0; border: 1px solid #ff9800; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                        <span style="color: #e65100; font-weight: bold;">⚠️ 信息不完整</span>
+                        <span id="supplementMessage" style="color: #666;"></span>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="supplementInput" placeholder="请补充缺失的信息..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <button class="btn btn-warning" onclick="submitSupplementInfo()">提交补充</button>
+                    </div>
+                </div>
+
                 <!-- 控制按钮 -->
                 <div style="display: flex; gap: 10px; margin-bottom: 15px;">
                     <button class="btn btn-success" id="continueBtn" onclick="continueLlmWorkflow()" disabled>继续执行下一层</button>

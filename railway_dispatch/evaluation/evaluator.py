@@ -333,30 +333,40 @@ if __name__ == "__main__":
     original = {}
     for train in trains:
         stops = []
-        for stop in train.schedule.stops:
-            stops.append({
-                "station_code": stop.station_code,
-                "station_name": stop.station_name,
-                "arrival_time": stop.arrival_time,
-                "departure_time": stop.departure_time,
-                "delay_seconds": 0
-            })
+        if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+            for stop in train.schedule.stops:
+                if hasattr(stop, 'station_code'):
+                    stops.append({
+                        "station_code": stop.station_code,
+                        "station_name": stop.station_name,
+                        "arrival_time": stop.arrival_time,
+                        "departure_time": stop.departure_time,
+                        "delay_seconds": 0
+                    })
         original[train.train_id] = stops
 
     # 创建一个简单的优化结果示例（模拟延误传播）
     optimized = {}
+    first_train_first_station = None
+    if trains and trains[0].schedule and trains[0].schedule.stops and isinstance(trains[0].schedule.stops, (list, tuple)):
+        first_stop = trains[0].schedule.stops[0]
+        if hasattr(first_stop, 'station_code'):
+            first_train_first_station = first_stop.station_code
+
     for train in trains:
         stops = []
-        for stop in train.schedule.stops:
-            # 简单模拟：假设每站都有传播的延误
-            delay = 300 if stop.station_code != trains[0].schedule.stops[0].station_code else 0
-            stops.append({
-                "station_code": stop.station_code,
-                "station_name": stop.station_name,
-                "arrival_time": stop.arrival_time,
-                "departure_time": stop.departure_time,
-                "delay_seconds": delay
-            })
+        if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+            for stop in train.schedule.stops:
+                if hasattr(stop, 'station_code'):
+                    # 简单模拟：假设每站都有传播的延误
+                    delay = 300 if stop.station_code != first_train_first_station else 0
+                    stops.append({
+                        "station_code": stop.station_code,
+                        "station_name": stop.station_name,
+                        "arrival_time": stop.arrival_time,
+                        "departure_time": stop.departure_time,
+                        "delay_seconds": delay
+                    })
         optimized[train.train_id] = stops
 
     # 延误注入信息

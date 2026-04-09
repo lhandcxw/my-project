@@ -116,7 +116,20 @@
                 document.getElementById('dispatchLoading').style.display = 'none';
 
                 if (result.success) {
-                    showDispatchResult(result);
+                    // 转换为统一格式，添加空值检查
+                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                    const unified = {
+                        success: true,
+                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
+                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
+                        reasoning: '基于自然语言输入执行智能调度',
+                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
+                        message: skillMessage,
+                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
+                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
+                        original_schedule: result.original_schedule
+                    };
+                    showDispatchResult(unified);
                 } else {
                     alert('执行失败: ' + result.message);
                 }
@@ -219,7 +232,17 @@
             // 时刻表
             let tableHtml = '<table class="schedule-table"><thead><tr><th>车次</th><th>车站</th><th>到达</th><th>发车</th><th>延误</th></tr></thead><tbody>';
             for (let [trainId, stops] of Object.entries(result.optimized_schedule || {})) {
+                // 安全检查：确保stops是可迭代的数组
+                if (!stops || !Array.isArray(stops)) {
+                    console.warn('列车 ' + trainId + ' 的stops不是有效数组:', stops);
+                    continue;
+                }
                 for (let stop of stops) {
+                    // 安全检查：确保stop是对象
+                    if (!stop || typeof stop !== 'object') {
+                        console.warn('列车 ' + trainId + ' 的stop项不是有效对象:', stop);
+                        continue;
+                    }
                     const delay = stop.delay_seconds || 0;
                     const delayClass = delay > 0 ? 'delay-red' : 'delay-green';
                     const delayText = delay > 0 ? '+' + delay + '秒' : '准点';
@@ -257,12 +280,20 @@
         // LLM多轮对话 - 全局变量
         let currentSessionId = null;
         let currentLayer = 0;
+        let waitingForInfo = false;  // 是否正在等待用户补充信息
+        let missingFields = [];      // 缺失的字段列表
 
         // LLM多轮对话 - 开始工作流
         function startLlmWorkflow() {
             const userInput = document.getElementById('llmChatInput').value.trim();
             if (!userInput) {
                 alert('请输入调度需求');
+                return;
+            }
+
+            // 如果正在等待补充信息，使用补充信息API
+            if (waitingForInfo && currentSessionId) {
+                continueWithAdditionalInfo(userInput);
                 return;
             }
 
@@ -289,8 +320,79 @@
                     document.getElementById('continueBtn').disabled = false;
                     document.getElementById('resetBtn').disabled = false;
                     document.getElementById('llmResultSection').style.display = 'none';
+
+                    // 检查是否需要补充信息
+                    if (result.needs_more_info) {
+                        waitingForInfo = true;
+                        missingFields = result.missing_fields || [];
+                        showInfoRequest(result.message, missingFields);
+                    } else {
+                        waitingForInfo = false;
+                        missingFields = [];
+                    }
                 } else {
                     alert('启动失败: ' + result.message);
+                }
+            })
+            .catch(error => {
+                alert('请求失败: ' + error.message);
+            });
+        }
+
+        // 显示信息补充请求
+        function showInfoRequest(message, fields) {
+            const chatDiv = document.getElementById('chatHistory');
+            const infoRequestHtml = `
+                <div class="chat-message chat-system info-request">
+                    <span class="msg-content">
+                        <strong>需要补充信息：</strong><br>
+                        ${message}<br>
+                        <small style="color: #666;">请在下方输入框中补充信息后再次点击"开始工作流"</small>
+                    </span>
+                </div>
+            `;
+            chatDiv.innerHTML += infoRequestHtml;
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+
+            // 清空输入框并设置提示
+            const input = document.getElementById('llmChatInput');
+            input.placeholder = `请补充: ${fields.join(', ')}...`;
+            input.value = '';
+            input.focus();
+        }
+
+        // 使用补充信息继续工作流
+        function continueWithAdditionalInfo(additionalInfo) {
+            document.getElementById('llmProgress').textContent = '正在处理补充信息...';
+
+            fetch('/api/workflow/continue', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    session_id: currentSessionId,
+                    additional_info: additionalInfo
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    currentLayer = result.current_layer;
+                    updateChatHistory(result.messages);
+                    updateProgress(result.current_layer, result.progress);
+                    updateLayerBadges(result.current_layer);
+
+                    // 检查是否还需要更多信息
+                    if (result.needs_more_info) {
+                        waitingForInfo = true;
+                        missingFields = result.missing_fields || [];
+                        showInfoRequest(result.message, missingFields);
+                    } else {
+                        waitingForInfo = false;
+                        missingFields = [];
+                        document.getElementById('llmChatInput').placeholder = '请输入调度需求（如：G1563在石家庄因大风限速）...';
+                    }
+                } else {
+                    alert('处理失败: ' + result.message);
                 }
             })
             .catch(error => {
@@ -376,7 +478,10 @@
             }
             currentSessionId = null;
             currentLayer = 0;
+            waitingForInfo = false;
+            missingFields = [];
             document.getElementById('llmChatInput').value = '';
+            document.getElementById('llmChatInput').placeholder = '请输入调度需求（如：G1563在石家庄因大风限速）...';
             document.getElementById('chatHistory').innerHTML = '<p style="color: #999; text-align: center;">暂无对话记录，请输入调度需求开始</p>';
             document.getElementById('llmProgress').textContent = '等待开始';
             document.getElementById('continueBtn').disabled = true;
@@ -496,12 +601,25 @@
             })
             .then(response => response.json())
             .then(result => {
-                document.getElementById('comparisonLoading').style.display = 'none';
-                
+                document.getElementById('dispatchLoading').style.display = 'none';
+
                 if (result.success) {
-                    displayComparisonReport(result);
+                    // 转换为统一格式，添加空值检查
+                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                    const unified = {
+                        success: true,
+                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
+                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
+                        reasoning: '基于自然语言输入执行调度优化',
+                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
+                        message: skillMessage,
+                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
+                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
+                        original_schedule: result.original_schedule
+                    };
+                    showDispatchResult(unified);
                 } else {
-                    alert('比较失败: ' + result.message);
+                    alert('执行失败: ' + result.message);
                 }
             })
             .catch(error => {

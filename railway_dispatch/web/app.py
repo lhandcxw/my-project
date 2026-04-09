@@ -30,23 +30,11 @@ from evaluation.evaluator import Evaluator
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 导入运行图生成模块
-import sys
-import os
-
-# 添加项目根目录到 Python 路径
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
-
 # 导入运行图生成模块（经典铁路运行图风格：横轴时间，纵轴车站）
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
 # 导入新架构 Agent
 from railway_agent import RuleAgent, create_rule_agent, ToolRegistry
-
-# 导入预处理服务
-from railway_agent.preprocess_service import get_preprocess_service
-from railway_agent.adapters.response_adapter import get_response_adapter
 
 # QwenAgent延迟导入（已迁移到新架构，使用统一Agent）
 def get_qwen_agent_module():
@@ -77,24 +65,22 @@ scheduler = MIPScheduler(trains, stations)
 skills = create_skills(scheduler)
 evaluator = Evaluator()
 
-# Qwen Agent (延迟加载)
+# 从统一配置中心导入配置
+from config import AppConfig, LLMConfig, get_config_summary
+
+# 设置环境变量（统一配置中心已定义，这里确保生效）
+os.environ['DASHSCOPE_API_KEY'] = LLMConfig.DASHSCOPE_API_KEY
+os.environ['DASHSCOPE_MODEL'] = LLMConfig.DASHSCOPE_MODEL
+os.environ['LLM_PROVIDER'] = LLMConfig.PROVIDER
+
+# 导出常用配置
+AGENT_MODE = AppConfig.AGENT_MODE
+
+# 打印配置摘要
+logger.info(get_config_summary())
+
+# Agent (延迟加载)
 qwen_agent = None
-
-# ============================================
-# Agent模式配置
-#   "rule"    - 使用固定规则Agent，无需大模型（推荐用于开发和测试）
-#   "qwen"    - 使用Qwen大模型Agent（需要配置MODEL_PATH）
-#   "auto"    - 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-AGENT_MODE = "qwen"  # 自动选择：优先使用Qwen，如果失败则回退到RuleAgent
-
-# 模型配置: 设置为 ModelScope 模型 ID 或本地路径
-# 留空则使用Ollama本地模型
-# 可选: Qwen/Qwen2.5-0.5B, Qwen/Qwen2.5-1.8B, Qwen/Qwen2.5-3B
-MODEL_PATH = "Qwen/Qwen2.5-1.8B"  # 使用ModelScope大模型(1.8B)
-
-# ModelScope API Key 配置
-import os
-os.environ['MODELSCOPE_API_TOKEN'] = 'ms-4e02888f-95d6-4fd1-b07c-4897386cf13c'
 
 def get_qwen_agent():
     """
@@ -122,7 +108,7 @@ def get_original_schedule():
     schedule = {}
     for train in trains:
         stops = []
-        if train.schedule and train.schedule.stops:
+        if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
             for stop in train.schedule.stops:
                 stops.append({
                     "station_code": stop.station_code,
@@ -1598,12 +1584,16 @@ def parse_user_prompt(prompt: str) -> dict:
 
         actual_station_code = detected_station_code
         if train and train.schedule:
-            # 检查列车是否停靠在选定车站
-            train_stations = [stop.station_code for stop in train.schedule.stops] if train.schedule.stops else []
+            # 检查列车是否停靠在选定车站（增强安全性检查）
+            train_stations = []
+            if train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+                train_stations = [stop.station_code for stop in train.schedule.stops if hasattr(stop, 'station_code')]
             if detected_station_code not in train_stations and train_stations:
                 # 使用列车的第一个停靠站
-                actual_station_code = train.schedule.stops[0].station_code
-                logger.warning(f"列车 {train_id} 不停靠在 {detected_station_code}，使用 {actual_station_code} 作为延误车站")
+                first_stop = train.schedule.stops[0]
+                if hasattr(first_stop, 'station_code'):
+                    actual_station_code = first_stop.station_code
+                    logger.warning(f"列车 {train_id} 不停靠在 {detected_station_code}，使用 {actual_station_code} 作为延误车站")
         elif not train:
             logger.warning(f"列车 {train_id} 不在列车列表中，使用默认车站 {detected_station_code}")
         elif not train.schedule:
@@ -1918,12 +1908,19 @@ def workflow_start():
 
         # 导入新架构工作流引擎
         from railway_agent.llm_workflow_engine_v2 import LLMWorkflowEngineV2, create_workflow_engine
+        from railway_agent.workflow.layer1_data_modeling import Layer1DataModeling
+
+        # 步骤1：L0+L1 合并处理（数据建模层）
+        # 先进行L0预处理，构建CanonicalDispatchRequest
+        layer1 = Layer1DataModeling()
+        canonical_request = layer1.build_canonical_request_from_input(user_input)
+        logger.info(f"[L0] 预处理完成，scene_type={canonical_request.scene_type_code}, location={canonical_request.location.station_code if canonical_request.location else 'None'}")
 
         # 创建工作流引擎
         workflow_engine = create_workflow_engine()
 
-        # 执行第1层（数据建模）
-        result = workflow_engine.execute_layer1(user_input=user_input, canonical_request=snapshot_info)
+        # 执行第1层（数据建模），传入L0预处理结果
+        result = workflow_engine.execute_layer1(user_input=user_input, canonical_request=canonical_request)
 
         # 构建 NetworkSnapshot（使用 SnapshotBuilder）
         from railway_agent.snapshot_builder import get_snapshot_builder
@@ -1977,17 +1974,24 @@ def workflow_start():
                 sections=[]
             )
 
+        # 获取 accident_card 并检查有效性
+        accident_card = result.get("accident_card")
+        if not accident_card:
+            return jsonify({
+                "success": False,
+                "message": "无法从输入中提取事故信息，LLM返回结果为空"
+            })
+
         # 转换为字典格式（用于JSON序列化）
         result_dict = {
-            "accident_card": result.get("accident_card", {}).model_dump() if hasattr(result.get("accident_card", {}), "model_dump") else result.get("accident_card", {}),
+            "accident_card": accident_card.model_dump() if hasattr(accident_card, "model_dump") else accident_card,
             "network_snapshot": network_snapshot.model_dump(),
-            "can_solve": result.get("accident_card", {}).is_complete if hasattr(result.get("accident_card", {}), "is_complete") else True,
-            "missing_info": result.get("accident_card", {}).missing_fields if hasattr(result.get("accident_card", {}), "missing_fields") else [],
+            "can_solve": accident_card.is_complete if hasattr(accident_card, "is_complete") else True,
+            "missing_info": accident_card.missing_fields if hasattr(accident_card, "missing_fields") else [],
             "llm_response_type": result.get("llm_response_type", "未知")
         }
 
         # 检查信息是否完整
-        accident_card = result.get("accident_card", {})
         is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else result_dict.get("can_solve", True)
         missing_fields = accident_card.missing_fields if hasattr(accident_card, "missing_fields") else result_dict.get("missing_info", [])
 
@@ -2313,6 +2317,126 @@ def workflow_status():
     })
 
 
+@app.route('/api/workflow/continue', methods=['POST'])
+def workflow_continue():
+    """
+    使用补充信息继续工作流
+
+    请求体:
+    {
+        "session_id": "会话ID",
+        "additional_info": "用户补充的信息"
+    }
+
+    响应:
+    {
+        "success": true,
+        "current_layer": 1,
+        "progress": "执行中: 数据建模层",
+        "messages": [...],
+        "needs_more_info": false,
+        "can_proceed": true
+    }
+    """
+    try:
+        data = request.json
+        session_id = data.get('session_id', '')
+        additional_info = data.get('additional_info', '')
+
+        if not session_id:
+            return jsonify({
+                "success": False,
+                "message": "缺少session_id"
+            })
+
+        if not additional_info:
+            return jsonify({
+                "success": False,
+                "message": "请提供补充信息"
+            })
+
+        logger.info(f"继续工作流，会话ID: {session_id}, 补充信息: {additional_info[:50]}...")
+
+        # 获取会话管理器
+        session_mgr = get_session_manager()
+        status = session_mgr.get_session_status(session_id)
+
+        if status is None:
+            return jsonify({
+                "success": False,
+                "message": "会话不存在或已过期"
+            })
+
+        # 导入工作流引擎
+        from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+        workflow_engine = create_workflow_engine()
+
+        # 获取之前的状态
+        layer1_result = status.get("layer_results", {}).get("layer1", {})
+        accident_card_data = layer1_result.get("accident_card", {})
+
+        # 合并原始输入和补充信息
+        original_input = status.get("original_input", "")
+        combined_input = f"{original_input} {additional_info}"
+
+        # 重新执行L1，使用合并后的输入
+        result = workflow_engine.execute_layer1(user_input=combined_input)
+
+        accident_card = result.get("accident_card")
+        if not accident_card:
+            return jsonify({
+                "success": False,
+                "message": "无法从补充信息中提取事故信息"
+            })
+
+        # 转换为字典格式
+        result_dict = {
+            "accident_card": accident_card.model_dump() if hasattr(accident_card, "model_dump") else accident_card,
+            "can_solve": accident_card.is_complete if hasattr(accident_card, "is_complete") else True,
+            "missing_info": accident_card.missing_fields if hasattr(accident_card, "missing_fields") else [],
+            "llm_response_type": result.get("llm_response_type", "未知")
+        }
+
+        # 更新会话状态
+        session_mgr.update_layer_result(session_id, 1, result_dict)
+
+        # 获取更新后的会话状态
+        status = session_mgr.get_session_status(session_id)
+
+        # 检查信息是否完整
+        is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else True
+        missing_fields = accident_card.missing_fields if hasattr(accident_card, "missing_fields") else []
+
+        # 构建响应
+        response = {
+            "success": True,
+            "session_id": session_id,
+            "current_layer": 1,
+            "progress": status["progress"],
+            "messages": status["messages"],
+            "layer1_result": result_dict
+        }
+
+        if not is_complete and missing_fields:
+            response["needs_more_info"] = True
+            response["missing_fields"] = missing_fields
+            response["message"] = f"信息仍不完整，请继续补充：{', '.join(missing_fields)}"
+            response["can_proceed"] = False
+        else:
+            response["needs_more_info"] = False
+            response["can_proceed"] = True
+            response["message"] = "信息已完整，可继续执行后续流程"
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.exception(f"workflow_continue处理异常: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
 @app.route('/api/workflow/reset', methods=['POST'])
 def workflow_reset():
     """重置/删除会话"""
@@ -2337,8 +2461,8 @@ def workflow_reset():
 @app.route('/api/preprocess_debug', methods=['POST'])
 def preprocess_debug():
     """
-    预处理调试API
-    返回完整的预处理过程信息，用于调试
+    预处理调试API（已简化，直接调用L1层）
+    返回完整的数据建模过程信息，用于调试
     """
     try:
         data = request.json
@@ -2352,22 +2476,22 @@ def preprocess_debug():
 
         logger.info(f"收到preprocess_debug请求: {raw_input[:50]}...")
 
-        # 调用预处理服务
-        preprocess_service = get_preprocess_service()
-        debug_response = preprocess_service.preprocess_debug(raw_input)
-
-        # 返回调试响应
-        response_adapter = get_response_adapter()
+        # 直接调用L1层进行数据建模
+        from railway_agent.workflow import Layer1DataModeling
+        l1 = Layer1DataModeling()
+        l1_result = l1.execute(user_input=raw_input, enable_rag=True)
+        
+        accident_card = l1_result.get("accident_card", {})
         
         return jsonify({
             "success": True,
-            "request_id": debug_response.request_id,
-            "raw_user_request": debug_response.raw_user_request,
-            "canonical_request": debug_response.canonical_request,
-            "evidence_list": debug_response.evidence_list,
-            "completeness": debug_response.completeness,
-            "processing_steps": debug_response.processing_steps,
-            "message": "预处理调试完成"
+            "request_id": "debug_" + str(hash(raw_input)),
+            "raw_user_request": {"input": raw_input},
+            "accident_card": accident_card.model_dump() if hasattr(accident_card, 'model_dump') else accident_card,
+            "response_source": l1_result.get("response_source", "unknown"),
+            "needs_more_info": l1_result.get("needs_more_info", False),
+            "missing_questions": l1_result.get("missing_questions", []),
+            "message": "L1数据建模完成"
         })
 
     except Exception as e:
@@ -2376,6 +2500,20 @@ def preprocess_debug():
             "success": False,
             "message": str(e)
         })
+
+
+def check_api_connectivity():
+    """检查API连通性"""
+    try:
+        from railway_agent.adapters.llm_adapter import get_llm_caller
+        llm = get_llm_caller()
+        # 尝试一个简单的API调用
+        test_response = llm.call("测试", max_tokens=10, temperature=0.1)
+        logger.info("[API连通性检查] DashScope API连接正常")
+        return True
+    except Exception as e:
+        logger.error(f"[API连通性检查] 失败: {e}")
+        return False
 
 
 if __name__ == '__main__':
@@ -2389,11 +2527,21 @@ if __name__ == '__main__':
         if AGENT_MODE == "rule":
             logger.info("使用固定规则Agent，无需加载大模型")
         elif AGENT_MODE == "qwen":
-            logger.info(f"使用Qwen Agent，模型路径: {MODEL_PATH}")
+            from config import LLM_CONFIG
+            logger.info(f"使用阿里云DashScope API，模型: {LLM_CONFIG['model']}")
         else:
             logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
         logger.info("访问地址: http://localhost:8081")
         logger.info("按 Ctrl+C 停止服务")
         logger.info("=" * 50)
+        
+        # 检查API连通性
+        logger.info("正在检查API连通性...")
+        if not check_api_connectivity():
+            logger.error("API连通性检查失败，服务可能无法正常工作")
+            logger.error("请检查:")
+            logger.error("1. DASHSCOPE_API_KEY 是否正确设置")
+            logger.error("2. 网络连接是否正常")
+            logger.error("3. 阿里云DashScope服务是否可用")
     # 关闭debug模式以避免重复启动，但保留自动重载功能
     app.run(host='0.0.0.0', port=8081, debug=False)

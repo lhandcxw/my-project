@@ -122,23 +122,21 @@ class TemporarySpeedLimitSkill(BaseDispatchSkill):
 
         # 构建结果
         delay_stats = solver_response.metrics or {}
-        if hasattr(solver_response, 'model_dump'):
-            schedule_data = solver_response.model_dump()
-        else:
-            schedule_data = {
-                "success": solver_response.success,
-                "status": solver_response.status,
-                "total_delay_minutes": delay_stats.get("total_delay_seconds", 0) // 60,
-                "max_delay_minutes": delay_stats.get("max_delay_seconds", 0) // 60
-            }
+
+        # 获取优化后的时刻表 - 从 schedule 字段获取
+        optimized_schedule = {}
+        if hasattr(solver_response, 'schedule') and solver_response.schedule:
+            optimized_schedule = solver_response.schedule
+        elif hasattr(solver_response, 'optimized_schedule') and solver_response.optimized_schedule:
+            optimized_schedule = solver_response.optimized_schedule
 
         return DispatchSkillOutput(
-            optimized_schedule=schedule_data,
+            optimized_schedule=optimized_schedule,
             delay_statistics={
-                "max_delay_minutes": delay_stats.get("max_delay_seconds", 0) // 60,
-                "avg_delay_minutes": delay_stats.get("avg_delay_seconds", 0) // 60 if "avg_delay_seconds" in delay_stats else 0,
-                "total_delay_minutes": delay_stats.get("total_delay_seconds", 0) // 60,
-                "affected_trains_count": len(train_ids)
+                "max_delay_seconds": delay_stats.get("max_delay_seconds", 0),
+                "avg_delay_seconds": delay_stats.get("avg_delay_seconds", 0),
+                "total_delay_seconds": delay_stats.get("total_delay_seconds", 0),
+                "affected_trains_count": delay_stats.get("affected_trains_count", len(train_ids))
             },
             computation_time=computation_time + (solver_response.solving_time_seconds if hasattr(solver_response, 'solving_time_seconds') else 0),
             success=solver_response.success,
@@ -182,18 +180,16 @@ class SuddenFailureSkill(BaseDispatchSkill):
 
         # 构建结果
         delay_stats = solver_response.metrics or {}
-        if hasattr(solver_response, 'model_dump'):
-            schedule_data = solver_response.model_dump()
-        else:
-            schedule_data = {
-                "success": solver_response.success,
-                "status": solver_response.status,
-                "total_delay_minutes": delay_stats.get("total_delay_seconds", 0) // 60,
-                "max_delay_minutes": delay_stats.get("max_delay_seconds", 0) // 60
-            }
+
+        # 获取优化后的时刻表 - 从 schedule 字段获取
+        optimized_schedule = {}
+        if hasattr(solver_response, 'schedule') and solver_response.schedule:
+            optimized_schedule = solver_response.schedule
+        elif hasattr(solver_response, 'optimized_schedule') and solver_response.optimized_schedule:
+            optimized_schedule = solver_response.optimized_schedule
 
         return DispatchSkillOutput(
-            optimized_schedule=schedule_data,
+            optimized_schedule=optimized_schedule,
             delay_statistics={
                 "max_delay_minutes": delay_stats.get("max_delay_seconds", 0) // 60,
                 "avg_delay_minutes": delay_stats.get("avg_delay_seconds", 0) // 60 if "avg_delay_seconds" in delay_stats else 0,
@@ -289,17 +285,19 @@ class GetTrainStatusSkill(BaseDispatchSkill):
                         "train_id_mapped": getattr(t, 'train_id_mapped', '')
                     }
                     if hasattr(t, 'schedule') and hasattr(t.schedule, 'stops'):
-                        train_info["total_stops"] = len(t.schedule.stops)
-                        train_info["stops"] = [
-                            {
-                                "station_code": s.station_code,
-                                "station_name": s.station_name,
-                                "arrival_time": s.arrival_time,
-                                "departure_time": s.departure_time,
-                                "is_stopped": s.is_stopped
-                            }
-                            for s in t.schedule.stops[:5]  # 只返回前5站
-                        ]
+                        stops = t.schedule.stops
+                        if isinstance(stops, (list, tuple)):
+                            train_info["total_stops"] = len(stops)
+                            train_info["stops"] = [
+                                {
+                                    "station_code": s.station_code,
+                                    "station_name": s.station_name,
+                                    "arrival_time": s.arrival_time,
+                                    "departure_time": s.departure_time,
+                                    "is_stopped": s.is_stopped
+                                }
+                                for s in stops[:5]  # 只返回前5站
+                            ]
                     break
 
         computation_time = time.time() - start_time
@@ -358,7 +356,8 @@ class QueryTimetableSkill(BaseDispatchSkill):
                 if hasattr(train, 'train_id') and train.train_id == train_id:
                     results["train_type"] = getattr(train, 'train_type', '未知')
                     if hasattr(train, 'schedule') and hasattr(train.schedule, 'stops'):
-                        results["total_stops"] = len(train.schedule.stops)
+                        stops_list = train.schedule.stops if isinstance(train.schedule.stops, (list, tuple)) else []
+                        results["total_stops"] = len(stops_list)
                         results["stops"] = [
                             {
                                 "station_code": s.station_code,
@@ -368,7 +367,7 @@ class QueryTimetableSkill(BaseDispatchSkill):
                                 "is_stopped": s.is_stopped,
                                 "stop_duration_seconds": s.stop_duration
                             }
-                            for s in train.schedule.stops
+                            for s in stops_list
                         ]
                     break
 
@@ -390,15 +389,17 @@ class QueryTimetableSkill(BaseDispatchSkill):
             trains_at_station = []
             for train in self.trains:
                 if hasattr(train, 'schedule') and hasattr(train.schedule, 'stops'):
-                    for stop in train.schedule.stops:
-                        if stop.station_code == station_code:
-                            trains_at_station.append({
-                                "train_id": train.train_id,
-                                "arrival_time": stop.arrival_time,
-                                "departure_time": stop.departure_time,
-                                "is_stopped": stop.is_stopped
-                            })
-                            break
+                    stops = train.schedule.stops
+                    if isinstance(stops, (list, tuple)):
+                        for stop in train.schedule.stops:
+                            if stop.station_code == station_code:
+                                trains_at_station.append({
+                                    "train_id": train.train_id,
+                                    "arrival_time": stop.arrival_time,
+                                    "departure_time": stop.departure_time,
+                                    "is_stopped": stop.is_stopped
+                                })
+                                break
 
             results["trains"] = trains_at_station[:20]  # 最多返回20列
             results["total_trains"] = len(trains_at_station)

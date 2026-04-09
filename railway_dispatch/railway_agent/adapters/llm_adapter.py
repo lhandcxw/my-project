@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 LLM 适配器（新架构v2）
-统一 LLM 调用接口 - 支持 OpenAI 和 Ollama
+统一 LLM 调用接口 - 支持 OpenAI、Ollama 和阿里云
 """
 
 from typing import Optional, Dict, Any
@@ -9,21 +9,44 @@ import logging
 import json
 import os
 
+# 导入统一配置
+from config import LLMConfig
+
 logger = logging.getLogger(__name__)
 
 
 # 简化的 LLMCaller 兼容类
 class LLMCaller:
-    """简化的 LLM 调用器（兼容性）- 支持 OpenAI 和 Ollama"""
-
-    # 默认使用 Ollama（本地模型）
-    DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b")
+    """简化的 LLM 调用器（兼容性）- 支持 OpenAI、Ollama 和阿里云"""
 
     def __init__(self):
         self._openai_client = None
         self._ollama_client = None
+        self._dashscope_client = None
+
+    @property
+    def DEFAULT_PROVIDER(self) -> str:
+        return LLMConfig.PROVIDER
+
+    @property
+    def DASHSCOPE_API_KEY(self) -> str:
+        return LLMConfig.DASHSCOPE_API_KEY
+
+    @property
+    def DASHSCOPE_MODEL(self) -> str:
+        return LLMConfig.DASHSCOPE_MODEL
+
+    @property
+    def DASHSCOPE_ENABLE_THINKING(self) -> bool:
+        return LLMConfig.DASHSCOPE_ENABLE_THINKING
+
+    @property
+    def OLLAMA_BASE_URL(self) -> str:
+        return LLMConfig.OLLAMA_BASE_URL
+
+    @property
+    def OLLAMA_MODEL(self) -> str:
+        return LLMConfig.OLLAMA_MODEL
 
     def _get_openai_client(self):
         """获取 OpenAI 客户端"""
@@ -58,6 +81,21 @@ class LLMCaller:
                 self._ollama_client = None
         return self._ollama_client
 
+    def _get_dashscope_client(self):
+        """获取阿里云 DashScope 客户端"""
+        if self._dashscope_client is None:
+            try:
+                from openai import OpenAI
+                self._dashscope_client = OpenAI(
+                    api_key=self.DASHSCOPE_API_KEY,
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                )
+                logger.info(f"阿里云 DashScope 客户端初始化成功，使用模型: {self.DASHSCOPE_MODEL}")
+            except Exception as e:
+                logger.warning(f"无法初始化阿里云客户端: {e}")
+                self._dashscope_client = None
+        return self._dashscope_client
+
     def call(
         self,
         prompt: str,
@@ -80,6 +118,8 @@ class LLMCaller:
 
         if provider == "ollama":
             return self._call_ollama(prompt, max_tokens, temperature)
+        elif provider == "dashscope":
+            return self._call_dashscope(prompt, max_tokens, temperature)
         else:
             return self._call_openai(prompt, max_tokens, temperature)
 
@@ -88,31 +128,52 @@ class LLMCaller:
         client = self._get_ollama_client()
 
         if client is None:
-            logger.warning("Ollama 客户端不可用，切换到模拟响应")
-            return (self._get_mock_response(prompt), "mock")
+            raise RuntimeError("Ollama 客户端不可用")
 
         try:
-            response = client.chat.completions.create(
-                model=self.OLLAMA_MODEL,
-                messages=[
-                    {"role": "system", "content": "你是一个专业的铁路调度助手。"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            return (response.choices[0].message.content, f"ollama:{self.OLLAMA_MODEL}")
+            # 增加超时和重试逻辑
+            import time
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = client.chat.completions.create(
+                        model=self.OLLAMA_MODEL,
+                        messages=[
+                            {"role": "system", "content": "你是一个专业的铁路调度助手。请严格按照要求输出JSON格式。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        timeout=60  # 60秒超时
+                    )
+                    content = response.choices[0].message.content
+                    if content and content.strip():
+                        return (content, f"ollama:{self.OLLAMA_MODEL}")
+                    else:
+                        logger.warning(f"Ollama 返回空响应 (尝试 {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                            continue
+                except Exception as inner_e:
+                    logger.warning(f"Ollama 调用异常 (尝试 {attempt + 1}/{max_retries}): {inner_e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    raise
+
+            # 所有重试都失败
+            raise RuntimeError("Ollama 多次调用失败")
+
         except Exception as e:
             logger.error(f"Ollama 调用失败: {e}")
-            return (self._get_mock_response(prompt), "fallback")
+            raise RuntimeError(f"Ollama 调用失败: {e}") from e
 
     def _call_openai(self, prompt: str, max_tokens: int, temperature: float) -> tuple:
         """调用 OpenAI API"""
         client = self._get_openai_client()
 
         if client is None:
-            # 如果无法初始化客户端，返回模拟响应
-            return (self._get_mock_response(prompt), "mock")
+            raise RuntimeError("OpenAI 客户端不可用")
 
         try:
             response = client.chat.completions.create(
@@ -127,44 +188,55 @@ class LLMCaller:
             return (response.choices[0].message.content, "openai")
         except Exception as e:
             logger.error(f"OpenAI 调用失败: {e}")
-            return (self._get_mock_response(prompt), "fallback")
+            raise RuntimeError(f"OpenAI 调用失败: {e}") from e
 
-    def _get_mock_response(self, prompt: str) -> str:
-        """获取模拟响应（当LLM调用失败时）"""
-        # 根据提示词生成一些基本的模拟响应
-        lower_prompt = prompt.lower()
+    def _call_dashscope(self, prompt: str, max_tokens: int, temperature: float) -> tuple:
+        """调用阿里云 DashScope (qwen-max/qwen3.5-27b)"""
+        client = self._get_dashscope_client()
 
-        if "temporal_speed_limit" in lower_prompt or "temporary_speed_limit" in lower_prompt:
-            return json.dumps({
-                "scene_type": "temporal_speed_limit",
-                "affected_train_ids": [],
-                "affected_station_codes": [],
-                "delay_minutes": 0,
-                "reason": "模拟响应"
-            })
-        elif "sudden_failure" in lower_prompt:
-            return json.dumps({
-                "scene_type": "sudden_failure",
-                "affected_train_ids": [],
-                "affected_station_codes": [],
-                "delay_minutes": 0,
-                "reason": "模拟响应"
-            })
-        elif "train_status" in lower_prompt:
-            return json.dumps({
-                "query_type": "train_status",
-                "train_ids": []
-            })
-        elif "timetable" in lower_prompt:
-            return json.dumps({
-                "query_type": "timetable",
-                "station_codes": []
-            })
-        else:
-            return json.dumps({
-                "scene_type": "unknown",
-                "reason": "模拟响应"
-            })
+        if client is None:
+            raise RuntimeError("阿里云客户端不可用")
+
+        # 验证API Key已设置
+        if not self.DASHSCOPE_API_KEY:
+            raise RuntimeError("DASHSCOPE_API_KEY未设置，请配置环境变量")
+
+        try:
+            # 构建请求参数
+            request_params = {
+                "model": self.DASHSCOPE_MODEL,
+                "messages": [
+                    {"role": "system", "content": "你是一个专业的铁路调度助手。请严格按照要求输出JSON格式。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+
+            # 启用深度思考模式（如果配置允许）
+            # 注意：只有特定模型支持enable_thinking参数
+            if self.DASHSCOPE_ENABLE_THINKING:
+                model_lower = self.DASHSCOPE_MODEL.lower()
+                # 目前只有qwen3系列模型支持enable_thinking
+                if "qwen3" in model_lower and "-27b" not in model_lower:
+                    request_params["enable_thinking"] = True
+                    logger.info(f"[DashScope] 启用深度思考模式")
+                else:
+                    logger.info(f"[DashScope] 当前模型 {self.DASHSCOPE_MODEL} 不支持深度思考模式，跳过")
+
+            response = client.chat.completions.create(**request_params)
+
+            content = response.choices[0].message.content
+            if content and content.strip():
+                # 记录真实API调用成功
+                thinking_status = "开启" if self.DASHSCOPE_ENABLE_THINKING else "关闭"
+                logger.info(f"[DashScope API] 成功调用模型: {self.DASHSCOPE_MODEL} (思考模式: {thinking_status})")
+                return (content, f"{self.DASHSCOPE_MODEL}")
+            else:
+                raise RuntimeError("DashScope 返回空响应")
+        except Exception as e:
+            logger.error(f"阿里云 DashScope 调用失败: {e}")
+            raise RuntimeError(f"阿里云 DashScope 调用失败: {e}") from e
 
 
 # 延迟导入以避免循环依赖
@@ -215,7 +287,7 @@ class LLMAdapter:
             return llm.call(prompt, max_tokens, temperature)
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
-            return ""
+            raise RuntimeError(f"LLM 调用失败: {e}") from e
     
     def extract_json(self, response: str) -> Optional[Dict[str, Any]]:
         """

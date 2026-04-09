@@ -80,12 +80,18 @@ class Layer4Evaluation:
 
         logger.info(f"第四层完成: 决策={policy_decision.decision}")
 
+        # 标记响应来源
+        llm_response_type = evaluation_report.metadata.get("llm_response_type", "unknown") if evaluation_report else "unknown"
+        if evaluation_report and "[MOCK]" in str(llm_response_type):
+            logger.info("[L4] 使用的是模拟响应（非LLM生成）")
+
         return {
             "evaluation_report": evaluation_report,
             "ranking_result": None,  # 暂不实现排序
             "rollback_feedback": rollback_feedback,
             "policy_decision": policy_decision.model_dump(),
-            "llm_summary": evaluation_report.llm_summary if evaluation_report else "评估失败"
+            "llm_summary": evaluation_report.llm_summary if evaluation_report else "评估失败",
+            "llm_response_type": llm_response_type
         }
 
     def _generate_llm_evaluation(

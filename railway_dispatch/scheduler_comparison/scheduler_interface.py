@@ -101,14 +101,16 @@ class BaseScheduler(abc.ABC):
         schedule = {}
         for train in self.trains:
             stops = []
-            for stop in train.schedule.stops:
-                stops.append({
-                    "station_code": stop.station_code,
-                    "station_name": stop.station_name,
-                    "arrival_time": stop.arrival_time,
-                    "departure_time": stop.departure_time,
-                    "delay_seconds": 0
-                })
+            if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+                for stop in train.schedule.stops:
+                    if hasattr(stop, 'station_code'):
+                        stops.append({
+                            "station_code": stop.station_code,
+                            "station_name": getattr(stop, 'station_name', stop.station_code),
+                            "arrival_time": getattr(stop, 'arrival_time', ''),
+                            "departure_time": getattr(stop, 'departure_time', ''),
+                            "delay_seconds": 0
+                        })
             schedule[train.train_id] = stops
         return schedule
 
@@ -616,7 +618,7 @@ class ReinforcementLearningSchedulerAdapter(BaseScheduler):
         # Step 1: 获取所有列车的发车时间并排序
         train_first_departure = []
         for train in self.trains:
-            if train.schedule.stops:
+            if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
                 first_stop = train.schedule.stops[0]
                 dep_time = self._time_to_seconds(first_stop.departure_time)
                 train_first_departure.append((train.train_id, dep_time, train))
@@ -630,20 +632,22 @@ class ReinforcementLearningSchedulerAdapter(BaseScheduler):
 
         for train in self.trains:
             stops = []
-            for stop in train.schedule.stops:
-                arr_sec = self._time_to_seconds(stop.arrival_time)
-                dep_sec = self._time_to_seconds(stop.departure_time)
-                stops.append({
-                    "station_code": stop.station_code,
-                    "station_name": stop.station_name,
-                    "arrival_time": stop.arrival_time,
-                    "departure_time": stop.departure_time,
-                    "delay_seconds": 0,
-                    "arrival_seconds": arr_sec,
-                    "departure_seconds": dep_sec
-                })
+            if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+                for stop in train.schedule.stops:
+                    if hasattr(stop, 'station_code'):
+                        arr_sec = self._time_to_seconds(stop.arrival_time)
+                        dep_sec = self._time_to_seconds(stop.departure_time)
+                        stops.append({
+                            "station_code": stop.station_code,
+                            "station_name": stop.station_name,
+                            "arrival_time": stop.arrival_time,
+                            "departure_time": stop.departure_time,
+                            "delay_seconds": 0,
+                            "arrival_seconds": arr_sec,
+                            "departure_seconds": dep_sec
+                        })
             schedule[train.train_id] = stops
-            train_current_departure[train.train_id] = dep_sec
+            train_current_departure[train.train_id] = dep_sec if stops else 0
 
         # Step 3: 按顺序处理，**后续列车强制等待**
         # 关键区别于FCFS：不仅满足最小间隔，还会让后续列车额外等待

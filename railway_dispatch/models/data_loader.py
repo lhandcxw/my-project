@@ -64,6 +64,57 @@ def load_trains() -> List[Dict[str, Any]]:
     return trains
 
 
+def get_train_stations(train_id: str) -> List[str]:
+    """
+    获取指定列车经过的所有车站代码
+
+    Args:
+        train_id: 列车号（如 G1563）
+
+    Returns:
+        List[str]: 车站代码列表，如果列车不存在则返回空列表
+    """
+    trains = load_trains()
+    for train in trains:
+        if train.get("train_id") == train_id:
+            stops = train.get("schedule", {}).get("stops", [])
+            return [stop.get("station_code") for stop in stops if stop.get("station_code")]
+    return []
+
+
+def validate_train_at_station(train_id: str, station_code: str) -> bool:
+    """
+    验证列车是否经过指定车站
+
+    Args:
+        train_id: 列车号（如 G1563）
+        station_code: 车站代码（如 SJP）
+
+    Returns:
+        bool: 如果列车经过该车站返回True，否则返回False
+    """
+    station_codes = get_train_stations(train_id)
+    return station_code in station_codes
+
+
+def get_train_station_names(train_id: str) -> List[str]:
+    """
+    获取指定列车经过的所有车站名称
+
+    Args:
+        train_id: 列车号（如 G1563）
+
+    Returns:
+        List[str]: 车站名称列表
+    """
+    trains = load_trains()
+    for train in trains:
+        if train.get("train_id") == train_id:
+            stops = train.get("schedule", {}).get("stops", [])
+            return [stop.get("station_name") for stop in stops if stop.get("station_name")]
+    return []
+
+
 def _load_trains_from_timetable() -> List[Dict[str, Any]]:
     """
     从原始时刻表加载列车数据
@@ -412,6 +463,40 @@ def get_train_ids() -> List[str]:
     """
     trains = load_trains()
     return [t["train_id"] for t in trains]
+
+
+def get_train_stations(train_id: str) -> List[str]:
+    """
+    获取指定列车经过的所有车站编码
+
+    Args:
+        train_id: 列车ID
+
+    Returns:
+        List of station codes that the train passes through
+    """
+    trains = load_trains()
+    for train in trains:
+        if train.get("train_id") == train_id:
+            schedule = train.get("schedule", {})
+            stops = schedule.get("stops", [])
+            return [stop.get("station_code") for stop in stops if stop.get("station_code")]
+    return []
+
+
+def validate_train_at_station(train_id: str, station_code: str) -> bool:
+    """
+    验证列车是否经过指定车站
+
+    Args:
+        train_id: 列车ID
+        station_code: 车站编码
+
+    Returns:
+        True if train passes through the station, False otherwise
+    """
+    train_stations = get_train_stations(train_id)
+    return station_code in train_stations
 
 
 def clear_cache():

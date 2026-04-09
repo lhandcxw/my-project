@@ -11,6 +11,7 @@ import json
 from models.workflow_models import AccidentCard, NetworkSnapshot, DispatchContextMetadata
 from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
+from config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 class Layer2Planner:
     """
     第二层：Planner层
-    使用LLM决策planning_intent，不直接选择求解器
+    使用LLM决策planning_intent和solver建议，规则仅做校验
     """
 
     def __init__(self):
@@ -67,20 +68,29 @@ class Layer2Planner:
             planning_intent = response.parsed_output.get("planning_intent", "")
             problem_desc = response.parsed_output.get("问题描述", "")
             suggested_window = response.parsed_output.get("建议窗口", "")
+            # 优先使用LLM建议的solver
+            llm_solver_suggestion = response.parsed_output.get("solver_suggestion", "")
         else:
-            # LLM失败，使用默认值
-            logger.warning("LLM决策失败，使用默认intent")
+            # LLM失败
+            if LLMConfig.FORCE_LLM_MODE:
+                raise RuntimeError("[L2] LLM决策失败，实验中止（FORCE_LLM_MODE=true）")
+            logger.warning("[L2] LLM决策失败，使用默认intent")
             planning_intent = self._get_default_intent(accident_card.scene_category)
             problem_desc = f"LLM决策失败，使用默认intent: {planning_intent}"
             suggested_window = ""
+            llm_solver_suggestion = ""
 
-        # 构建skill_dispatch（不依赖LLM，使用规则）
+        # 构建skill_dispatch（使用LLM建议，规则校验）
         skill_dispatch = self._build_skill_dispatch(
             planning_intent,
-            accident_card.scene_category
+            accident_card.scene_category,
+            llm_solver_suggestion
         )
 
-        logger.info(f"第二层完成: planning_intent={planning_intent}")
+        # 判断响应来源
+        is_mock = "[MOCK]" in response.model_used if response.model_used else False
+        response_source = "模拟响应" if is_mock else "LLM输出"
+        logger.info(f"[L2] 完成: planning_intent={planning_intent}, solver={skill_dispatch['主技能']}, 来源={response_source}")
 
         return {
             "planning_intent": planning_intent,
@@ -89,7 +99,8 @@ class Layer2Planner:
             "建议窗口": suggested_window,
             "reasoning": response.raw_response if response.raw_response else "使用默认值",
             "llm_response": response.raw_response,
-            "llm_response_type": response.model_used
+            "llm_response_type": response.model_used,
+            "_response_source": response_source
         }
 
     def _get_default_intent(self, scene_category: str) -> str:
@@ -104,28 +115,36 @@ class Layer2Planner:
     def _build_skill_dispatch(
         self,
         planning_intent: str,
-        scene_category: str
+        scene_category: str,
+        llm_solver_suggestion: str = ""
     ) -> Dict[str, Any]:
         """
-        构建skill_dispatch（基于规则，不依赖LLM）
+        构建skill_dispatch（优先使用LLM建议，规则校验）
 
         Args:
             planning_intent: LLM决策的intent
             scene_category: 场景类型
+            llm_solver_suggestion: LLM建议的solver
 
         Returns:
             Dict: skill_dispatch字典
         """
-        # 根据场景类型确定主技能（覆盖LLM的错误选择）
-        if scene_category == "临时限速":
-            main_skill = "mip"
-        elif scene_category == "突发故障":
-            main_skill = "fcfs"
-        elif scene_category == "区间封锁":
-            main_skill = "noop"
+        # 优先使用LLM建议的solver（如果有效）
+        valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
+        if llm_solver_suggestion and llm_solver_suggestion in valid_solvers:
+            main_skill = llm_solver_suggestion
+            logger.info(f"[L2] 使用LLM建议的solver: {main_skill}")
         else:
-            # 根据intent映射
-            main_skill = self._intent_to_solver(planning_intent)
+            # 规则校验：根据场景类型确定主技能
+            if scene_category == "临时限速":
+                main_skill = "mip"
+            elif scene_category == "突发故障":
+                main_skill = "fcfs"
+            elif scene_category == "区间封锁":
+                main_skill = "noop"
+            else:
+                main_skill = self._intent_to_solver(planning_intent)
+            logger.info(f"[L2] 使用规则确定的solver: {main_skill}")
 
         return {
             "是否进入技能求解": True,

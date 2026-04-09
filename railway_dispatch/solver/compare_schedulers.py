@@ -123,16 +123,18 @@ def compare_schedulers(delay_seconds=1200, train_id="G1563", station_code="BDD")
     original_schedule = {}
     for train in trains:
         stops = []
-        for stop in train.schedule.stops:
-            stops.append({
-                "station_code": stop.station_code,
-                "station_name": stop.station_name,
-                "arrival_time": stop.arrival_time,
-                "departure_time": stop.departure_time,
-                "original_arrival": stop.arrival_time,
-                "original_departure": stop.departure_time,
-                "delay_seconds": 0
-            })
+        if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
+            for stop in train.schedule.stops:
+                if hasattr(stop, 'station_code'):
+                    stops.append({
+                        "station_code": stop.station_code,
+                        "station_name": stop.station_name,
+                        "arrival_time": stop.arrival_time,
+                        "departure_time": stop.departure_time,
+                        "original_arrival": stop.arrival_time,
+                        "original_departure": stop.departure_time,
+                        "delay_seconds": 0
+                    })
         original_schedule[train.train_id] = stops
 
     # 准备延误注入字典

@@ -17,8 +17,18 @@ logger = logging.getLogger(__name__)
 
 class Layer3Solver:
     """
-    第三层：求解技能层
-    根据L2的planning_intent选择求解器并执行
+    第三层：求解技能层 (L3 Solver Layer)
+    
+    职责：
+    1. 根据L2输出的planning_intent和事故卡片选择最合适的求解器
+    2. 构建求解请求（使用整个时刻表作为基准，而非仅网络快照中的列车）
+    3. 执行求解并返回结果
+    4. 处理求解过程中的异常和错误
+    
+    注意：
+    - L3不使用LLM，完全基于规则选择求解器
+    - 求解时使用全部列车数据（整个时刻表），确保考虑所有列车的相互影响
+    - 网络快照仅用于参考，不限制求解范围
     """
 
     def __init__(self):
@@ -86,7 +96,9 @@ class Layer3Solver:
                     "success": solver_response.success,
                     "solving_time": solver_response.solving_time_seconds,
                     "total_delay_minutes": total_delay,
-                    "max_delay_minutes": max_delay
+                    "max_delay_minutes": max_delay,
+                    "_response_source": "rule_based_solver",
+                    "_response_note": "【规则执行】L3层使用规则选择并执行求解器，不涉及LLM"
                 },
                 "solver_response": solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
                     "success": solver_response.success,
@@ -95,7 +107,7 @@ class Layer3Solver:
                     "max_delay_minutes": max_delay,
                     "message": solver_response.message
                 },
-                "llm_response": f"执行{main_skill}，状态: {solver_response.status}"
+                "llm_response": f"【规则执行】执行{main_skill}求解器，状态: {solver_response.status} (L3层不使用LLM)"
             }
 
         except Exception as e:
@@ -176,7 +188,7 @@ class Layer3Solver:
     ) -> SolverRequest:
         """构建求解请求"""
         # 构建延误注入
-        affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1215"]
+        affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1563"]
         location_code = accident_card.location_code if accident_card.location_code else "SJP"
         delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else 600
 
@@ -189,17 +201,39 @@ class Layer3Solver:
                 "timestamp": "2024-01-15T10:00:00"
             })
 
+        # 使用全部列车数据（整个时刻表）进行调度，而不是仅使用快照中的列车
+        # 这样可以确保求解器考虑所有列车的相互影响
+        from models.data_loader import load_trains, load_stations
+        all_trains = load_trains()
+        all_stations = load_stations()
+
+        # 将场景类别转换为scenario_type
+        scenario_type = self._map_scene_to_scenario_type(accident_card.scene_category)
+
         return SolverRequest(
-            scene_type=accident_card.scene_category,
+            scene_type=scenario_type,
             scene_id="llm_workflow_001",
-            trains=trains,
-            stations=stations,
+            trains=all_trains,
+            stations=all_stations,
             injected_delays=injected_delays,
             solver_config={},
             metadata={
-                "accident_card": accident_card.model_dump()
+                "accident_card": accident_card.model_dump(),
+                "original_trains_count": len(trains),
+                "all_trains_count": len(all_trains),
+                "note": "使用整个时刻表作为调度基准",
+                "scenario_type": scenario_type
             }
         )
+
+    def _map_scene_to_scenario_type(self, scene_category: str) -> str:
+        """将场景类别映射到场景类型"""
+        mapping = {
+            "临时限速": "temporary_speed_limit",
+            "突发故障": "sudden_failure",
+            "区间封锁": "section_interrupt"
+        }
+        return mapping.get(scene_category, "temporary_speed_limit")
 
     def _build_error_result(self, solver_name: str, error_message: str) -> Dict[str, Any]:
         """构建错误结果"""

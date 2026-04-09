@@ -38,31 +38,6 @@ class AgentResult:
 
 
 # ============================================
-# 场景关键词配置
-# ============================================
-
-SCENARIO_KEYWORDS = {
-    "temporary_speed_limit": {
-        "keywords": ["限速", "大风", "暴雨", "降雪", "冰雪", "雨量", "风速",
-                     "天气", "自然灾害", "泥石流", "塌方", "水害", "台风"],
-        "description": "临时限速场景 - 因天气或自然灾害导致的线路限速",
-        "skill_name": "temporary_speed_limit_skill"
-    },
-    "sudden_failure": {
-        "keywords": ["故障", "中断", "封锁", "设备故障", "降弓", "线路故障",
-                     "设备", "停电", "信号故障", "道岔故障", "车辆故障"],
-        "description": "突发故障场景 - 列车设备故障或线路异常",
-        "skill_name": "sudden_failure_skill"
-    },
-    "section_interrupt": {
-        "keywords": ["区间中断", "线路中断", "完全中断", "无法通行"],
-        "description": "区间中断场景 - 线路中断导致无法通行（预留）",
-        "skill_name": "section_interrupt_skill"
-    }
-}
-
-
-# ============================================
 # 新架构 Agent 类
 # ============================================
 
@@ -71,9 +46,8 @@ class NewArchAgent:
     新架构 Agent（兼容旧架构接口）
 
     特点：
-    - 使用新架构的技能注册表
+    - 使用LLM进行场景识别和实体提取（通过L1层）
     - 提供与 RuleAgent 相同的接口
-    - 支持基于规则的场景识别
     - 内部使用新架构的技能实现
     """
 
@@ -90,84 +64,52 @@ class NewArchAgent:
         self.skill_registry: SkillRegistry = get_skill_registry(trains, stations)
         logger.info("新架构 Agent 初始化完成")
 
-    def _detect_scenario(self, prompt: str) -> str:
+    def _detect_scenario_with_llm(self, prompt: str) -> tuple:
         """
-        基于关键词检测场景类型
+        使用L1层LLM进行场景识别和实体提取
 
         Args:
             prompt: 用户输入的调度需求
 
         Returns:
-            str: 场景类型标识
+            tuple: (scenario_type, entities, accident_card)
         """
-        prompt_lower = prompt.lower()
+        from railway_agent.workflow.layer1_data_modeling import Layer1DataModeling
+        from models.preprocess_models import CanonicalDispatchRequest, LocationInfo, CompletenessInfo
+        from models.common_enums import SceneTypeCode, FaultTypeCode
 
-        # 按优先级检测场景
-        for scenario_type, config in SCENARIO_KEYWORDS.items():
-            for keyword in config["keywords"]:
-                if keyword in prompt_lower:
-                    return scenario_type
+        # 使用L1层进行LLM提取
+        layer1 = Layer1DataModeling()
+        l1_result = layer1.execute(user_input=prompt, enable_rag=True)
 
-        # 默认返回临时限速
-        return "temporary_speed_limit"
+        accident_card = l1_result.get("accident_card")
+        if not accident_card:
+            # L1层失败，返回默认值
+            return "temporary_speed_limit", {"train_ids": [], "station_name": None, "station_code": None}, None
 
-    def _extract_entities(self, prompt: str) -> Dict[str, Any]:
-        """
-        从输入中提取实体信息
+        # 映射场景类型
+        scene_mapping = {
+            "临时限速": "temporary_speed_limit",
+            "突发故障": "sudden_failure",
+            "区间封锁": "section_interrupt"
+        }
+        scenario_type = scene_mapping.get(accident_card.scene_category, "temporary_speed_limit")
 
-        Args:
-            prompt: 用户输入
-
-        Returns:
-            Dict: 提取的实体信息
-        """
-        import re
-
+        # 构建实体信息
         entities = {
-            "train_ids": [],
-            "delay_minutes": [],
-            "station_name": None,
-            "station_code": None,
-            "reason": None
+            "train_ids": accident_card.affected_train_ids or [],
+            "station_name": accident_card.location_name,
+            "station_code": accident_card.location_code,
+            "reason": accident_card.fault_type
         }
 
-        # 提取列车号
-        train_pattern = r'([GDCTKZ]\d+)'
-        entities["train_ids"] = re.findall(train_pattern, prompt)
-
-        # 提取延误时间
-        delay_pattern = r'(\d+)\s*分钟'
-        delays = re.findall(delay_pattern, prompt)
-        entities["delay_minutes"] = [int(d) for d in delays]
-
-        # 车站名称映射
-        station_name_to_code = {
-            "北京西": "BJX", "杜家坎": "DJK", "涿州东": "ZBD",
-            "高碑店东": "GBD", "徐水东": "XSD", "保定东": "BDD",
-            "定州东": "DZD", "正定机场": "ZDJ", "石家庄": "SJP",
-            "高邑西": "GYX", "邢台东": "XTD", "邯郸东": "HDD",
-            "安阳东": "AYD"
-        }
-
-        for name, code in station_name_to_code.items():
-            if name in prompt:
-                entities["station_name"] = name
-                entities["station_code"] = code
-                break
-
-        # 提取原因
-        reason_keywords = ["大风", "暴雨", "降雪", "故障", "限速", "天气"]
-        for kw in reason_keywords:
-            if kw in prompt:
-                entities["reason"] = kw
-                break
-
-        return entities
+        return scenario_type, entities, accident_card
 
     def _build_reasoning(
         self,
         scenario_type: str,
         entities: Dict[str, Any],
+        accident_card: Any,
         delay_injection: Dict[str, Any]
     ) -> str:
         """
@@ -176,31 +118,51 @@ class NewArchAgent:
         Args:
             scenario_type: 场景类型
             entities: 提取的实体
+            accident_card: 事故卡片（LLM提取结果）
             delay_injection: 延误注入数据
 
         Returns:
             str: 推理过程文本
         """
-        scenario_config = SCENARIO_KEYWORDS.get(scenario_type, {})
-        selected_skill = scenario_config.get("skill_name", "temporary_speed_limit_skill")
+        scenario_descriptions = {
+            "temporary_speed_limit": "临时限速场景 - 因天气或自然灾害导致的线路限速",
+            "sudden_failure": "突发故障场景 - 列车设备故障或线路异常",
+            "section_interrupt": "区间中断场景 - 线路中断导致无法通行"
+        }
 
         reasoning_parts = [
-            "【场景分析】",
+            "【场景分析 - LLM提取】",
             f"- 检测到场景类型：{scenario_type}",
-            f"- 场景描述：{scenario_config.get('description', '未知场景')}",
-            "",
-            "【实体识别】",
-            f"- 受影响列车：{', '.join(entities.get('train_ids', ['未识别']))}",
-            f"- 延误时间：{entities.get('delay_minutes', ['未识别'])}",
-            f"- 涉及车站：{entities.get('station_name', '未识别')}",
-            f"- 原因：{entities.get('reason', '未识别')}",
-            "",
-            "【调度决策】",
+            f"- 场景描述：{scenario_descriptions.get(scenario_type, '未知场景')}",
         ]
 
-        reasoning_parts.append(f"- 选择技能：{selected_skill}")
-        reasoning_parts.append(f"- 选择依据：场景类型为'{scenario_type}'，匹配对应调度技能")
-        reasoning_parts.append(f"- 优化目标：最小化最大延误（min_max_delay）")
+        if accident_card:
+            reasoning_parts.extend([
+                f"- 故障类型：{accident_card.fault_type}",
+                f"- 场景类别：{accident_card.scene_category}",
+                f"- 影响区段：{accident_card.affected_section}",
+                "",
+                "【实体识别 - LLM提取】",
+                f"- 受影响列车：{', '.join(entities.get('train_ids', ['未识别']))}",
+                f"- 涉及车站：{entities.get('station_name', '未识别')} ({entities.get('station_code', '未识别')})",
+                f"- 原因：{entities.get('reason', '未识别')}",
+                f"- 信息完整：{'是' if accident_card.is_complete else '否'}",
+            ])
+        else:
+            reasoning_parts.extend([
+                "",
+                "【实体识别】",
+                f"- 受影响列车：{', '.join(entities.get('train_ids', ['未识别']))}",
+                f"- 涉及车站：{entities.get('station_name', '未识别')}",
+                f"- 原因：{entities.get('reason', '未识别')}",
+            ])
+
+        reasoning_parts.extend([
+            "",
+            "【调度决策】",
+            f"- 选择依据：由LLM提取的场景信息匹配对应调度技能",
+            f"- 优化目标：最小化最大延误（min_max_delay）"
+        ])
 
         return "\n".join(reasoning_parts)
 
@@ -218,35 +180,36 @@ class NewArchAgent:
         start_time = time.time()
 
         try:
-            # Step 1: 场景识别
-            scenario_type = delay_injection.get("scenario_type", "")
-
-            # 如果delay_injection中没有场景类型，从原始输入推断
-            if not scenario_type or scenario_type == "unknown":
-                scenario_type = self._detect_scenario(user_prompt)
-
-            # Step 2: 提取实体（用于生成推理过程）
-            entities = self._extract_entities(user_prompt)
+            # Step 1: 使用L1层LLM进行场景识别和实体提取
+            scenario_type, entities, accident_card = self._detect_scenario_with_llm(user_prompt)
 
             # 如果实体中没有列车，从delay_injection获取
             if not entities["train_ids"]:
                 entities["train_ids"] = delay_injection.get("affected_trains", [])
 
-            # Step 3: 构建推理过程
-            reasoning = self._build_reasoning(scenario_type, entities, delay_injection)
+            # Step 2: 构建推理过程
+            reasoning = self._build_reasoning(scenario_type, entities, accident_card, delay_injection)
 
-            # Step 4: 选择技能
-            scenario_config = SCENARIO_KEYWORDS.get(scenario_type, {})
-            selected_skill = scenario_config.get("skill_name", "temporary_speed_limit_skill")
+            # Step 3: 选择技能（基于L1提取的场景类别）
+            scene_category = accident_card.scene_category if accident_card else "临时限速"
+            skill_mapping = {
+                "临时限速": "temporary_speed_limit_skill",
+                "突发故障": "sudden_failure_skill",
+                "区间封锁": "section_interrupt_skill"
+            }
+            selected_skill = skill_mapping.get(scene_category, "temporary_speed_limit_skill")
 
             # Step 5: 准备车站编码列表
             if self.trains:
                 station_codes = []
                 for train in self.trains:
                     if hasattr(train, 'schedule') and hasattr(train.schedule, 'stops'):
-                        for stop in train.schedule.stops:
-                            if hasattr(stop, 'station_code'):
-                                station_codes.append(stop.station_code)
+                        # 安全检查：确保 stops 是可迭代的列表/元组
+                        stops = train.schedule.stops
+                        if stops and isinstance(stops, (list, tuple)):
+                            for stop in stops:
+                                if hasattr(stop, 'station_code'):
+                                    station_codes.append(stop.station_code)
                 station_codes = list(dict.fromkeys(station_codes))  # 去重保序
             else:
                 station_codes = ["XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD"]
@@ -345,16 +308,15 @@ Agent总耗时: {result.computation_time:.2f}秒
                 user_message = msg.get("content", "")
                 break
 
-        # 基于规则的简单回复
-        scenario = self._detect_scenario(user_message)
-        entities = self._extract_entities(user_message)
+        # 使用L1层LLM进行场景识别和实体提取
+        scenario, entities, accident_card = self._detect_scenario_with_llm(user_message)
 
-        response = f"""您好！我是铁路调度助手（新架构模式）。
+        response = f"""您好！我是铁路调度助手（新架构模式，基于LLM识别）。
 
 根据您的描述，我识别到：
 - 场景类型：{scenario}
 - 相关列车：{', '.join(entities.get('train_ids', ['未识别']))}
-- 涉及车站：{entities.get('station_name', '未识别')}
+- 涉及车站：{entities.get('station_name', '未识别')} ({entities.get('station_code', '未识别')})
 
 如需执行调度，请使用智能调度功能。"""
 
