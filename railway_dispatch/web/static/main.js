@@ -116,17 +116,19 @@
                 document.getElementById('dispatchLoading').style.display = 'none';
 
                 if (result.success) {
-                    // 智能调度模块返回格式直接使用
+                    // 智能调度模块返回格式直接使用（使用后端返回的正式字段）
                     const unified = {
                         success: true,
                         recognized_scenario: result.recognized_scenario || '',
-                        selected_skill: result.selected_skill || '',
+                        selected_skill: result.selected_skill || '',  // 使用后端正式字段，不再猜测
+                        selected_solver: result.selected_solver || '',
                         reasoning: result.reasoning || '',
                         delay_statistics: result.delay_statistics || {},
                         message: result.message || '',
                         computation_time: result.computation_time || 0,
                         optimized_schedule: result.optimized_schedule || {},
-                        original_schedule: result.original_schedule || {}
+                        original_schedule: result.original_schedule || {},
+                        ranking: result.ranking || result.comparison_details || []
                     };
                     showDispatchResult(unified);
                 } else {
@@ -183,14 +185,27 @@
 
                 if (result.success) {
                     // 转换为统一格式，添加空值检查
-                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                    // 优先使用后端返回的正式字段（selected_skill），不再猜测
+                    const backend_skill = result.skill_result && result.skill_result.selected_skill
+                        ? result.skill_result.selected_skill
+                        : (result.planner && result.planner.selected_skill);
+                    const recognized_scenario = result.planner ? result.planner.recognized_scenario : '';
+
+                    // 备用映射逻辑（仅当后端没有返回正式字段时使用）
+                    let selected_skill = backend_skill;
+                    if (!selected_skill) {
+                        const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                        selected_skill = skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill';
+                    }
+
                     const unified = {
                         success: true,
-                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
-                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
+                        recognized_scenario: recognized_scenario,
+                        selected_skill: selected_skill,  // 使用后端正式字段
+                        selected_solver: result.planner ? result.planner.selected_solver : '',
                         reasoning: '基于表单输入执行调度优化',
                         delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
-                        message: skillMessage,
+                        message: result.skill_result ? result.skill_result.message : '',
                         computation_time: result.skill_result ? result.skill_result.computation_time : 0,
                         optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
                         original_schedule: result.original_schedule
@@ -227,6 +242,16 @@
 
             // 消息
             document.getElementById('resultMessage').textContent = result.message || '-';
+
+            // LLM评估建议
+            const llmEvalDiv = document.getElementById('llmEvaluationSummary');
+            const llmSummaryText = document.getElementById('llmSummaryText');
+            if (result.llm_summary) {
+                llmEvalDiv.style.display = 'block';
+                llmSummaryText.textContent = result.llm_summary;
+            } else {
+                llmEvalDiv.style.display = 'none';
+            }
 
             // 时刻表
             let tableHtml = '<table class="schedule-table"><thead><tr><th>车次</th><th>车站</th><th>到达</th><th>发车</th><th>延误</th></tr></thead><tbody>';
@@ -451,6 +476,16 @@
                         resultContent.textContent = JSON.stringify(result.layer4_result, null, 2) + responseTypeInfo;
                         document.getElementById('continueBtn').disabled = true;
                         document.getElementById('llmProgress').textContent = '已完成';
+
+                        // 显示调度结果摘要（总延误信息和推荐方案）
+                        // 优先使用all_layer_results（后端已整理好的完整数据）
+                        const allResults = result.all_layer_results || {
+                            layer1_result: result.layer1_result,
+                            layer2_result: result.layer2_result,
+                            layer3_result: result.layer3_result,
+                            layer4_result: result.layer4_result
+                        };
+                        showLlmDispatchSummary(allResults);
                     } else {
                         document.getElementById('continueBtn').disabled = true;
                     }
@@ -486,6 +521,7 @@
             document.getElementById('continueBtn').disabled = true;
             document.getElementById('resetBtn').disabled = true;
             document.getElementById('llmResultSection').style.display = 'none';
+            document.getElementById('llmDispatchSummary').style.display = 'none';
             updateLayerBadges(0);
         }
 
@@ -516,6 +552,73 @@
                     badge.className = '';
                 }
             }
+        }
+
+        // 显示多轮对话调度结果摘要（总延误信息和推荐方案）
+        function showLlmDispatchSummary(allResults) {
+            const summarySection = document.getElementById('llmDispatchSummary');
+
+            // 从L3结果获取延误统计
+            const l3Result = allResults.layer3_result || {};
+            const skillExecution = l3Result.skill_execution_result || {};
+            const solverResponse = l3Result.solver_response || {};
+
+            // 延误统计 - 优先使用L3层的精确数据
+            let totalDelayMinutes = skillExecution.total_delay_minutes || 0;
+            let maxDelayMinutes = skillExecution.max_delay_minutes || 0;
+
+            // 如果L3没有数据，尝试从solver_response获取
+            if (totalDelayMinutes === 0 && solverResponse.total_delay_seconds) {
+                totalDelayMinutes = Math.round(solverResponse.total_delay_seconds / 60);
+            }
+            if (maxDelayMinutes === 0 && solverResponse.max_delay_seconds) {
+                maxDelayMinutes = Math.round(solverResponse.max_delay_seconds / 60);
+            }
+
+            const avgDelayMinutes = totalDelayMinutes > 0 ? Math.round(totalDelayMinutes / Math.max(1, l3Result.affected_trains_count || 1)) : 0;
+
+            // 更新延误显示
+            document.getElementById('llmMaxDelay').textContent = maxDelayMinutes + '分钟';
+            document.getElementById('llmAvgDelay').textContent = avgDelayMinutes + '分钟';
+            document.getElementById('llmTotalDelay').textContent = totalDelayMinutes + '分钟';
+
+            // 从L2结果获取推荐方案
+            const l2Result = allResults.layer2_result || {};
+            const skillDispatch = l2Result.skill_dispatch || {};
+
+            // 推荐方案 - 显示求解器名称
+            const recommendedSolver = skillDispatch['主技能'] || l3Result.skill_name || '未知';
+            const solverNames = {
+                'mip': 'MIP优化求解器（整数规划）',
+                'fcfs': 'FCFS先到先服务',
+                'max_delay_first': '最大延误优先',
+                'noop': '无操作（基线）'
+            };
+            document.getElementById('llmRecommendedScheduler').textContent = recommendedSolver + ' - ' + (solverNames[recommendedSolver] || recommendedSolver);
+            document.getElementById('llmRecommendedReason').textContent = skillDispatch['阻塞项'] && skillDispatch['阻塞项'].length > 0
+                ? '阻塞项: ' + skillDispatch['阻塞项'].join(', ')
+                : '执行状态: ' + (skillExecution.execution_status || '完成');
+
+            // LLM评估摘要 - 从L4结果获取
+            const l4Result = allResults.layer4_result || {};
+            const evalReport = l4Result.evaluation_report || {};
+            const llmSummary = evalReport.llm_summary || '';
+            if (llmSummary) {
+                document.getElementById('llmEvalSummary').style.display = 'block';
+                document.getElementById('llmEvalText').textContent = llmSummary;
+            } else {
+                document.getElementById('llmEvalSummary').style.display = 'none';
+            }
+
+            // 场景和技能信息 - 从L1结果获取
+            const l1Result = allResults.layer1_result || {};
+            const accidentCard = l1Result.accident_card || {};
+            document.getElementById('llmScenario').textContent = accidentCard.scene_category || '-';
+            document.getElementById('llmSkill').textContent = accidentCard.fault_type || '-';
+            document.getElementById('llmSolver').textContent = recommendedSolver;
+
+            // 显示摘要区域
+            summarySection.style.display = 'block';
         }
 
         // 发送智能调度（带比较）

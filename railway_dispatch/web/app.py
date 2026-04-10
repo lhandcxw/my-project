@@ -32,6 +32,9 @@ from visualization.simple_diagram import create_train_diagram, create_comparison
 # 导入统一LLM驱动 Agent
 from railway_agent import LLMAgent, create_llm_agent, ToolRegistry
 
+# 导入比较模块蓝图并注册
+from scheduler_comparison.comparison_api import register_comparison_routes
+
 # Agent实例
 def get_llm_agent():
     """
@@ -207,10 +210,20 @@ def dispatch():
                 skill_result = result.dispatch_result
                 logger.info(f"Skill结果: message={skill_result.message}, optimized_schedule keys={list(skill_result.optimized_schedule.keys()) if skill_result.optimized_schedule else 'None'}")
 
+                # 映射场景类型到 skill
+                skill_mapping = {
+                    "temporary_speed_limit": "temporary_speed_limit_skill",
+                    "sudden_failure": "sudden_failure_skill",
+                    "section_interrupt": "section_interrupt_skill"
+                }
+                selected_skill = skill_mapping.get(result.recognized_scenario, "unknown")
+
                 return jsonify({
                     "success": True,
                     "planner": {
                         "recognized_scenario": result.recognized_scenario,
+                        "selected_skill": selected_skill,  # 新增：返回正式 skill 字段
+                        "selected_solver": result.selected_solver,  # 新增：返回求解器字段
                         "delay_level": "0",
                         "confidence": 0.9
                     },
@@ -218,7 +231,8 @@ def dispatch():
                         "message": skill_result.message,
                         "optimized_schedule": skill_result.optimized_schedule,
                         "delay_statistics": skill_result.delay_statistics,
-                        "computation_time": skill_result.computation_time
+                        "computation_time": skill_result.computation_time,
+                        "selected_skill": selected_skill  # 新增：skill_result 也包含
                     },
                     "original_schedule": get_original_schedule()
                 })
@@ -373,7 +387,9 @@ def agent_chat():
                 "success": True,
                 "recognized_scenario": result.recognized_scenario,
                 "selected_skill": result.selected_skill,
+                "selected_solver": result.selected_solver,
                 "reasoning": result.reasoning,
+                "llm_summary": result.llm_summary or "",
                 "delay_statistics": dispatch.delay_statistics,
                 "message": dispatch.message,
                 "computation_time": result.computation_time,
@@ -624,12 +640,14 @@ def agent_chat_with_comparison():
                 "success": True,
                 "recognized_scenario": result.recognized_scenario,
                 "selected_skill": result.selected_skill,
+                "selected_solver": result.selected_solver,
                 "reasoning": result.reasoning,
                 "delay_statistics": dispatch.delay_statistics,
                 "message": dispatch.message,
                 "computation_time": result.computation_time,
                 "optimized_schedule": dispatch.optimized_schedule,
                 "original_schedule": original_schedule,
+                "ranking": dispatch.delay_statistics.get("ranking", []),
                 "comparison_details": dispatch.delay_statistics.get("ranking", [])
             })
         else:
@@ -1112,6 +1130,14 @@ def workflow_next():
 
             status = session_mgr.get_session_status(session_id)
 
+            # 获取所有层的结果用于前端显示
+            all_results = {
+                "layer1_result": status.get("layer1_result", {}),
+                "layer2_result": status.get("layer2_result", {}),
+                "layer3_result": status.get("layer3_result", {}),
+                "layer4_result": result_dict
+            }
+
             return jsonify({
                 "success": True,
                 "session_id": session_id,
@@ -1119,7 +1145,8 @@ def workflow_next():
                 "progress": status["progress"],
                 "messages": status["messages"],
                 "layer4_result": result_dict,
-                "is_complete": status["is_complete"]
+                "is_complete": status["is_complete"],
+                "all_layer_results": all_results  # 返回所有层结果供前端使用
             })
 
         else:
@@ -1370,25 +1397,6 @@ def check_api_connectivity():
     except Exception as e:
         logger.error(f"[API连通性检查] 失败: {e}")
         return False
-
-
-# 注册调度比较API蓝图
-def register_comparison_blueprint():
-    """注册调度比较API蓝图"""
-    try:
-        from scheduler_comparison.comparison_api import register_comparison_routes
-        register_comparison_routes(app)
-        logger.info("调度比较API蓝图已成功注册")
-        logger.info("可用比较路由:")
-        for rule in app.url_map.iter_rules():
-            if rule.endpoint.startswith('comparison.'):
-                logger.info(f"  {rule.methods} {rule.rule}")
-    except Exception as e:
-        logger.error(f"注册调度比较API蓝图失败: {e}")
-
-
-# 启动时注册所有蓝图
-register_comparison_blueprint()
 
 
 if __name__ == '__main__':

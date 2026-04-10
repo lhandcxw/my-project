@@ -134,6 +134,14 @@ class Layer4Evaluation:
         max_delay = skill_execution_result.get("max_delay_minutes", 0)
         solving_time = skill_execution_result.get("solving_time", 0.0)
 
+        # 提取 LLM 返回的增强字段
+        feasibility_risks = response.parsed_output.get("feasibility_risks", []) if response.parsed_output else []
+        operational_risks = response.parsed_output.get("operational_risks", []) if response.parsed_output else []
+        human_review_points = response.parsed_output.get("human_review_points", []) if response.parsed_output else []
+        counterfactual_summary = response.parsed_output.get("counterfactual_summary", "") if response.parsed_output else ""
+        why_not_other_solver = response.parsed_output.get("why_not_other_solver", "") if response.parsed_output else ""
+        confidence = response.parsed_output.get("confidence", 0.8) if response.parsed_output else 0.8
+
         return EvaluationReport(
             solution_id="solution_001",
             is_feasible=feasibility_score >= 0.5,
@@ -144,6 +152,13 @@ class Layer4Evaluation:
             constraint_satisfaction=constraint_check,
             llm_summary=llm_summary,
             feasibility_score=float(feasibility_score),
+            # L4 增强字段
+            feasibility_risks=feasibility_risks,
+            operational_risks=operational_risks,
+            human_review_points=human_review_points,
+            counterfactual_summary=counterfactual_summary,
+            why_not_other_solver=why_not_other_solver,
+            confidence=float(confidence),
             metadata={"llm_response_type": response.model_used}
         )
 

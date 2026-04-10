@@ -222,7 +222,7 @@ class SolverResult(BaseModel):
     求解器返回的调度结果
     """
     success: bool = Field(description="是否成功")
-    schedule: List[Dict[str, Any]] = Field(default_factory=list, description="调度结果")
+    schedule: Dict[str, Any] = Field(default_factory=dict, description="调度结果（列车ID->停靠列表）")
     metrics: Dict[str, Any] = Field(default_factory=dict, description="评估指标")
     solving_time_seconds: float = Field(default=0.0, description="求解耗时(秒)")
     solver_type: str = Field(default="unknown", description="求解器类型")
@@ -274,6 +274,14 @@ class EvaluationReport(BaseModel):
     """
     方案评估单
     第四层输出：对候选方案的多维度评估
+
+    L4 增强字段（v2）：
+    - feasibility_risks: 可行性风险评估
+    - operational_risks: 运营风险
+    - human_review_points: 人工审核要点
+    - counterfactual_summary: 反事实分析
+    - why_not_other_solver: 为何不选其他求解器
+    - confidence: 评估置信度
     """
     solution_id: str = Field(description="方案编号")
     is_feasible: bool = Field(description="是否可行")
@@ -284,6 +292,15 @@ class EvaluationReport(BaseModel):
     constraint_satisfaction: Dict[str, bool] = Field(default_factory=dict, description="约束满足情况")
     llm_summary: str = Field(default="", description="LLM生成的评估摘要")
     feasibility_score: float = Field(default=0.8, description="可行性评分(0-1)")
+
+    # L4 增强字段
+    feasibility_risks: List[str] = Field(default_factory=list, description="可行性风险列表")
+    operational_risks: List[str] = Field(default_factory=list, description="运营风险列表")
+    human_review_points: List[str] = Field(default_factory=list, description="人工审核要点")
+    counterfactual_summary: str = Field(default="", description="反事实分析说明")
+    why_not_other_solver: str = Field(default="", description="为何不选择其他求解器的解释")
+    confidence: float = Field(default=0.8, description="评估置信度(0-1)")
+
     metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
 
 

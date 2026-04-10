@@ -39,12 +39,12 @@ class Layer1DataModeling:
     不构建 NetworkSnapshot（由 SnapshotBuilder 负责）
     """
 
-    # 统一完整性判定规则：train + location + scene + delay_time（方案A）
-    # 理由：完整调度需要知道车次、位置、场景类型和预计延误时间
+    # 统一完整性判定规则：train + location + event（根据需求）
+    # 理由：完整调度需要知道车次、位置、场景类型即可，延误时间可选
     COMPLETENESS_REQUIRES_TRAIN = True
     COMPLETENESS_REQUIRES_LOCATION = True
     COMPLETENESS_REQUIRES_EVENT = True
-    COMPLETENESS_REQUIRES_DELAY_TIME = True
+    # 注意：延误时间不再是必填项
 
     def __init__(self):
         """初始化第一层"""
@@ -53,7 +53,7 @@ class Layer1DataModeling:
     @classmethod
     def _check_completeness(cls, accident_card_data: Dict[str, Any]) -> tuple:
         """
-        统一的完整性检查逻辑（方案A）
+        统一的完整性检查逻辑（方案：列车号 + 位置 + 事件类型）
 
         Args:
             accident_card_data: 事故卡片数据字典
@@ -67,13 +67,9 @@ class Layer1DataModeling:
             accident_card_data.get("location_name")
         )
         has_event = bool(accident_card_data.get("scene_category"))
-        has_delay_time = bool(
-            accident_card_data.get("expected_duration") or
-            accident_card_data.get("start_time")
-        )
 
-        # 统一规则：train + location + scene + delay_time
-        is_complete = has_train and has_location and has_event and has_delay_time
+        # 统一规则：train + location + event（延误时间不再是必填项）
+        is_complete = has_train and has_location and has_event
 
         missing_fields = []
         if not has_train:
@@ -82,8 +78,6 @@ class Layer1DataModeling:
             missing_fields.append("位置")
         if not has_event:
             missing_fields.append("事件类型")
-        if not has_delay_time:
-            missing_fields.append("延误时间")
 
         return is_complete, missing_fields
 

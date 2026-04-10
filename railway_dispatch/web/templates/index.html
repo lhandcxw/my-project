@@ -139,6 +139,11 @@
                             </div>
                         </div>
 
+                        <div id="llmEvaluationSummary" style="background: #fff3e0; padding: 12px; border-radius: 5px; margin-top: 15px; display: none;">
+                            <h4 style="margin: 0 0 8px;">LLM评估建议</h4>
+                            <div id="llmSummaryText"></div>
+                        </div>
+
                         <div id="resultMessage" style="background: #e8f5e9; padding: 12px; border-radius: 5px; margin-top: 15px;"></div>
                     </div>
 
@@ -221,6 +226,59 @@
                 <div id="llmResultSection" style="display: none;">
                     <h3 style="color: #2e7d32;">Execution Result</h3>
                     <pre id="llmResultContent" style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 0.85em;"></pre>
+                </div>
+
+                <!-- 多轮对话结果详情 - 延误统计和推荐方案 -->
+                <div id="llmDispatchSummary" style="display: none; margin-top: 20px;">
+                    <div class="card" style="border-left: 4px solid #4caf50;">
+                        <h3 style="color: #2e7d32; margin-bottom: 15px;">调度结果摘要</h3>
+
+                        <!-- 延误统计 -->
+                        <h4 style="margin: 10px 0 8px; color: #1565C0;">Delay Statistics</h4>
+                        <div class="grid" style="margin-bottom: 15px;">
+                            <div class="metric">
+                                <div class="metric-value" id="llmMaxDelay">-</div>
+                                <div class="metric-label">最大延误</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="llmAvgDelay">-</div>
+                                <div class="metric-label">平均延误</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="llmTotalDelay">-</div>
+                                <div class="metric-label">总延误</div>
+                            </div>
+                        </div>
+
+                        <!-- 推荐方案 -->
+                        <h4 style="margin: 10px 0 8px; color: #7b1fa2;">Recommended Solution</h4>
+                        <div style="background: #f3e5f5; padding: 12px; border-radius: 5px;">
+                            <div id="llmRecommendedScheduler" style="font-weight: bold; margin-bottom: 5px;"></div>
+                            <div id="llmRecommendedReason" style="color: #666; font-size: 0.9em;"></div>
+                        </div>
+
+                        <!-- LLM评估摘要 -->
+                        <div id="llmEvalSummary" style="background: #fff3e0; padding: 12px; border-radius: 5px; margin-top: 15px; display: none;">
+                            <h4 style="margin: 0 0 8px; color: #e65100;">LLM评估建议</h4>
+                            <div id="llmEvalText"></div>
+                        </div>
+
+                        <!-- 场景和技能信息 -->
+                        <div class="grid" style="margin-top: 15px;">
+                            <div class="metric">
+                                <div class="metric-value" id="llmScenario">-</div>
+                                <div class="metric-label">场景类型</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="llmSkill">-</div>
+                                <div class="metric-label">使用技能</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="llmSolver">-</div>
+                                <div class="metric-label">求解器</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

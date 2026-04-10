@@ -421,6 +421,12 @@ def register_comparison_routes(app):
     Args:
         app: Flask应用实例
     """
+    # 检查是否已注册，避免重复注册
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint.startswith('comparison.'):
+            logger.info("调度比较API路由已存在，跳过重复注册")
+            return
+    
     app.register_blueprint(comparison_bp)
     logger.info("调度比较API路由已注册")
 

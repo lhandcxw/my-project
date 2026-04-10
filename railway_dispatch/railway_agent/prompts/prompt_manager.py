@@ -112,22 +112,9 @@ class PromptManager:
         for var in all_vars:
             if var not in context_dict:
                 context_dict[var] = ""
-        
-        # 对包含JSON的变量进行转义，防止被.format()误解析
-        # 将 { 替换为 {{, } 替换为 }}
-        for key in ["accident_card", "network_snapshot", "canonical_request", 
-                    "dispatch_context", "solver_result", "execution_result"]:
-            if key in context_dict and isinstance(context_dict[key], str):
-                # 只转义单个的 { 和 }，不转义已经转义的 {{ 和 }}
-                value = context_dict[key]
-                # 使用临时标记避免重复转义
-                value = value.replace("{{", "\x00L\x00").replace("}}", "\x00R\x00")
-                value = value.replace("{", "{{").replace("}", "}}")
-                value = value.replace("\x00L\x00", "{{").replace("\x00R\x00", "}}")
-                context_dict[key] = value
-        
-        # 填充用户模板
-        # 注意：需要对包含JSON的变量进行转义，防止.format()将其中的{}误认为占位符
+
+        # 对所有字符串值进行转义，防止模板中的花括号与 .format() 冲突
+        # 创建一份转义后的字典
         escaped_dict = {}
         for key, value in context_dict.items():
             if isinstance(value, str):
@@ -135,22 +122,31 @@ class PromptManager:
                 escaped_dict[key] = value.replace('{', '{{').replace('}', '}}')
             else:
                 escaped_dict[key] = value
-        
+
         try:
             filled_prompt = template.user_prompt_template.format(**escaped_dict)
         except (KeyError, ValueError) as e:
             # 详细记录错误信息以便调试
             import re
             error_str = str(e)
-            missing_var = error_str.strip("'") if error_str else "unknown"
+            # 提取缺失的变量名，处理各种错误格式
+            missing_var_match = re.search(r'["\']([^"\']+)["\']', error_str)
+            missing_var = missing_var_match.group(1) if missing_var_match else "unknown"
             logger.error(f"模板填充失败: {e}")
             logger.error(f"缺失变量: {missing_var}")
             logger.error(f"上下文中已有变量: {list(context_dict.keys())}")
             # 再次检查并补充缺失变量
-            if missing_var in all_vars:
+            if missing_var in context_dict:
                 context_dict[missing_var] = ""
+                # 重建转义字典
+                escaped_retry = {}
+                for key, value in context_dict.items():
+                    if isinstance(value, str):
+                        escaped_retry[key] = value.replace('{', '{{').replace('}', '}}')
+                    else:
+                        escaped_retry[key] = value
                 try:
-                    filled_prompt = template.user_prompt_template.format(**context_dict)
+                    filled_prompt = template.user_prompt_template.format(**escaped_retry)
                     logger.info(f"补充缺失变量后填充成功: {missing_var}")
                 except Exception as e2:
                     logger.error(f"补充变量后仍失败: {e2}")
@@ -371,11 +367,10 @@ class PromptManager:
 - 徐水东 -> XSD, 保定东 -> BDD, 定州东 -> DZD, 正定机场 -> ZDJ
 - 石家庄 -> SJP, 高邑西 -> GYX, 邢台东 -> XTD, 邯郸东 -> HDD, 安阳东 -> AYD
 
-必须严格按照以下JSON格式输出，不要添加markdown代码块标记：
-{"scene_type": "TEMP_SPEED_LIMIT", "fault_type": "WIND", "station_code": "SJP", "delay_seconds": 600}
+场景类型：TEMP_SPEED_LIMIT(临时限速), SUDDEN_FAILURE(突发故障), SECTION_INTERRUPT(区间封锁)
+故障类型：RAIN(暴雨), WIND(大风), SNOW(大雪), EQUIPMENT_FAILURE(设备故障), SIGNAL_FAILURE(信号故障), CATENARY_FAILURE(接触网故障), DELAY(预计晚点)
 
-scene_type 可选: TEMP_SPEED_LIMIT, SUDDEN_FAILURE, SECTION_INTERRUPT
-fault_type 可选: RAIN, WIND, SNOW, EQUIPMENT_FAILURE, SIGNAL_FAILURE, CATENARY_FAILURE, DELAY
+输出格式：{{"scene_type": "TEMP_SPEED_LIMIT", "fault_type": "WIND", "station_code": "SJP", "delay_seconds": 600}}
 
 只输出JSON对象，不要其他内容。""",
             required_output_fields=["scene_type", "station_code"],

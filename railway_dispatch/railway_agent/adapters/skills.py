@@ -207,6 +207,9 @@ class SectionInterruptSkill(BaseDispatchSkill):
     """
     区间中断场景调度Skill
     适用于：线路中断、严重自然灾害等导致区间无法通行
+
+    注意：当前版本对区间封锁场景返回基线保底方案（success=True）
+    后续可扩展真正的区间封锁调度能力
     """
 
     name = "section_interrupt_skill"
@@ -219,20 +222,25 @@ class SectionInterruptSkill(BaseDispatchSkill):
         delay_injection: Dict[str, Any],
         optimization_objective: str = "min_max_delay"
     ) -> DispatchSkillOutput:
-        """执行区间中断调度"""
+        """执行区间中断调度（返回保底展示结果）"""
         start_time = time.time()
 
-        # 区间中断暂不支持，返回基线结果
+        # 区间中断返回基线/保底方案（success=True，可展示）
         affected_section = delay_injection.get("scenario_params", {}).get("affected_section", "未知区段")
 
         computation_time = time.time() - start_time
 
+        # 返回 success=True 的保底展示结果
         return DispatchSkillOutput(
             optimized_schedule={},
-            delay_statistics={},
+            delay_statistics={
+                "status": "baseline_placeholder",
+                "affected_section": affected_section,
+                "message": "区间封锁场景采用基线方案（暂不执行实际调度优化）"
+            },
             computation_time=computation_time,
-            success=False,
-            message=f"区间中断场景当前版本暂不支持。区段: {affected_section}",
+            success=True,  # 修改为 success=True，返回可展示的保底结果
+            message=f"【区间封锁】当前版本采用基线方案。建议处理方案：\n1. 暂停受影响区段的列车运行\n2. 安排列车在封锁区间前车站待避\n3. 视情况启动应急调度预案\n区段: {affected_section}",
             skill_name=self.name
         )
 

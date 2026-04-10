@@ -38,6 +38,7 @@ class AgentResult:
     selected_skill: str
     selected_solver: str
     reasoning: str
+    llm_summary: str  # LLM 评估摘要
     dispatch_result: Optional[DispatchSkillOutput]
     model_response: str
     computation_time: float
@@ -82,7 +83,7 @@ class LLMAgent:
 
     def analyze(self, delay_injection: Dict[str, Any], user_prompt: str = "") -> AgentResult:
         """
-        分析场景并执行调度（使用完整L1-L4工作流）
+        分析场景并执行调度（使用 WorkflowEngine 执行完整工作流）
 
         Args:
             delay_injection: 延误注入数据
@@ -94,72 +95,34 @@ class LLMAgent:
         start_time = time.time()
 
         try:
-            from railway_agent.workflow.layer1_data_modeling import Layer1DataModeling
-            from railway_agent.workflow.layer2_planner import Layer2Planner
-            from railway_agent.workflow.layer3_solver import Layer3Solver
-            from railway_agent.workflow.layer4_evaluation import Layer4Evaluation
+            # 使用 WorkflowEngine 执行完整工作流（方案A推荐）
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
 
-            logger.info("[Agent] 开始执行L1-L4完整工作流")
+            logger.info("[Agent] 使用 WorkflowEngine 执行完整 L1-L4 工作流")
 
-            # ============ L1: 数据建模层 ============
-            logger.info("[Agent] ========== L1: 数据建模层 ==========")
-            layer1 = Layer1DataModeling()
-            l1_result = layer1.execute(
+            workflow_engine = create_workflow_engine()
+            workflow_result = workflow_engine.execute_full_workflow(
                 user_input=user_prompt or delay_injection.get("raw_input", ""),
+                canonical_request=None,
                 enable_rag=True
             )
 
-            accident_card = l1_result.get("accident_card")
-            if not accident_card:
-                raise RuntimeError("L1层未能提取事故信息")
+            if not workflow_result.success:
+                raise RuntimeError(f"工作流执行失败: {workflow_result.message}")
 
-            logger.info(f"[Agent] L1完成: scene={accident_card.scene_category}, complete={accident_card.is_complete}")
+            # 从工作流结果提取信息
+            accident_card_data = workflow_result.debug_trace.get("accident_card", {})
+            planning_intent = workflow_result.debug_trace.get("planning_intent", "unknown")
+            skill_dispatch = workflow_result.debug_trace.get("skill_dispatch", {})
+            selected_solver = skill_dispatch.get("主技能", "unknown")
 
-            # ============ L2: Planner层 ============
-            logger.info("[Agent] ========== L2: Planner层 ==========")
-            layer2 = Layer2Planner()
-            l2_result = layer2.execute(
-                accident_card=accident_card,
-                enable_rag=True
-            )
-
-            planning_intent = l2_result.get("planning_intent", "unknown")
-            logger.info(f"[Agent] L2完成: planning_intent={planning_intent}")
-
-            # ============ L3: Solver执行层 ============
-            logger.info("[Agent] ========== L3: Solver执行层 ==========")
-            layer3 = Layer3Solver()
-            l3_result = layer3.execute(
-                planning_intent=planning_intent,
-                accident_card=accident_card,
-                trains=self.trains,
-                stations=self.stations
-            )
-
-            skill_execution_result = l3_result.get("skill_execution_result", {})
-            selected_solver = skill_execution_result.get("skill_name", "unknown")
-            logger.info(f"[Agent] L3完成: solver={selected_solver}")
-
-            # ============ L4: 评估层 ============
-            logger.info("[Agent] ========== L4: 评估层 ==========")
-            layer4 = Layer4Evaluation()
-            l4_result = layer4.execute(
-                skill_execution_result=skill_execution_result,
-                solver_response=l3_result.get("solver_response"),
-                enable_rag=False
-            )
-
-            policy_decision = l4_result.get("policy_decision", {})
-            logger.info(f"[Agent] L4完成: decision={policy_decision.get('decision', 'unknown')}")
-
-            # ============ 构建结果 ============
             # 映射场景类型
             scene_mapping = {
                 "临时限速": "temporary_speed_limit",
                 "突发故障": "sudden_failure",
                 "区间封锁": "section_interrupt"
             }
-            recognized_scenario = scene_mapping.get(accident_card.scene_category, "unknown")
+            recognized_scenario = scene_mapping.get(accident_card_data.get("scene_category", ""), "unknown")
 
             # 映射技能
             skill_mapping = {
@@ -167,48 +130,64 @@ class LLMAgent:
                 "突发故障": "sudden_failure_skill",
                 "区间封锁": "section_interrupt_skill"
             }
-            selected_skill = skill_mapping.get(accident_card.scene_category, "unknown")
+            selected_skill = skill_mapping.get(accident_card_data.get("scene_category", ""), "unknown")
+
+            # 提取 policy_decision
+            policy_decision = workflow_result.debug_trace.get("policy_decision", {})
+            # 处理可能是对象或字典的情况
+            if hasattr(policy_decision, 'decision'):
+                decision_value = policy_decision.decision.value if hasattr(policy_decision.decision, 'value') else str(policy_decision.decision)
+            elif isinstance(policy_decision, dict):
+                decision_value = policy_decision.get('decision', 'unknown')
+                if hasattr(decision_value, 'value'):
+                    decision_value = decision_value.value
+            else:
+                decision_value = 'unknown'
+
+            # 提取 LLM 评估摘要
+            llm_summary = workflow_result.debug_trace.get("llm_summary", "")
 
             # 构建推理过程
             reasoning_parts = [
-                f"【场景识别】{accident_card.scene_category} - {accident_card.fault_type}",
-                f"【位置信息】{accident_card.location_name} ({accident_card.location_code})",
-                f"【影响列车】{', '.join(accident_card.affected_train_ids)}",
+                f"【场景识别】{accident_card_data.get('scene_category', '未知')} - {accident_card_data.get('fault_type', '未知')}",
+                f"【位置信息】{accident_card_data.get('location_name', '未知')} ({accident_card_data.get('location_code', '未知')})",
+                f"【影响列车】{', '.join(accident_card_data.get('affected_train_ids', []))}",
                 f"【规划意图】{planning_intent}",
                 f"【求解器】{selected_solver}",
-                f"【评估结果】{policy_decision.get('decision', 'unknown')}"
+                f"【评估结果】{decision_value}"
             ]
             reasoning = "\n".join(reasoning_parts)
 
             # 提取调度结果
-            solver_resp = l3_result.get("solver_response", {})
-            if skill_execution_result.get("success"):
+            solver_result = workflow_result.solver_result
+            if solver_result and solver_result.success:
                 dispatch_result = DispatchSkillOutput(
-                    optimized_schedule=solver_resp.get("schedule", {}),
-                    delay_statistics=solver_resp.get("metrics", {}),
-                    computation_time=skill_execution_result.get("solving_time", 0),
+                    optimized_schedule=solver_result.schedule,
+                    delay_statistics=solver_result.metrics,
+                    computation_time=solver_result.solving_time_seconds,
                     success=True,
                     message="调度完成",
                     skill_name=selected_skill
                 )
             else:
                 dispatch_result = DispatchSkillOutput(
-                    optimized_schedule={},
+                    optimized_schedule=[],
                     delay_statistics={},
                     computation_time=0,
                     success=False,
-                    message=skill_execution_result.get("error", "调度失败"),
+                    message=solver_result.message if solver_result else "工作流执行失败",
                     skill_name=selected_skill
                 )
 
             computation_time = time.time() - start_time
 
             return AgentResult(
-                success=True,
+                success=workflow_result.success,
                 recognized_scenario=recognized_scenario,
                 selected_skill=selected_skill,
                 selected_solver=selected_solver,
                 reasoning=reasoning,
+                llm_summary=llm_summary,
                 dispatch_result=dispatch_result,
                 model_response=reasoning,
                 computation_time=computation_time,
@@ -223,6 +202,7 @@ class LLMAgent:
                 selected_skill="",
                 selected_solver="",
                 reasoning="",
+                llm_summary="",
                 dispatch_result=None,
                 model_response="",
                 computation_time=time.time() - start_time,

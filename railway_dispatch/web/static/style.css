@@ -15,16 +15,6 @@
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
-        /* 调试: 确保llm_workflow内容始终可见 */
-        #llm_workflow {
-            display: block !important;
-            min-height: 500px;
-            background: #ffcccc;
-            padding: 20px;
-            border: 3px solid blue;
-            border-radius: 10px;
-        }
-
         /* 求解器选择 */
         .solver-badge {
             display: inline-block;

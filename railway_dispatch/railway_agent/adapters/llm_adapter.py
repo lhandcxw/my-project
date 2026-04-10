@@ -218,12 +218,21 @@ class LLMCaller:
             if self.DASHSCOPE_ENABLE_THINKING:
                 model_lower = self.DASHSCOPE_MODEL.lower()
                 # DashScope官方支持的深度思考模型列表（需与官方接口保持一致）
-                # qwen3.6-plus当前不支持深度思考模式
-                supported_thinking_models = ["qwen-max", "qwen3-72b", "qwen3-14b", "qwen-turbo"]
+                # qwen3.6-plus 需要通过 extra_body 传递思考参数
+                supported_thinking_models = ["qwen-max", "qwen3-72b", "qwen3-14b", "qwen-turbo", "qwen3.6-plus"]
                 is_supported = any(m in model_lower for m in supported_thinking_models)
 
                 if is_supported:
-                    request_params["enable_thinking"] = True
+                    # 对于 qwen3.6-plus，需要通过 extra_body 传递参数
+                    if "qwen3.6-plus" in model_lower:
+                        request_params["extra_body"] = {
+                            "enable_thinking": True,
+                            "preserve_thinking": True,
+                            "thinking_budget": 4096
+                        }
+                        logger.info(f"[DashScope] qwen3.6-plus 使用 extra_body 传递思考参数")
+                    else:
+                        request_params["enable_thinking"] = True
                     logger.info(f"[DashScope] 已启用深度思考模式，模型: {self.DASHSCOPE_MODEL}")
                 else:
                     logger.info(f"[DashScope] 当前模型 {self.DASHSCOPE_MODEL} 不支持深度思考模式，采用参数级降级（跳过enable_thinking参数）")

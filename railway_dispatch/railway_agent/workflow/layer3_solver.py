@@ -40,7 +40,9 @@ class Layer3Solver:
         planning_intent: str,
         accident_card: AccidentCard,
         trains: Optional[List[Any]] = None,
-        stations: Optional[List[Any]] = None
+        stations: Optional[List[Any]] = None,
+        planner_decision: Optional[Dict[str, Any]] = None,
+        network_snapshot: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         执行第三层求解
@@ -50,18 +52,21 @@ class Layer3Solver:
             accident_card: 事故卡片
             trains: 列车数据（可选，默认使用完整时刻表）
             stations: 车站数据（可选，默认使用完整时刻表）
+            planner_decision: Planner决策（可选，包含 solver_candidates, preferred_solver 等）
+            network_snapshot: 网络快照（可选）
 
         Returns:
             Dict: 包含求解结果的字典
         """
         logger.info("[L3] 求解技能层")
 
-        # 选择求解器（使用accident_card中的受影响列车数）
+        # 选择求解器（优先使用 L2 的 preferred_solver，再经过规则校验）
         main_skill = self.select_solver(
             planning_intent=planning_intent,
             scene_category=accident_card.scene_category,
             train_count=len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,
-            is_complete=accident_card.is_complete
+            is_complete=accident_card.is_complete,
+            planner_decision=planner_decision
         )
 
         logger.info(f"[L3] 求解器={main_skill}")
@@ -119,37 +124,73 @@ class Layer3Solver:
         planning_intent: str,
         scene_category: str,
         train_count: int,
-        is_complete: bool
+        is_complete: bool,
+        planner_decision: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        选择求解器（基于规则）
+        选择求解器（优先考虑 L2 的 preferred_solver，再经过规则校验）
 
         Args:
             planning_intent: 技能意图
             scene_category: 场景类型
             train_count: 列车数量
             is_complete: 信息是否完整
+            planner_decision: L2 输出的 PlannerDecision 结构化信息
 
         Returns:
             str: 求解器名称
         """
-        # 规则1：区间封锁 -> noop
+        logger.info("[L3] 选择求解器")
+
+        # 规则1：区间封锁 -> noop（最高优先级，无法被覆盖）
         if scene_category == "区间封锁" or planning_intent == "handle_section_block":
+            logger.info("[L3] 规则1：区间封锁，强制使用 noop")
             return "noop"
 
-        # 规则2：信息不完整 -> FCFS
+        # 规则2：信息不完整 -> FCFS（无法被覆盖）
         if not is_complete:
+            logger.info("[L3] 规则2：信息不完整，强制使用 fcfs")
             return "fcfs"
+
+        # 尝试使用 L2 的 preferred_solver
+        preferred_solver = None
+        if planner_decision and isinstance(planner_decision, dict):
+            preferred_solver = planner_decision.get("preferred_solver")
+            solver_candidates = planner_decision.get("solver_candidates", [])
+
+            if preferred_solver:
+                logger.info(f"[L3] L2 建议的 preferred_solver: {preferred_solver}")
+                logger.info(f"[L3] L2 建议的 solver_candidates: {solver_candidates}")
+
+                # 验证 preferred_solver 是否有效
+                valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
+                if preferred_solver in valid_solvers:
+                    # 进一步规则校验
+                    if scene_category == "临时限速" and preferred_solver == "mip":
+                        logger.info("[L3] L2 建议通过：临时限速 -> mip")
+                        return preferred_solver
+                    elif scene_category == "突发故障" and preferred_solver == "fcfs":
+                        logger.info("[L3] L2 建议通过：突发故障 -> fcfs")
+                        return preferred_solver
+                    elif scene_category == "区间封锁" and preferred_solver == "noop":
+                        logger.info("[L3] L2 建议通过：区间封锁 -> noop")
+                        return preferred_solver
+                    else:
+                        # 如果场景与 solver 不匹配，需要规则校验
+                        logger.warning(f"[L3] L2 建议的 solver ({preferred_solver}) 与场景不匹配，使用规则校验")
 
         # 规则3：列车数量少（<=3）且完整 -> MIP
         if train_count <= 3 and is_complete:
+            logger.info("[L3] 规则3：列车数<=3，使用 mip")
             return "mip"
 
         # 规则4：列车数量多 -> FCFS
         if train_count > 10:
+            logger.info("[L3] 规则4：列车数>10，使用 fcfs")
             return "fcfs"
 
         # 规则5：默认 -> MIP
+        logger.info("[L3] 规则5：默认使用 mip")
         return "mip"
 
     def _get_solver(self, solver_name: str):
