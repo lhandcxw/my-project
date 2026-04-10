@@ -213,20 +213,20 @@ class LLMCaller:
                 "temperature": temperature
             }
 
-            # 启用深度思考模式（如果配置允许）
-            # 注意：只有特定模型支持enable_thinking参数
+            # 启用深度思考模式（如果配置允许且模型支持）
+            # 采用"参数级降级"策略：模型不支持时不设置该参数，继续执行
             if self.DASHSCOPE_ENABLE_THINKING:
                 model_lower = self.DASHSCOPE_MODEL.lower()
-                # 目前只有qwen-max和qwen3-72b等特定模型支持enable_thinking
-                # qwen3.5-27b和qwen3.6-plus均不支持
-                supported_thinking_models = ["qwen-max", "qwen3-72b", "qwen3-14b"]
+                # DashScope官方支持的深度思考模型列表（需与官方接口保持一致）
+                # qwen3.6-plus当前不支持深度思考模式
+                supported_thinking_models = ["qwen-max", "qwen3-72b", "qwen3-14b", "qwen-turbo"]
                 is_supported = any(m in model_lower for m in supported_thinking_models)
-                
+
                 if is_supported:
                     request_params["enable_thinking"] = True
-                    logger.info(f"[DashScope] 启用深度思考模式")
+                    logger.info(f"[DashScope] 已启用深度思考模式，模型: {self.DASHSCOPE_MODEL}")
                 else:
-                    logger.info(f"[DashScope] 当前模型 {self.DASHSCOPE_MODEL} 不支持深度思考模式，跳过")
+                    logger.info(f"[DashScope] 当前模型 {self.DASHSCOPE_MODEL} 不支持深度思考模式，采用参数级降级（跳过enable_thinking参数）")
 
             response = client.chat.completions.create(**request_params)
 

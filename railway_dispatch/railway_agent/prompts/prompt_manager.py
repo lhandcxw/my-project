@@ -413,15 +413,15 @@ fault_type 可选: RAIN, WIND, SNOW, EQUIPMENT_FAILURE, SIGNAL_FAILURE, CATENARY
 【提取规则】
 1. 从描述中提取列车号（如G1563、D1234）放入affected_train_ids数组
 2. 从描述中提取车站名转换为站码（如"石家庄"->"SJP"）
-3. 如果有"延误"或"晚点"，提取分钟数放入reported_delay_minutes
+3. 如果有"延误"或"晚点"，提取分钟数放入expected_duration（数字，不带单位）
 4. 从描述中提取事件类型（如大风、暴雨、设备故障等）放入fault_type
 5. **重要：如果描述中没有明确提到事件类型，fault_type必须设为"未知"，不要猜测或编造**
-6. **判断is_complete**：只有当有列车号+车站+事件类型（fault_type不是"未知"）时，才设为true，否则设为false
-7. **如果is_complete为false，在missing_fields中列出缺失的字段**（如"列车号"、"位置"、"事件类型"）
+6. **判断is_complete**：只有当有列车号+车站+事件类型（fault_type不是"未知"）+延误时间时，才设为true，否则设为false
+7. **如果is_complete为false，在missing_fields中列出缺失的字段**（如"列车号"、"位置"、"事件类型"、"延误时间"）
 
 【输出示例】（仅作为格式参考，不要照搬内容）：
-- 完整信息示例：{{"accident_card": {{"scene_category": "临时限速", "fault_type": "大风", "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": true, "missing_fields": []}}}}
-- 不完整信息示例：{{"accident_card": {{"scene_category": "突发故障", "fault_type": "未知", "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": false, "missing_fields": ["事件类型"]}}}}
+- 完整信息示例：{{"accident_card": {{"scene_category": "临时限速", "fault_type": "大风", "expected_duration": 10, "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": true, "missing_fields": []}}}}
+- 不完整信息示例：{{"accident_card": {{"scene_category": "突发故障", "fault_type": "未知", "expected_duration": null, "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": false, "missing_fields": ["事件类型", "延误时间"]}}}}
 
 必须严格按照JSON格式输出，不要添加任何额外文字或markdown标记。""",
             required_output_fields=["accident_card"],
@@ -571,7 +571,6 @@ solver可选: mip, fcfs, max_delay_first, noop
             tags=["solver", "selection"],
             version="1.0"
         )
-        self.register_template(l3_solver_template)
 
 
 # 全局实例

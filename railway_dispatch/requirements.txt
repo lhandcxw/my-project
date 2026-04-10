@@ -25,14 +25,15 @@ matplotlib>=3.7.0
 # HTTP请求
 requests>=2.31.0
 
+# 大模型 - OpenAI兼容模式（支持DashScope）
+openai>=1.0.0
+
 # 其他工具
 python-dateutil>=2.8.0
 
 # =====================================================
-# 大模型依赖（仅在需要QwenAgent时安装）
-# RuleAgent模式不需要以下依赖
+# 说明：
+# - 本项目使用OpenAI兼容模式调用DashScope API
+# - 不需要安装dashscope SDK
+# - 唯一推荐调用方式：OpenAI兼容模式
 # =====================================================
-# modelscope>=1.10.0
-# torch>=2.0.0
-# transformers>=4.35.0
-# accelerate>=0.25.0

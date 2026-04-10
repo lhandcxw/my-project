@@ -5,9 +5,9 @@
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
-from models.workflow_models import AccidentCard, NetworkSnapshot
+from models.workflow_models import AccidentCard
 from models.common_enums import SolverTypeCode
 from solver.solver_registry import get_default_registry
 from solver.base_solver import SolverRequest
@@ -39,9 +39,8 @@ class Layer3Solver:
         self,
         planning_intent: str,
         accident_card: AccidentCard,
-        network_snapshot: NetworkSnapshot,
-        trains: List[Any],
-        stations: List[Any]
+        trains: Optional[List[Any]] = None,
+        stations: Optional[List[Any]] = None
     ) -> Dict[str, Any]:
         """
         执行第三层求解
@@ -49,20 +48,19 @@ class Layer3Solver:
         Args:
             planning_intent: 第二层输出的技能意图
             accident_card: 事故卡片
-            network_snapshot: 网络快照
-            trains: 列车数据
-            stations: 车站数据
+            trains: 列车数据（可选，默认使用完整时刻表）
+            stations: 车站数据（可选，默认使用完整时刻表）
 
         Returns:
             Dict: 包含求解结果的字典
         """
         logger.info("[L3] 求解技能层")
 
-        # 选择求解器
+        # 选择求解器（使用accident_card中的受影响列车数）
         main_skill = self.select_solver(
             planning_intent=planning_intent,
             scene_category=accident_card.scene_category,
-            train_count=network_snapshot.train_count if hasattr(network_snapshot, 'train_count') else 0,
+            train_count=len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,
             is_complete=accident_card.is_complete
         )
 
@@ -107,6 +105,8 @@ class Layer3Solver:
                     "max_delay_minutes": max_delay,
                     "message": solver_response.message
                 },
+                "schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {},
+                "metrics": solver_response.metrics if hasattr(solver_response, 'metrics') else {},
                 "llm_response": f"【规则执行】执行{main_skill}求解器，状态: {solver_response.status} (L3层不使用LLM)"
             }
 

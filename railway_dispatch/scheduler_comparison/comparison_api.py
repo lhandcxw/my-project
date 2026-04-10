@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_models import DelayInjection, ScenarioType, InjectedDelay, DelayLocation
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
+from models.api_models import ComparisonResponse, build_error_response
 from scheduler_comparison import (
     SchedulerComparator,
     ComparisonCriteria,
@@ -24,8 +25,8 @@ from scheduler_comparison import (
 
 logger = logging.getLogger(__name__)
 
-# 创建蓝图
-comparison_bp = Blueprint('comparison', __name__, url_prefix='/api/comparison')
+# 创建蓝图（统一路由前缀为 /api/scheduler_comparison）
+comparison_bp = Blueprint('comparison', __name__, url_prefix='/api/scheduler_comparison')
 
 # 全局比较器实例（延迟初始化）
 _comparator = None
@@ -114,8 +115,8 @@ def _get_criteria_description(criteria: ComparisonCriteria) -> str:
 @comparison_bp.route('/compare', methods=['POST'])
 def compare_schedulers():
     """
-    比较不同调度器
-    
+    比较不同调度器（统一路由）
+
     Request JSON:
         {
             "train_id": "G1563",
@@ -125,9 +126,9 @@ def compare_schedulers():
             "scenario_type": "temporary_speed_limit",  // 可选
             "schedulers": ["fcfs", "mip"]  // 可选，默认全部
         }
-    
+
     Returns:
-        JSON: 比较结果
+        JSON: 统一响应格式的比较结果
     """
     try:
         data = request.json
@@ -183,23 +184,58 @@ def compare_schedulers():
             criteria=criteria,
             scheduler_names=scheduler_names
         )
-        
+
         # 获取LLM适配器并生成输出
         adapter = get_llm_adapter()
-        
+
+        # 构建统一响应结构
+        comparison_data = adapter.generate_structured_output(result)
+
+        # 构建 ranking
+        ranking = []
+        if result.results:
+            for r in result.results:
+                ranking.append({
+                    "rank": r.rank,
+                    "scheduler": r.scheduler_name,
+                    "metrics": {
+                        "max_delay_seconds": r.result.metrics.max_delay_seconds if r.result.metrics else 0,
+                        "avg_delay_seconds": r.result.metrics.avg_delay_seconds if r.result.metrics else 0,
+                        "total_delay_seconds": r.result.metrics.total_delay_seconds if r.result.metrics else 0
+                    },
+                    "score": r.score
+                })
+
+        # 构建 per_solver_metrics
+        per_solver_metrics = {}
+        if result.results:
+            for r in result.results:
+                per_solver_metrics[r.scheduler_name] = {
+                    "max_delay_seconds": r.result.metrics.max_delay_seconds if r.result.metrics else 0,
+                    "avg_delay_seconds": r.result.metrics.avg_delay_seconds if r.result.metrics else 0,
+                    "total_delay_seconds": r.result.metrics.total_delay_seconds if r.result.metrics else 0,
+                    "on_time_rate": r.result.metrics.on_time_rate if r.result.metrics else 0
+                }
+
         return jsonify({
             "success": result.success,
-            "comparison": adapter.generate_structured_output(result),
-            "markdown_report": adapter.adapt(result, LLMOutputFormat.MARKDOWN),
-            "summary": adapter.adapt(result, LLMOutputFormat.SUMMARY)
+            "message": "比较完成" if result.success else "比较失败",
+            "ranking": ranking,
+            "per_solver_metrics": per_solver_metrics,
+            "best_solver": result.winner.scheduler_name if result.winner else "",
+            "report_text": adapter.adapt(result, LLMOutputFormat.MARKDOWN),
+            "diagram_input": comparison_data,
+            "warnings": [] if result.success else ["比较执行失败"],
+            "error_code": None if result.success else "COMPARISON_FAILED"
         })
-        
+
     except Exception as e:
         logger.exception(f"比较调度器失败: {e}")
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
+        return jsonify(build_error_response(
+            message=str(e),
+            error_code="COMPARISON_ERROR",
+            details={"exception_type": type(e).__name__}
+        )), 500
 
 
 @comparison_bp.route('/recommend', methods=['POST'])

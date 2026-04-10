@@ -6,9 +6,6 @@
 import os
 os.environ["RULE_AGENT_USE_WORKFLOW"] = "1"
 
-
-
-
 from flask import Flask, render_template, request, jsonify, Response
 from flask_cors import CORS
 import json
@@ -16,7 +13,6 @@ import base64
 import logging
 
 import sys
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_models import Train, Station, DelayInjection, ScenarioType, InjectedDelay, DelayLocation
@@ -33,15 +29,21 @@ logger = logging.getLogger(__name__)
 # 导入运行图生成模块（经典铁路运行图风格：横轴时间，纵轴车站）
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
-# 导入新架构 Agent
-from railway_agent import RuleAgent, create_rule_agent, ToolRegistry
+# 导入统一LLM驱动 Agent
+from railway_agent import LLMAgent, create_llm_agent, ToolRegistry
 
-# QwenAgent延迟导入（已迁移到新架构，使用统一Agent）
-def get_qwen_agent_module():
-    """获取Qwen Agent模块（新架构）"""
-    # 新架构使用统一的Agent，支持多种模式
-    from railway_agent import RuleAgent, create_rule_agent
-    return RuleAgent, create_rule_agent
+# Agent实例
+def get_llm_agent():
+    """
+    获取LLM驱动 Agent实例
+
+    统一LLM驱动架构：
+    - 移除RuleAgent
+    - 支持阿里云API和本地微调模型
+    - 使用完整L1-L4工作流
+    """
+    from railway_agent import create_llm_agent
+    return create_llm_agent(trains=trains, stations=stations)
 
 app = Flask(__name__)
 CORS(app)  # 启用跨域支持
@@ -66,7 +68,10 @@ skills = create_skills(scheduler)
 evaluator = Evaluator()
 
 # 从统一配置中心导入配置
-from config import AppConfig, LLMConfig, get_config_summary
+from config import AppConfig, LLMConfig, get_config_summary, validate_config
+
+# 验证配置（失败时明确报错并终止）
+validate_config()
 
 # 设置环境变量（统一配置中心已定义，这里确保生效）
 os.environ['DASHSCOPE_API_KEY'] = LLMConfig.DASHSCOPE_API_KEY
@@ -79,28 +84,29 @@ AGENT_MODE = AppConfig.AGENT_MODE
 # 打印配置摘要
 logger.info(get_config_summary())
 
-# Agent (延迟加载)
-qwen_agent = None
+# Agent实例
+llm_agent = None
 
-def get_qwen_agent():
+def get_agent():
     """
-    获取或创建Agent实例（新架构v2）
+    获取或创建LLM驱动 Agent实例
 
-    新架构说明：
-    - 所有Agent模式（rule/qwen/auto）都使用统一的新架构Agent
-    - 新架构Agent内部包含工作流引擎，支持LLM调用
+    统一LLM驱动架构说明：
+    - 完全基于LLM驱动，不依赖规则
+    - 支持阿里云API和本地微调模型
+    - 使用完整L1-L4工作流
     - 多轮对话和单轮对话都能正常工作
     """
-    global qwen_agent
+    global llm_agent
 
-    if qwen_agent is not None:
-        return qwen_agent
+    if llm_agent is not None:
+        return llm_agent
 
-    # 新架构：使用统一的Agent（RuleAgent），内部包含工作流引擎
-    logger.info(f"初始化新架构Agent，模式: {AGENT_MODE}")
-    qwen_agent = create_rule_agent(trains=trains, stations=stations)
+    # 创建LLM驱动Agent
+    logger.info(f"初始化LLM驱动Agent，模式: {AGENT_MODE}")
+    llm_agent = create_llm_agent(trains=trains, stations=stations)
     logger.info("新架构Agent初始化完成（支持单轮对话和多轮对话）")
-    return qwen_agent
+    return llm_agent
 
 
 def get_original_schedule():
@@ -190,10 +196,10 @@ def dispatch():
                 repair_time=60
             )
 
-        # 使用Qwen Agent或直接执行Skill（兜底）
-        agent = get_qwen_agent()
+        # 使用LLM驱动Agent的分析功能
+        agent = get_agent()
         if agent:
-            # 使用Qwen Agent
+            # 使用LLM驱动 Agent
             result = agent.analyze(delay_injection.model_dump())
             logger.info(f"Agent分析结果: success={result.success}, dispatch_result={result.dispatch_result is not None}")
 
@@ -321,10 +327,11 @@ def agent_chat():
     """
     Agent 对话API
     接收自然语言输入，Agent自动识别场景并执行调度
-    
-    支持两种Agent模式：
-    - RuleAgent: 固定规则，无需大模型
-    - QwenAgent: 大模型驱动
+
+    支持统一LLM驱动架构：
+    - 完全基于LLM驱动，不依赖规则
+    - 支持阿里云API和本地微调模型
+    - 使用完整L1-L4工作流
     """
     try:
         data = request.json
@@ -339,8 +346,8 @@ def agent_chat():
 
         logger.info(f"收到agent_chat请求，prompt: {prompt[:50]}...")
 
-        # 获取Agent
-        agent = get_qwen_agent()
+        # 获取LLM驱动Agent
+        agent = get_agent()
         if agent is None:
             logger.error("Agent未初始化")
             return jsonify({
@@ -352,14 +359,8 @@ def agent_chat():
         delay_injection = parse_user_prompt(prompt)
         logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
 
-        # 调用Agent分析
-        # RuleAgent和QwenAgent都支持analyze方法
-        if isinstance(agent, RuleAgent):
-            # RuleAgent需要传入原始prompt用于推理过程生成
-            result = agent.analyze(delay_injection, user_prompt=prompt)
-        else:
-            # QwenAgent
-            result = agent.analyze(delay_injection)
+        # 调用Agent分析（LLM驱动，传入原始prompt）
+        result = agent.analyze(delay_injection, user_prompt=prompt)
 
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -410,12 +411,12 @@ def general_chat():
                 "message": "请输入问题"
             })
 
-        # 获取Qwen Agent
-        agent = get_qwen_agent()
+        # 获取LLM驱动Agent
+        agent = get_agent()
         if agent is None:
             return jsonify({
                 "success": False,
-                "message": "Qwen Agent未初始化"
+                "message": "LLM Agent未初始化"
             })
 
         # 构建通用对话Prompt（不包含Tools，自由的对话）
@@ -593,8 +594,8 @@ def agent_chat_with_comparison():
 
         logger.info(f"收到带比较的agent_chat请求，prompt: {prompt[:50]}...")
 
-        # 获取Agent
-        agent = get_qwen_agent()
+        # 获取LLM驱动Agent
+        agent = get_agent()
         if agent is None:
             return jsonify({
                 "success": False,
@@ -603,7 +604,7 @@ def agent_chat_with_comparison():
 
         # 解析用户输入
         delay_injection = parse_user_prompt(prompt)
-        
+
         # 添加用户偏好到scenario_params
         if "scenario_params" not in delay_injection:
             delay_injection["scenario_params"] = {}
@@ -612,11 +613,7 @@ def agent_chat_with_comparison():
         logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
 
         # 调用Agent分析（带比较）
-        if isinstance(agent, RuleAgent):
-            result = agent.analyze_with_comparison(delay_injection, user_prompt=prompt, comparison_criteria=comparison_criteria)
-        else:
-            # QwenAgent也使用RuleAgent的比较方法（因为比较功能与模型无关）
-            result = agent.analyze_with_comparison(delay_injection, comparison_criteria=comparison_criteria) if hasattr(agent, 'analyze_with_comparison') else agent.analyze(delay_injection)
+        result = agent.analyze_with_comparison(delay_injection, user_prompt=prompt, comparison_criteria=comparison_criteria)
 
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -632,7 +629,8 @@ def agent_chat_with_comparison():
                 "message": dispatch.message,
                 "computation_time": result.computation_time,
                 "optimized_schedule": dispatch.optimized_schedule,
-                "original_schedule": original_schedule
+                "original_schedule": original_schedule,
+                "comparison_details": dispatch.delay_statistics.get("ranking", [])
             })
         else:
             return jsonify({
@@ -689,21 +687,18 @@ def scheduler_comparison():
         )
         
         # 使用Agent的比较功能
-        agent = get_qwen_agent()
+        agent = get_agent()
         if agent is None:
             return jsonify({
                 "success": False,
                 "message": "Agent未初始化"
             })
-        
-        if isinstance(agent, RuleAgent):
-            result = agent.analyze_with_comparison(
-                delay_injection.model_dump(),
-                user_prompt=f"{train_id}在{station_code}延误{delay_seconds // 60}分钟",
-                comparison_criteria=criteria
-            )
-        else:
-            result = agent.analyze_with_comparison(delay_injection.model_dump(), comparison_criteria=criteria) if hasattr(agent, 'analyze_with_comparison') else agent.analyze(delay_injection.model_dump())
+
+        result = agent.analyze_with_comparison(
+            delay_injection.model_dump(),
+            user_prompt=f"{train_id}在{station_code}延误{delay_seconds // 60}分钟",
+            comparison_criteria=criteria
+        )
         
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -864,69 +859,6 @@ def workflow_start():
         # 执行第1层（数据建模），传入L0预处理结果
         result = workflow_engine.execute_layer1(user_input=user_input, canonical_request=canonical_request)
 
-        # 构建 NetworkSnapshot（使用 SnapshotBuilder）
-        from railway_agent.snapshot_builder import get_snapshot_builder
-        from models.workflow_models import NetworkSnapshot
-        from datetime import datetime
-
-        snapshot_builder = get_snapshot_builder()
-        try:
-            # 尝试从 accident_card 构建 canonical_request
-            accident_card = result.get("accident_card")
-            if accident_card and hasattr(accident_card, 'model_dump'):
-                # 创建简化的 canonical_request
-                from models.preprocess_models import CanonicalDispatchRequest, LocationInfo, CompletenessInfo
-                from models.common_enums import RequestSourceType, SceneTypeCode
-
-                acc_data = accident_card.model_dump()
-                
-                # 从 accident_card 获取场景类型
-                from models.common_enums import SceneTypeCode
-                scene_category = acc_data.get('scene_category', '突发故障')
-                if scene_category == '临时限速':
-                    scene_type_code = SceneTypeCode.TEMP_SPEED_LIMIT
-                elif scene_category == '区间封锁':
-                    scene_type_code = SceneTypeCode.SECTION_INTERRUPT
-                else:
-                    scene_type_code = SceneTypeCode.SUDDEN_FAILURE
-                    
-                canonical_req = CanonicalDispatchRequest(
-                    source_type=RequestSourceType.NATURAL_LANGUAGE,
-                    raw_text=user_input,
-                    scene_type_code=scene_type_code,
-                    location=LocationInfo(
-                        station_code=acc_data.get('location_code', ''),
-                        station_name=acc_data.get('location_name', '')
-                    ),
-                    affected_train_ids=acc_data.get('affected_train_ids', []),
-                    event_time=datetime.now().isoformat(),
-                    completeness=CompletenessInfo(
-                        can_enter_solver=acc_data.get('is_complete', False),
-                        missing_fields=acc_data.get('missing_fields', [])
-                    )
-                )
-                network_snapshot = snapshot_builder.build(canonical_req)
-            else:
-                # 创建默认的 network_snapshot
-                network_snapshot = NetworkSnapshot(
-                    snapshot_time=datetime.now(),
-                    solving_window={"observation_corridor": "BJX-AYD", "planning_time_window": {"start": "06:00", "end": "24:00"}},
-                    candidate_train_ids=[],
-                    trains=[],
-                    stations=[],
-                    sections=[]
-                )
-        except Exception as e:
-            logger.warning(f"构建 NetworkSnapshot 失败: {e}，使用默认值")
-            network_snapshot = NetworkSnapshot(
-                snapshot_time=datetime.now(),
-                solving_window={"observation_corridor": "BJX-AYD", "planning_time_window": {"start": "06:00", "end": "24:00"}},
-                candidate_train_ids=[],
-                trains=[],
-                stations=[],
-                sections=[]
-            )
-
         # 获取 accident_card 并检查有效性
         accident_card = result.get("accident_card")
         if not accident_card:
@@ -938,7 +870,6 @@ def workflow_start():
         # 转换为字典格式（用于JSON序列化）
         result_dict = {
             "accident_card": accident_card.model_dump() if hasattr(accident_card, "model_dump") else accident_card,
-            "network_snapshot": network_snapshot.model_dump(),
             "can_solve": accident_card.is_complete if hasattr(accident_card, "is_complete") else True,
             "missing_info": accident_card.missing_fields if hasattr(accident_card, "missing_fields") else [],
             "llm_response_type": result.get("llm_response_type", "未知")
@@ -1059,50 +990,17 @@ def workflow_next():
         # 根据当前层执行下一层
         if current_layer == 1:
             # 执行第2层
-            from models.workflow_models import AccidentCard, NetworkSnapshot, DispatchContextMetadata
-            from railway_agent.snapshot_builder import get_snapshot_builder
+            from models.workflow_models import AccidentCard
             from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-            from datetime import datetime
 
             # 从第1层结果构建对象
             l1_result = status["layer1_result"]
             accident_card = AccidentCard(**l1_result.get("accident_card", {}))
 
-            # 构建或获取 network_snapshot
-            network_snapshot_data = l1_result.get("network_snapshot", {})
-            if not network_snapshot_data or not network_snapshot_data.get("snapshot_time"):
-                # 如果没有 network_snapshot，使用 SnapshotBuilder 构建一个默认的
-                snapshot_builder = get_snapshot_builder()
-                network_snapshot = NetworkSnapshot(
-                    snapshot_time=datetime.now(),
-                    solving_window={
-                        "observation_corridor": "BJX-AYD",
-                        "planning_time_window": {"start": "06:00", "end": "24:00"}
-                    },
-                    candidate_train_ids=accident_card.affected_train_ids or [],
-                    excluded_train_ids=[],
-                    trains=[],
-                    train_count=len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,
-                    stations=[],
-                    sections=[],
-                    headways={},
-                    current_delays={}
-                )
-            else:
-                network_snapshot = NetworkSnapshot(**network_snapshot_data)
-            dispatch_metadata = DispatchContextMetadata(
-                train_count=network_snapshot.train_count,
-                station_count=13,
-                time_window_start="2024-01-15T10:00:00",
-                time_window_end="2024-01-15T12:00:00"
-            )
-
             # 使用新架构工作流引擎
             workflow_engine = create_workflow_engine()
             result = workflow_engine.execute_layer2(
-                accident_card=accident_card,
-                network_snapshot=network_snapshot,
-                dispatch_metadata=dispatch_metadata
+                accident_card=accident_card
             )
             session_mgr.update_layer_result(session_id, 2, result)
 
@@ -1123,15 +1021,14 @@ def workflow_next():
 
         elif current_layer == 2:
             # 执行第3层
-            from models.workflow_models import AccidentCard, NetworkSnapshot
+            from models.workflow_models import AccidentCard
             from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
 
             # 从第1层结果构建对象
             l1_result = status["layer1_result"]
             accident_card = AccidentCard(**l1_result.get("accident_card", {}))
-            network_snapshot = NetworkSnapshot(**l1_result.get("network_snapshot", {}))
 
-            # 获取数据
+            # 获取数据（使用完整时刻表）
             trains = get_trains_pydantic()[:50]
             stations = get_stations_pydantic()
 
@@ -1140,7 +1037,6 @@ def workflow_next():
             result = workflow_engine.execute_layer3(
                 planning_intent="recalculate_corridor_schedule",
                 accident_card=accident_card,
-                network_snapshot=network_snapshot,
                 trains=trains,
                 stations=stations
             )
@@ -1355,6 +1251,13 @@ def workflow_continue():
 
         # 获取更新后的会话状态
         status = session_mgr.get_session_status(session_id)
+        
+        # 检查会话状态是否有效
+        if status is None:
+            return jsonify({
+                "success": False,
+                "message": "会话不存在或已过期"
+            })
 
         # 检查信息是否完整
         is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else True
@@ -1469,6 +1372,25 @@ def check_api_connectivity():
         return False
 
 
+# 注册调度比较API蓝图
+def register_comparison_blueprint():
+    """注册调度比较API蓝图"""
+    try:
+        from scheduler_comparison.comparison_api import register_comparison_routes
+        register_comparison_routes(app)
+        logger.info("调度比较API蓝图已成功注册")
+        logger.info("可用比较路由:")
+        for rule in app.url_map.iter_rules():
+            if rule.endpoint.startswith('comparison.'):
+                logger.info(f"  {rule.methods} {rule.rule}")
+    except Exception as e:
+        logger.error(f"注册调度比较API蓝图失败: {e}")
+
+
+# 启动时注册所有蓝图
+register_comparison_blueprint()
+
+
 if __name__ == '__main__':
     # 避免Flask reloader导致的重复启动
     import os
@@ -1479,11 +1401,14 @@ if __name__ == '__main__':
         logger.info(f"Agent模式: {AGENT_MODE}")
         if AGENT_MODE == "rule":
             logger.info("使用固定规则Agent，无需加载大模型")
-        elif AGENT_MODE == "qwen":
-            from config import LLM_CONFIG
-            logger.info(f"使用阿里云DashScope API，模型: {LLM_CONFIG['model']}")
+        elif AGENT_MODE == "dashscope":
+            from config import LLMConfig
+            logger.info(f"使用阿里云DashScope API，模型: {LLMConfig.DASHSCOPE_MODEL}")
+        elif AGENT_MODE == "local":
+            from config import LLMConfig
+            logger.info(f"使用本地微调模型，路径: {LLMConfig.TRANSFORMERS_MODEL_PATH or LLMConfig.OLLAMA_MODEL}")
         else:
-            logger.info("自动模式：优先Qwen Agent，失败则回退到RuleAgent")
+            logger.info("自动模式：优先本地模型，失败则用API")
         logger.info("访问地址: http://localhost:8081")
         logger.info("按 Ctrl+C 停止服务")
         logger.info("=" * 50)

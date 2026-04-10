@@ -1,16 +1,35 @@
-# 铁路调度Agent系统架构设计文档
+# 铁路调度Agent系统架构设计文档（v6.0）
 
 ## 文档概述
 
-基于大模型和整数规划的智能铁路调度Agent系统（v5.0）。
+基于大模型和整数规划的智能铁路调度Agent系统（v6.0 - 统一LLM驱动架构）。
 
 **设计约束**：
 - 部署规模：13站，147列列车（京广高铁北京西→安阳东）
 - 建模方法：整数规划（MIP）+ 先到先服务（FCFS）+ 最大延误优先
 - Web框架：Flask
-- **大模型：阿里云 DashScope (qwen-max/qwen3.5-27b)** - 云端API
+- **大模型架构：统一LLM驱动，移除RuleAgent**
+- **LLM调用方式**：
+  1. API调用阿里云模型（DashScope）
+  2. 调用微调后的本地模型（Ollama/vLLM/Transformers）
 - 数据模式：统一使用 `data/` 目录下的真实数据
-- schema_version: dispatch_v5_0
+- schema_version: dispatch_v6_0
+
+**v6.0更新**：
+- **架构重构：完全移除RuleAgent，统一使用LLM驱动**
+- **新增：支持本地微调模型调用（Ollama/vLLM/Transformers）**
+- **统一：单一LLMAgent，支持两种LLM调用方式**
+- **优化：完整L1-L4工作流，不依赖规则回退**
+- **配置：统一配置中心，支持API和本地模型切换**
+- **完整性判定：采用方案A（车次+位置+场景+延误时间）**
+- **移除NetworkSnapshot：简化架构，使用完整时刻表进行调度**
+- **新增调度器比较：支持MIP/FCFS/最大延误优先/基线调度器对比**
+- **FORCE_LLM_MODE改为False：允许LLM失败时使用规则回退**
+
+**v5.1更新**：
+- 功能：L0层场景识别从规则改为LLM调用
+- 功能：新增 `_llm_extraction()` 方法
+- 功能：使用 `l0_preprocess_extractor` Prompt模板
 
 **v5.0更新**：
 - 重构：删除所有冗余代码和重复workflow
@@ -20,7 +39,7 @@
 - 安全：移除硬编码API Key，改为config.py变量配置
 - 功能：添加FORCE_LLM_MODE配置（正式实验时禁用规则回退）
 - 功能：支持enable_thinking深度思考模式（仅qwen3/qwen-max系列）
-- 重构：Agent层调用L1-L4完整工作流
+- 重构：Agent层调用完整L1-L4工作流
 - 重构：统一入口为web/app.py
 
 ---
@@ -39,9 +58,10 @@
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │               Agent层 (railway_agent/agents.py)                         │
-│  - NewArchAgent: 新架构Agent（兼容RuleAgent接口）                       │
+│  - LLMAgent: 统一LLM驱动Agent（移除RuleAgent）                         │
 │  - 通过L1层LLM进行场景识别和实体提取                                    │
 │  - 调用完整L1-L4工作流                                                  │
+│  - 支持阿里云API和本地微调模型                                           │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -63,42 +83,59 @@
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │        工作流分层模块 (railway_agent/workflow/)                         │
-│  - layer1_data_modeling.py: 数据建模层 (L1)                             │
+│  - layer1_data_modeling.py: L1数据建模层                               │
 │    * LLM提取事故信息，构建AccidentCard                                  │
-│    * FORCE_LLM_MODE控制是否禁用规则回退                                 │
+│    * 完整性判定：车次 + 位置 + 场景 + 延误时间（方案A）               │
 │  - layer2_planner.py: Planner层 (L2)                                    │
 │    * LLM决策planning_intent                                             │
 │    * 基于规则构建skill_dispatch                                         │
 │  - layer3_solver.py: 求解技能层 (L3)                                    │
-│    * SolverPolicyAdapter选择求解器                                      │
-│    * 执行求解并返回结果                                                 │
+│    * 基于规则选择求解器（MIP/FCFS/最大延误优先）                       │
+│    * 使用完整时刻表进行调度（不依赖NetworkSnapshot）                   │
+│    * 支持与基线/FCFS/最大延误优先调度器对比                            │
 │  - layer4_evaluation.py: 评估层 (L4)                                    │
 │    * LLM生成解释和风险提示                                              │
 │    * PolicyEngine做最终决策                                             │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│        工作流引擎 v2.2 (llm_workflow_engine_v2.py)                      │
-│  - 正确的流程：SnapshotBuilder → L1 → L2 → L3 → L4                      │
+│        工作流引擎 (llm_workflow_engine_v2.py)                          │
+│  - 流程：L0 → L1 → L2 → L3 → L4（不依赖NetworkSnapshot）              │
 │  - 支持多轮对话补全                                                     │
 │  - 应用分层模块和适配器模式                                             │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    适配器层 (railway_agent/adapters/)                   │
-│  - llm_adapter.py: LLM调用适配器（支持DashScope/Ollama/OpenAI）        │
+│  - llm_adapter.py: LLM调用适配器（支持DashScope/本地模型）             │
 │  - llm_prompt_adapter.py: LLM Prompt适配器                              │
 │  - skills.py: 技能实现                                                  │
 │  - skill_registry.py: 技能注册表                                        │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         求解器层 (solver/)                              │
+│                      求解器层 (solver/)                              │
 │  - fcfs_scheduler.py: FCFS调度器（快速响应）                            │
 │  - mip_scheduler.py: MIP求解器（优化策略）                              │
 │  - max_delay_first_scheduler.py: 最大延误优先                           │
 │  - noop_scheduler.py: 空操作调度器                                      │
 │  - solver_registry.py: 求解器注册与自动选择                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│         LLM调用层 (railway_agent/adapters/llm_adapter.py)              │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │  方式1：阿里云API                                             │ │
+│  │  - DashScope API (qwen3.6-plus)                               │ │
+│  │  - OpenAI兼容模式                                              │ │
+│  │  - 配置：PROVIDER="dashscope"                                  │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │  方式2：本地微调模型                                          │ │
+│  │  - Ollama (本地推理): PROVIDER="ollama"                      │ │
+│  │  - vLLM (高性能): PROVIDER="vllm"                            │ │
+│  │  - Transformers (原生): PROVIDER="transformers"              │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -113,6 +150,7 @@
 │  - preprocess_models.py: 预处理数据模型                                 │
 │  - prompts.py: Prompt数据模型                                           │
 │  - workflow_models.py: 工作流数据模型                                   │
+│  - api_models.py: API统一响应模型（UnifiedDispatchResponse）           │
 │  - data_loader.py: 统一数据入口                                         │
 │  - data_models.py: Pydantic数据模型                                     │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -122,112 +160,87 @@
 
 ## 2. 核心模块
 
-### 2.1 SnapshotBuilder - 网络快照构建器
+### 2.1 LLMAgent - 统一LLM驱动Agent
 
-**职责**：唯一构建 NetworkSnapshot 的入口，使用确定性逻辑
+**职责**：统一LLM驱动架构，移除RuleAgent
 
-**输入**：
-- CanonicalDispatchRequest：标准化调度请求
-- time_window：可选的时间窗口
-- window_size：观察窗口大小（默认2）
+**特点**：
+- 完全基于LLM驱动，不依赖规则
+- 使用完整L1-L4工作流
+- 支持两种LLM调用方式：
+  1. 阿里云API（DashScope）
+  2. 本地微调模型（Ollama/vLLM/Transformers）
 
-**输出**：
-- NetworkSnapshot：确定性构建的网络快照
+**文件位置**：`railway_agent/agents.py`
 
-**文件位置**：`railway_agent/snapshot_builder.py`
+**核心方法**：
+- `analyze()`: 执行完整L1-L4工作流
+- `analyze_with_comparison()`: 执行带比较的调度
+- `chat_direct()`: 直接对话接口
 
-### 2.2 L1 数据建模层
+---
 
-**职责**：从调度员描述中生成事故卡片，只构建 AccidentCard
+### 2.2 L1+L2+L3+L4 完整工作流
 
-**核心功能**：
-1. 通过LLM Prompt适配器提取字段（scene_category, fault_type, location_code等）
-2. **FORCE_LLM_MODE控制**：
-   - `True`：LLM失败时直接报错，不回退到规则
-   - `False`：LLM失败时回退到规则提取
-3. **完整性判定**：列车号 + 位置 + 事件类型三者都有才可进入后续层
+**职责说明（v6.0 统一版）**：
+- **L1 数据建模层**：
+  - LLM提取事故信息（scene_category, fault_type, location_code等）
+  - 完整性判定：车次 + 位置 + 场景 + 延误时间（方案A）
 
-**输出字段**：
-- `AccidentCard`: scene_category, fault_type, location_code, affected_train_ids, is_complete, missing_fields
+- **L2 Planner层**：
+  - LLM决策 planning_intent
+  - 基于规则构建skill_dispatch
 
-**文件位置**：`railway_agent/workflow/layer1_data_modeling.py`
+- **L3 Solver执行层**：
+  - 基于规则选择求解器（MIP/FCFS/最大延误优先）
+  - **使用完整时刻表进行调度（不依赖NetworkSnapshot）**
+  - 支持调度器比较功能
 
-### 2.3 L2 Planner层
+- **L4 评估层**：
+  - LLM生成解释和风险提示
+  - PolicyEngine 根据评估结果做最终决策
 
-**职责**：决策规划意图和技能分发
+---
 
-**核心功能**：
-1. 通过LLM Prompt适配器决策 planning_intent
-2. **不直接选择求解器**，仅决策意图
-3. **基于规则构建skill_dispatch**（不依赖LLM）
-   - 临时限速 → mip
-   - 突发故障 → fcfs
-   - 区间封锁 → noop
+### 2.3 LLM调用适配器
 
-**文件位置**：`railway_agent/workflow/layer2_planner.py`
+**职责**：统一LLM调用接口，支持多种调用方式
 
-### 2.4 L3 Solver执行层
+**文件位置**：`railway_agent/adapters/llm_adapter.py`
 
-**职责**：选择并执行求解器
+**支持的调用方式**：
 
-**核心功能**：
-1. SolverPolicyAdapter 根据 planning_intent、场景类型、列车数量选择求解器
-2. 执行求解器并返回结果
-3. 计算延误指标（总延误、最大延误）
+1. **阿里云DashScope API**：
+   ```python
+   # 配置
+   PROVIDER = "dashscope"
+   DASHSCOPE_API_KEY = "your-api-key"
+   DASHSCOPE_MODEL = "qwen3.6-plus"
+   ```
 
-**求解器选择规则**：
-- 区间封锁 → noop
-- 信息不完整 → fcfs
-- 列车数量少（≤3）且完整 → mip
-- 列车数量多（>10）→ fcfs
-- 默认 → mip
+2. **Ollama本地推理**：
+   ```python
+   # 配置
+   PROVIDER = "ollama"
+   OLLAMA_BASE_URL = "http://localhost:11434"
+   OLLAMA_MODEL = "qwen-finetuned"  # 微调后的模型
+   ```
 
-**文件位置**：`railway_agent/workflow/layer3_solver.py`
+3. **vLLM高性能推理**：
+   ```python
+   # 配置
+   PROVIDER = "vllm"
+   VLLM_BASE_URL = "http://localhost:8000/v1"
+   VLLM_MODEL = "qwen-finetuned"
+   ```
 
-### 2.5 L4 评估层
-
-**职责**：评估调度方案并生成最终决策
-
-**核心功能**：
-1. 通过LLM Prompt适配器生成解释和风险提示
-2. PolicyEngine 根据评估结果做最终决策
-3. 构建回退反馈
-
-**决策规则（优先级从高到低）**：
-1. 求解失败 → RERUN
-2. 验证失败 → FALLBACK
-3. 评估不可行 → FALLBACK
-4. 最大延误过大（阈值可配置）→ FALLBACK
-5. 有严重风险警告 → FALLBACK
-6. 默认 → ACCEPT
-
-**文件位置**：`railway_agent/workflow/layer4_evaluation.py`
-
-### 2.6 LLM Prompt适配器
-
-**职责**：统一LLM Prompt调用
-
-**核心功能**：
-1. 连接Prompt管理器和LLM调用器
-2. 自动处理Prompt填充、LLM调用、结果解析
-3. 支持RAG增强
-4. 自动收集微调样本
-
-**文件位置**：`railway_agent/adapters/llm_prompt_adapter.py`
-
-### 2.7 RAG系统
-
-**职责**：提供真实高铁调度知识检索
-
-**知识模块**：
-1. **京广高铁网络信息**：13个车站，147列列车
-2. **调度约束**：时间、空间、容量约束
-3. **延误处理策略**：延误分类、恢复策略
-4. **车站作业时间标准**
-
-**检索算法**：基于关键词匹配
-
-**文件位置**：`railway_agent/rag_retriever.py`
+4. **Transformers原生加载**：
+   ```python
+   # 配置
+   PROVIDER = "transformers"
+   TRANSFORMERS_MODEL_PATH = "./models/qwen-finetuned"
+   TRANSFORMERS_DEVICE = "cuda"
+   ```
 
 ---
 
@@ -235,33 +248,52 @@
 
 ### 3.1 配置文件 (config.py)
 
-所有配置集中在 `config.py` 中，使用变量直接定义（非环境变量）：
-
 ```python
 class LLMConfig:
-    """LLM 配置"""
-    PROVIDER = "dashscope"  # 可选: dashscope, ollama, openai
-    DASHSCOPE_API_KEY = ""  # 阿里云API Key（直接填写）
-    DASHSCOPE_MODEL = "qwen-max"  # 或 "qwen3.5-27b"
-    DASHSCOPE_ENABLE_THINKING = True  # 是否启用深度思考（仅qwen3/qwen-max支持）
-    FORCE_LLM_MODE = True  # 强制LLM模式，禁用规则回退
+    """LLM 配置（统一LLM驱动架构）"""
+
+    # LLM提供方式: "dashscope" | "local" | "ollama" | "vllm" | "transformers"
+    PROVIDER = "dashscope"
+
+    # ========== 方式1：阿里云 DashScope API ==========
+    DASHSCOPE_API_KEY = ""  # 请填写您的DashScope API Key
+    DASHSCOPE_MODEL = "qwen3.6-plus"
+    DASHSCOPE_ENABLE_THINKING = False
+
+    # ========== 方式2：本地微调模型 ==========
+    # Ollama 配置
+    OLLAMA_BASE_URL = "http://localhost:11434"
+    OLLAMA_MODEL = "qwen-finetuned"  # 或微调后的模型名称
+
+    # vLLM 配置（高性能推理）
+    VLLM_BASE_URL = "http://localhost:8000/v1"
+    VLLM_MODEL = "qwen-finetuned"
+
+    # Transformers 原生加载（用于微调模型）
+    TRANSFORMERS_MODEL_PATH = ""  # 微调模型路径
+    TRANSFORMERS_DEVICE = "cuda"
+    TRANSFORMERS_MAX_LENGTH = 4096
+
+    # ========== 通用配置 ==========
+    FORCE_LLM_MODE = True
+
 
 class AppConfig:
     """应用配置"""
-    WEB_HOST = "0.0.0.0"
-    WEB_PORT = 8081
-    AGENT_MODE = "qwen"
+    # Agent 模式: "dashscope" | "local" | "auto"
+    AGENT_MODE = "dashscope"
+
+    # 数据配置
     USE_REAL_DATA = True
 ```
 
 ### 3.2 模型选择建议
 
-| 模型 | 是否支持思考模式 | 说明 |
-|------|-----------------|------|
-| qwen-max | ✅ 支持 | 推荐，效果最佳 |
-| qwen3-72b | ✅ 支持 | 支持思考模式 |
-| qwen3.5-27b | ❌ 不支持 | 性价比高但不支持思考 |
-| qwen3.6-plus | ❓ 需测试 | 可能支持 |
+| 模型 | 是否支持思考模式 | 调用方式 | 说明 |
+|------|-----------------|----------|------|
+| qwen-max | ✅ 支持 | API | 推荐，效果最佳 |
+| qwen3.6-plus | ❌ 不支持 | API/本地 | 当前主力模型 |
+| qwen-finetuned | ⚠️ 取决于基座 | 本地 | 微调后模型，需本地部署 |
 
 ---
 
@@ -282,12 +314,6 @@ class FaultTypeCode(str, Enum):
     EQUIPMENT_FAILURE = "EQUIPMENT_FAILURE"  # 设备故障
     SIGNAL_FAILURE = "SIGNAL_FAILURE"        # 信号故障
     CATENARY_FAILURE = "CATENARY_FAILURE"    # 接触网故障
-
-class SolverTypeCode(str, Enum):
-    MIP = "mip_scheduler"
-    FCFS = "fcfs_scheduler"
-    MAX_DELAY_FIRST = "max_delay_first_scheduler"
-    NOOP = "noop_scheduler"
 ```
 
 ### 4.2 数据目录结构
@@ -315,7 +341,7 @@ data/
 
 | 接口 | 方法 | 功能 |
 |------|------|------|
-| `/api/agent_chat` | POST | 智能调度（Agent聊天） |
+| `/api/agent_chat` | POST | 智能调度（LLM驱动） |
 | `/api/dispatch` | POST | 表单方式调度 |
 | `/api/workflow/start` | POST | 启动LLM多轮工作流 |
 | `/api/workflow/next` | POST | 继续执行下一层 |
@@ -327,17 +353,44 @@ data/
 
 ## 6. 技术栈
 
-- **大模型**: 阿里云 DashScope (qwen-max/qwen3.5-27b)
-- **备选大模型**: Ollama (qwen2.5:1.5b) - 本地模型
-- **求解器**: PuLP + CBC (整数规划)
-- **Web**: Flask + Pydantic
-- **可视化**: Matplotlib
-- **Prompt管理**: 自定义PromptManager
-- **RAG检索**: 关键词匹配
+- **大模型架构**：统一LLM驱动，支持API和本地模型
+- **阿里云API**：DashScope (qwen3.6-plus) - 云端API
+- **本地模型**：Ollama/vLLM/Transformers - 微调模型
+- **求解器**：PuLP + CBC (整数规划)
+- **Web**：Flask + Pydantic
+- **可视化**：Matplotlib
+- **Prompt管理**：自定义PromptManager
+- **RAG检索**：关键词匹配
 
 ---
 
 ## 7. 版本历史
+
+- **v6.1** (2026-04-10):
+  - **移除NetworkSnapshot**：简化架构，使用完整时刻表进行调度
+  - **新增调度器比较**：支持MIP/FCFS/最大延误优先/基线调度器对比
+  - **修复多个bug**：workflow_continue空值检查、求解器名称获取、调度器比较属性名等
+  - **FORCE_LLM_MODE改为False**：允许LLM失败时使用规则回退
+  - **优化推理输出**：显示正确的求解器名称和调度器比较结果
+
+- **v6.0** (2026-04-10):
+  - **架构重构：完全移除RuleAgent，统一使用LLM驱动**
+  - **新增：支持本地微调模型调用（Ollama/vLLM/Transformers）**
+  - **统一：单一LLMAgent，支持两种LLM调用方式**
+  - **优化：完整L1-L4工作流，不依赖规则回退**
+  - **配置：统一配置中心，支持API和本地模型切换**
+  - **完整性判定：采用方案A（车次+位置+场景+延误时间）**
+
+- **v5.1** (2026-04-10):
+  - 功能：L0层场景识别从规则改为LLM调用
+  - 功能：新增 `_llm_extraction()` 方法
+  - 功能：使用 `l0_preprocess_extractor` Prompt模板
+  - 修复：移除 `llm_workflow_engine_v2.py` 中的硬编码场景判断
+  - 修复：移除 `app.py` 中的硬编码场景判断
+  - 修复：前端响应格式匹配问题
+  - 修复：运行图中文字体缺失问题（改用英文标签）
+  - 修复：SchedulerComparator初始化参数错误
+  - 文档：更新README和架构文档
 
 - **v5.0** (2026-04-09):
   - 重构：删除所有冗余代码和重复workflow
@@ -362,6 +415,8 @@ data/
 
 ### 8.1 配置
 
+#### 方式1：使用阿里云API
+
 编辑 `config.py`：
 
 ```python
@@ -369,13 +424,25 @@ data/
 DASHSCOPE_API_KEY = "your-actual-api-key"
 
 # 选择模型
-DASHSCOPE_MODEL = "qwen-max"  # 或 "qwen3.5-27b"
+DASHSCOPE_MODEL = "qwen3.6-plus"
+```
 
-# 是否启用思考模式（仅qwen3/qwen-max支持）
-DASHSCOPE_ENABLE_THINKING = True
+#### 方式2：使用本地微调模型
 
-# 是否强制LLM模式（禁用规则回退）
-FORCE_LLM_MODE = True
+编辑 `config.py`：
+
+```python
+# 使用Ollama
+PROVIDER = "ollama"
+OLLAMA_MODEL = "qwen-finetuned"
+
+# 或使用vLLM
+PROVIDER = "vllm"
+VLLM_MODEL = "qwen-finetuned"
+
+# 或使用Transformers
+PROVIDER = "transformers"
+TRANSFORMERS_MODEL_PATH = "./models/qwen-finetuned"
 ```
 
 ### 8.2 启动Web服务
@@ -409,12 +476,15 @@ print(f"消息: {result.message}")
 
 ## 9. 注意事项
 
-1. **LLM不做最终决策**：PolicyEngine 做最终决策，LLM 只提供解释和建议
-2. **SnapshotBuilder 唯一入口**：所有 NetworkSnapshot 必须通过 SnapshotBuilder 构建
-3. **L1 只构建 AccidentCard**：不再构建 NetworkSnapshot，避免职责重叠
-4. **确定性逻辑优先**：Schedule、SnapshotBuilder、Solver选择使用确定性规则
-5. **FORCE_LLM_MODE**：正式实验时设为True，确保数据质量
-6. **思考模式支持**：仅qwen3系列和qwen-max支持enable_thinking
+1. **统一LLM驱动**：完全移除RuleAgent，所有功能基于LLM
+2. **LLM调用方式切换**：通过PROVIDER配置切换API和本地模型
+3. **完整性判定**：车次 + 位置 + 场景 + 延误时间（方案A）
+4. **工作流顺序**：L1 → L2 → L3 → L4
+5. **不使用NetworkSnapshot**：使用完整时刻表进行调度，简化架构
+6. **调度器比较**：analyze_with_comparison方法支持MIP/FCFS/最大延误优先/基线对比
+7. **FORCE_LLM_MODE=False**：LLM失败时可使用规则回退
+8. **思考模式支持**：仅qwen3系列和qwen-max支持enable_thinking
+9. **本地模型部署**：需要配置模型路径，使用Ollama/vLLM/Transformers部署
 
 ---
 
@@ -423,15 +493,17 @@ print(f"消息: {result.message}")
 ### 短期（1-2周）
 - 测试新版工作流引擎
 - 收集高质量微调样本
-- 完善领域知识库
+- 完成模型微调
+- 部署本地微调模型
 
 ### 中期（1-2月）
-- 使用收集的样本微调Qwen模型
 - 评估微调效果
 - 优化Prompt模板
+- 对比API和本地模型效果
+- 性能优化
 
 ### 长期（3-6月）
 - 升级RAG为向量检索
 - 支持多模型切换
 - 进行A/B测试验证效果
-- 性能优化
+- 前端代码重构

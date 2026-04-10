@@ -39,9 +39,53 @@ class Layer1DataModeling:
     不构建 NetworkSnapshot（由 SnapshotBuilder 负责）
     """
 
+    # 统一完整性判定规则：train + location + scene + delay_time（方案A）
+    # 理由：完整调度需要知道车次、位置、场景类型和预计延误时间
+    COMPLETENESS_REQUIRES_TRAIN = True
+    COMPLETENESS_REQUIRES_LOCATION = True
+    COMPLETENESS_REQUIRES_EVENT = True
+    COMPLETENESS_REQUIRES_DELAY_TIME = True
+
     def __init__(self):
         """初始化第一层"""
         self.prompt_adapter = get_llm_prompt_adapter()
+
+    @classmethod
+    def _check_completeness(cls, accident_card_data: Dict[str, Any]) -> tuple:
+        """
+        统一的完整性检查逻辑（方案A）
+
+        Args:
+            accident_card_data: 事故卡片数据字典
+
+        Returns:
+            tuple: (is_complete, missing_fields)
+        """
+        has_train = bool(accident_card_data.get("affected_train_ids"))
+        has_location = bool(
+            accident_card_data.get("location_code") or
+            accident_card_data.get("location_name")
+        )
+        has_event = bool(accident_card_data.get("scene_category"))
+        has_delay_time = bool(
+            accident_card_data.get("expected_duration") or
+            accident_card_data.get("start_time")
+        )
+
+        # 统一规则：train + location + scene + delay_time
+        is_complete = has_train and has_location and has_event and has_delay_time
+
+        missing_fields = []
+        if not has_train:
+            missing_fields.append("列车号")
+        if not has_location:
+            missing_fields.append("位置")
+        if not has_event:
+            missing_fields.append("事件类型")
+        if not has_delay_time:
+            missing_fields.append("延误时间")
+
+        return is_complete, missing_fields
 
     def execute(
         self,
@@ -217,23 +261,18 @@ class Layer1DataModeling:
                     acc_card_data["affected_section"] = f"{code}-{code}"
                     break
 
-        # 判断信息完整性
-        has_train = bool(acc_card_data.get("affected_train_ids"))
-        has_location = bool(acc_card_data.get("location_code") or acc_card_data.get("affected_section"))
-        has_event = bool(acc_card_data.get("fault_type") and acc_card_data.get("fault_type") != "未知")
+        # 提取延误时间（如果LLM没有提取到）
+        if not acc_card_data.get("expected_duration"):
+            delay_match = re.search(r'(\d+)\s*分钟', user_input)
+            if delay_match:
+                acc_card_data["expected_duration"] = int(delay_match.group(1))
+                logger.info(f"[_build_accident_card] 从用户输入提取延误时间: {acc_card_data['expected_duration']}分钟")
 
-        if not acc_card_data.get("is_complete"):
-            acc_card_data["is_complete"] = has_train and has_location and has_event
-
-        if not acc_card_data.get("missing_fields") and not acc_card_data["is_complete"]:
-            missing = []
-            if not has_train:
-                missing.append("列车号")
-            if not has_location:
-                missing.append("位置")
-            if not has_event:
-                missing.append("事件类型")
-            acc_card_data["missing_fields"] = missing
+        # 使用统一的完整性判定逻辑
+        if not acc_card_data.get("is_complete") or not acc_card_data.get("missing_fields"):
+            is_complete, missing_fields = self._check_completeness(acc_card_data)
+            acc_card_data["is_complete"] = is_complete
+            acc_card_data["missing_fields"] = missing_fields
 
         return AccidentCard(
             fault_type=acc_card_data.get("fault_type", "未知"),
@@ -244,6 +283,7 @@ class Layer1DataModeling:
             affected_train_ids=acc_card_data.get("affected_train_ids", []),
             is_complete=acc_card_data.get("is_complete", False),
             missing_fields=acc_card_data.get("missing_fields", []),
+            expected_duration=acc_card_data.get("expected_duration"),
             start_time=datetime.fromisoformat(acc_card_data.get("start_time", "2024-01-15T10:00:00")) if acc_card_data.get("start_time") else datetime.now()
         )
 
@@ -327,17 +367,16 @@ class Layer1DataModeling:
                         affected_section = f"{code}-{code}"
                         break
 
-        # 判断完整性（放宽条件：只要有列车号和位置即可）
-        has_train = bool(affected_train_ids)
-        has_location = bool(location_code)
-        # 故障类型可以推断为"未知"，不影响完整性
-        is_complete = has_train and has_location
-
-        missing_fields = []
-        if not has_train:
-            missing_fields.append("列车号")
-        if not has_location:
-            missing_fields.append("位置")
+        # 使用统一的完整性判定逻辑
+        accident_card_data = {
+            "affected_train_ids": affected_train_ids,
+            "location_code": location_code,
+            "location_name": location_name,
+            "scene_category": scene_category,
+            "fault_type": fault_type,
+            "expected_duration": expected_duration
+        }
+        is_complete, missing_fields = self._check_completeness(accident_card_data)
 
         return AccidentCard(
             fault_type=fault_type,
@@ -446,8 +485,15 @@ class Layer1DataModeling:
                 # 查找车站名称
                 station_name = self._get_station_name(location_code)
 
-                # 判断完整性
-                is_complete = bool(location_code and affected_train_ids)
+                # 使用统一的完整性判定逻辑
+                accident_card_data = {
+                    "affected_train_ids": affected_train_ids,
+                    "location_code": location_code,
+                    "location_name": station_name,
+                    "scene_category": scene_category,
+                    "fault_type": fault_type
+                }
+                is_complete, missing_fields = self._check_completeness(accident_card_data)
 
                 return AccidentCard(
                     fault_type=fault_type,
@@ -457,7 +503,7 @@ class Layer1DataModeling:
                     location_name=station_name,
                     affected_train_ids=affected_train_ids,
                     is_complete=is_complete,
-                    missing_fields=[] if is_complete else ["列车号" if not affected_train_ids else "位置"],
+                    missing_fields=missing_fields,
                     expected_duration=delay_seconds // 60 if delay_seconds else None,
                     start_time=datetime.now()
                 )

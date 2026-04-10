@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any
 import json
 
-from models.workflow_models import AccidentCard, NetworkSnapshot, DispatchContextMetadata
+from models.workflow_models import AccidentCard
 from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
 from config import LLMConfig
@@ -29,8 +29,6 @@ class Layer2Planner:
     def execute(
         self,
         accident_card: AccidentCard,
-        network_snapshot: NetworkSnapshot,
-        dispatch_metadata: DispatchContextMetadata,
         enable_rag: bool = True
     ) -> Dict[str, Any]:
         """
@@ -38,8 +36,6 @@ class Layer2Planner:
 
         Args:
             accident_card: 第一层生成的事故卡片
-            network_snapshot: 第一层生成的网络快照
-            dispatch_metadata: 调度上下文元数据
             enable_rag: 是否启用RAG
 
         Returns:
@@ -47,13 +43,13 @@ class Layer2Planner:
         """
         logger.info("[L2] Planner层")
 
-        # 构建Prompt上下文
+        # 构建Prompt上下文（仅使用accident_card）
         context = PromptContext(
             request_id=f"{accident_card.scene_category}_{accident_card.location_code}",
             scene_category=accident_card.scene_category,
             accident_card=accident_card.model_dump(),
-            network_snapshot=network_snapshot.model_dump(),
-            dispatch_context=dispatch_metadata.model_dump()
+            network_snapshot={},  # 暂不使用
+            dispatch_context={}   # 暂不使用
         )
 
         # 调用LLM

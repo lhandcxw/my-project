@@ -2,6 +2,8 @@
 """
 railway_agent - LLM-TTRA 铁路调度Agent模块
 基于大模型的列车时刻表重排系统
+
+v6.0: 统一LLM驱动架构，移除RuleAgent
 """
 
 # 主入口：工作流引擎（推荐）
@@ -10,8 +12,12 @@ from railway_agent.llm_workflow_engine_v2 import (
     create_workflow_engine
 )
 
-# Agent接口（兼容层）
-from railway_agent.agents import RuleAgent, create_rule_agent, AgentResult
+# Agent接口（统一LLM驱动）
+from railway_agent.agents import LLMAgent, create_llm_agent, AgentResult
+
+# 向后兼容导出（旧名称仍可用）
+RuleAgent = LLMAgent
+create_rule_agent = create_llm_agent
 
 # 技能系统
 from railway_agent.adapters.skill_registry import SkillRegistry, get_skill_registry
@@ -52,10 +58,13 @@ __all__ = [
     # 主入口：工作流引擎
     "LLMWorkflowEngineV2",
     "create_workflow_engine",
-    # Agent接口（兼容层）
+    # Agent接口（统一LLM驱动）
+    "LLMAgent",
+    "create_llm_agent",
+    "AgentResult",
+    # 向后兼容（旧名称）
     "RuleAgent",
     "create_rule_agent",
-    "AgentResult",
     # 工作流分层模块
     "Layer1DataModeling",
     "Layer2Planner",

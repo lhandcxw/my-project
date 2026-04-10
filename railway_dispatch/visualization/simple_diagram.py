@@ -221,10 +221,10 @@ def create_comparison_diagram(original_trains: List[Dict], optimized_trains: Lis
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(fig_width, fig_height * 2))
 
     # 绘制原始运行图
-    _draw_single_diagram(ax1, original_trains, f"原始时刻表 (Original)")
+    _draw_single_diagram(ax1, original_trains, "Original Timetable")
 
     # 绘制优化后运行图
-    _draw_single_diagram(ax2, optimized_trains, f"优化后时刻表 (Optimized)")
+    _draw_single_diagram(ax2, optimized_trains, "Optimized Timetable")
 
     plt.tight_layout()
 

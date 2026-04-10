@@ -1,16 +1,31 @@
 # LLM-TTRA: 大模型辅助列车时刻表重排系统
 
-基于阿里云Qwen大模型和整数规划的智能铁路调度优化系统（v5.0）。
+基于阿里云Qwen大模型和整数规划的智能铁路调度优化系统（v5.1）。
 
 ## 系统概述
 
 - **核心任务**: LLM-TTRA (Large Language Model assisted Train Timetable Rescheduling)
 - **部署规模**: 13站，147列列车（京广高铁北京西→安阳东）
 - **技术路线**: 阿里云Qwen API + Prompt + RAG + 整数规划
-- **大模型**: 阿里云DashScope (qwen-max/qwen3.5-27b)
+- **大模型**: 阿里云DashScope (qwen3.6-plus)
 - **求解器**: MIP（整数规划）、FCFS（先到先服务）、MaxDelayFirst（最大延误优先）
 - **Web框架**: Flask + Pydantic
 - **数据**: 真实高铁时刻表
+
+## v5.1 更新说明
+
+**LLM场景识别增强**:
+- L0层场景识别从规则改为LLM调用
+- 新增 `_llm_extraction()` 方法，调用 `l0_preprocess_extractor` 模板
+- LLM失败时自动回退到规则（受 FORCE_LLM_MODE 控制）
+- 移除 `llm_workflow_engine_v2.py` 和 `app.py` 中的硬编码场景判断规则
+
+**前端显示优化**:
+- 修复智能调度模块响应格式匹配问题
+- 运行图标题改为英文，避免中文字体缺失问题
+
+**其他修复**:
+- 修复 `SchedulerComparator` 初始化参数错误
 
 ## v5.0 重构说明
 
@@ -119,10 +134,11 @@ python web/app.py
 
 ## 核心工作流
 
-系统采用5层LLM决策架构：
+系统采用6层LLM决策架构：
 
 | 层级 | 模块 | 功能 | 说明 |
 |------|------|------|------|
+| L0 | layer1_data_modeling.py | 场景识别 | LLM提取scene_type/fault_type/station_code |
 | L1 | layer1_data_modeling.py | 数据建模 | LLM提取事故信息，构建AccidentCard |
 | SB | snapshot_builder.py | 快照构建 | 确定性构建NetworkSnapshot |
 | L2 | layer2_planner.py | Planner | LLM决策planning_intent |
@@ -226,6 +242,14 @@ Content-Type: application/json
 - **RAG检索**: 关键词匹配
 
 ## 版本历史
+
+- **v5.1** (2026-04-10):
+  - 功能：L0层场景识别从规则改为LLM调用
+  - 功能：新增 `_llm_extraction()` 方法
+  - 修复：前端响应格式匹配问题
+  - 修复：运行图中文字体缺失问题
+  - 修复：SchedulerComparator初始化参数错误
+  - 文档：更新README和架构文档
 
 - **v5.0** (2026-04-09):
   - 重构：删除所有冗余代码和重复workflow

@@ -434,15 +434,11 @@ class LLMWorkflowEngineV2:
     def execute_layer2(
         self,
         accident_card,
-        network_snapshot,
-        dispatch_metadata,
         enable_rag: bool = True
     ) -> Dict[str, Any]:
         """仅执行L2层"""
         return self.layer2.execute(
             accident_card=accident_card,
-            network_snapshot=network_snapshot,
-            dispatch_metadata=dispatch_metadata,
             enable_rag=enable_rag
         )
 
@@ -450,7 +446,6 @@ class LLMWorkflowEngineV2:
         self,
         planning_intent: str,
         accident_card,
-        network_snapshot,
         trains: Optional[List[Any]] = None,
         stations: Optional[List[Any]] = None
     ) -> Dict[str, Any]:
@@ -463,7 +458,6 @@ class LLMWorkflowEngineV2:
         return self.layer3.execute(
             planning_intent=planning_intent,
             accident_card=accident_card,
-            network_snapshot=network_snapshot,
             trains=trains,
             stations=stations
         )
