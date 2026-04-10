@@ -17,8 +17,8 @@ class LLMConfig:
     
     # 阿里云 DashScope 配置 - 开发阶段直接填写，完成后改为环境变量
     DASHSCOPE_API_KEY = "sk-bcf1668108cd4708b2f113d5073e42d4"  
-    DASHSCOPE_MODEL = "qwen3.5-27b"
-    DASHSCOPE_ENABLE_THINKING = True
+    DASHSCOPE_MODEL = "qwen3.6-plus"
+    DASHSCOPE_ENABLE_THINKING = True  # qwen3.6-plus 不支持深度思考模式  # 开启深度思考模式
     
     # 实验模式配置 - 强制LLM模式，禁用规则回退
     FORCE_LLM_MODE = True

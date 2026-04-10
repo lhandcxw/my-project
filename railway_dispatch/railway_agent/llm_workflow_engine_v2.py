@@ -333,9 +333,14 @@ class LLMWorkflowEngineV2:
                 import uuid
 
                 # 从accident_card提取信息构建canonical_request
+                from models.common_enums import SceneTypeCode
+                scene_type_code = SceneTypeCode.TEMP_SPEED_LIMIT if accident_card.scene_category == "临时限速" else SceneTypeCode.SUDDEN_FAILURE
+                if accident_card.scene_category == "区间封锁":
+                    scene_type_code = SceneTypeCode.SECTION_INTERRUPT
+                    
                 temp_request = CanonicalDispatchRequest(
                     request_id=str(uuid.uuid4()),
-                    scene_type_code="TEMP_SPEED_LIMIT" if "限速" in user_input or "风" in user_input or "雨" in user_input else "SUDDEN_FAILURE",
+                    scene_type_code=scene_type_code,
                     scene_type_label=accident_card.scene_category,
                     location=LocationInfo(
                         station_code=accident_card.location_code or "SJP",

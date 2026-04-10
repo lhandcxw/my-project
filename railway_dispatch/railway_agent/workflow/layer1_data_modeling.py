@@ -387,6 +387,97 @@ class Layer1DataModeling:
 
         return questions
 
+    def _llm_extraction(self, user_input: str) -> Optional[AccidentCard]:
+        """
+        使用LLM提取事故信息（L0功能）
+
+        Args:
+            user_input: 用户输入
+
+        Returns:
+            AccidentCard: 提取的事故卡片，如果失败返回None
+        """
+        try:
+            logger.info("[L0] 使用LLM提取事故信息")
+
+            # 构建Prompt上下文
+            context = PromptContext(
+                request_id="",
+                user_input=user_input,
+                source_type="natural_language"
+            )
+
+            # 调用LLM提取
+            response = self.prompt_adapter.execute_prompt(
+                template_id="l0_preprocess_extractor",
+                context=context,
+                enable_rag=False  # L0阶段不启用RAG，提高速度
+            )
+
+            if response.is_valid and response.parsed_output:
+                llm_result = response.parsed_output
+                logger.info(f"[L0] LLM提取成功: {llm_result}")
+
+                # 解析LLM结果
+                scene_type_mapping = {
+                    "TEMP_SPEED_LIMIT": "临时限速",
+                    "SUDDEN_FAILURE": "突发故障",
+                    "SECTION_INTERRUPT": "区间封锁"
+                }
+                fault_type_mapping = {
+                    "WIND": "大风",
+                    "RAIN": "暴雨",
+                    "SNOW": "大雪",
+                    "EQUIPMENT_FAILURE": "设备故障",
+                    "SIGNAL_FAILURE": "信号故障",
+                    "CATENARY_FAILURE": "接触网故障",
+                    "DELAY": "预计晚点"
+                }
+
+                scene_category = scene_type_mapping.get(llm_result.get("scene_type", ""), "突发故障")
+                fault_type = fault_type_mapping.get(llm_result.get("fault_type", ""), "未知")
+                location_code = llm_result.get("station_code", "")
+                delay_seconds = llm_result.get("delay_seconds", 0)
+
+                # 提取列车号（从用户输入中提取，因为LLM可能不返回）
+                train_matches = re.findall(r'([GCDZ]\d+)', user_input)
+                affected_train_ids = train_matches if train_matches else []
+
+                # 查找车站名称
+                station_name = self._get_station_name(location_code)
+
+                # 判断完整性
+                is_complete = bool(location_code and affected_train_ids)
+
+                return AccidentCard(
+                    fault_type=fault_type,
+                    scene_category=scene_category,
+                    affected_section=f"{location_code}-{location_code}" if location_code else "",
+                    location_code=location_code,
+                    location_name=station_name,
+                    affected_train_ids=affected_train_ids,
+                    is_complete=is_complete,
+                    missing_fields=[] if is_complete else ["列车号" if not affected_train_ids else "位置"],
+                    expected_duration=delay_seconds // 60 if delay_seconds else None,
+                    start_time=datetime.now()
+                )
+            else:
+                logger.warning(f"[L0] LLM提取失败: {response.error}")
+                return None
+
+        except Exception as e:
+            logger.error(f"[L0] LLM提取异常: {str(e)}")
+            return None
+
+    def _get_station_name(self, station_code: str) -> str:
+        """根据车站代码获取车站名称"""
+        code_to_name = {
+            "BJX": "北京西", "DJK": "杜家坎线路所", "ZBD": "涿州东", "GBD": "高碑店东",
+            "XSD": "徐水东", "BDD": "保定东", "DZD": "定州东", "ZDJ": "正定机场",
+            "SJP": "石家庄", "GYX": "高邑西", "XTD": "邢台东", "HDD": "邯郸东", "AYD": "安阳东"
+        }
+        return code_to_name.get(station_code, "")
+
     def build_canonical_request_from_input(
         self,
         user_input: str
@@ -406,9 +497,34 @@ class Layer1DataModeling:
         """
         from models.preprocess_models import CanonicalDispatchRequest, LocationInfo, CompletenessInfo
         from models.common_enums import RequestSourceType, SceneTypeCode, FaultTypeCode
+        from config import LLMConfig
         
-        # 步骤1：使用规则提取事故卡片（L0功能）
-        accident_card = self._fallback_extraction(user_input)
+        # 步骤1：优先使用LLM提取事故卡片（L0功能）
+        if LLMConfig.FORCE_LLM_MODE:
+            # 强制LLM模式：直接调用LLM
+            accident_card = self._llm_extraction(user_input)
+            if accident_card and accident_card.is_complete:
+                logger.info("[L0] LLM提取成功，使用LLM结果")
+            elif accident_card:
+                logger.warning("[L0] LLM提取结果不完整，尝试规则补充")
+                # LLM结果不完整，用规则补充
+                fallback_card = self._fallback_extraction(user_input)
+                # 合并结果，优先使用LLM结果
+                accident_card = self._merge_accident_cards(accident_card, fallback_card)
+            else:
+                logger.warning("[L0] LLM提取失败，使用规则回退")
+                accident_card = self._fallback_extraction(user_input)
+        else:
+            # 非强制模式：优先尝试LLM，失败则回退到规则
+            accident_card = self._llm_extraction(user_input)
+            if not accident_card or not accident_card.is_complete:
+                logger.info("[L0] LLM提取失败或结果不完整，使用规则回退")
+                fallback_card = self._fallback_extraction(user_input)
+                if accident_card:
+                    # 合并结果
+                    accident_card = self._merge_accident_cards(accident_card, fallback_card)
+                else:
+                    accident_card = fallback_card
         
         # 映射场景类型
         scene_type_mapping = {

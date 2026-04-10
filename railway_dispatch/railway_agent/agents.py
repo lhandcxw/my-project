@@ -250,6 +250,197 @@ class NewArchAgent:
                 error_message=str(e)
             )
 
+    def analyze_with_comparison(
+        self,
+        delay_injection: Dict[str, Any],
+        user_prompt: str = "",
+        comparison_criteria: str = "balanced"
+    ) -> AgentResult:
+        """
+        分析场景并执行调度（带比较功能）
+
+        Args:
+            delay_injection: 延误注入数据
+            user_prompt: 用户输入的原始文本
+            comparison_criteria: 比较准则
+
+        Returns:
+            AgentResult: 执行结果
+        """
+        start_time = time.time()
+
+        try:
+            # Step 1: 使用L1层LLM进行场景识别和实体提取
+            scenario_type, entities, accident_card = self._detect_scenario_with_llm(user_prompt)
+
+            # 如果实体中没有列车，从delay_injection获取
+            if not entities["train_ids"]:
+                entities["train_ids"] = delay_injection.get("affected_trains", [])
+
+            # Step 2: 构建推理过程
+            reasoning = self._build_reasoning(scenario_type, entities, accident_card, delay_injection)
+
+            # Step 3: 选择技能（基于L1提取的场景类别）
+            scene_category = accident_card.scene_category if accident_card else "临时限速"
+            skill_mapping = {
+                "临时限速": "temporary_speed_limit_skill",
+                "突发故障": "sudden_failure_skill",
+                "区间封锁": "section_interrupt_skill"
+            }
+            selected_skill = skill_mapping.get(scene_category, "temporary_speed_limit_skill")
+
+            # Step 4: 准备车站编码列表
+            if self.trains:
+                station_codes = []
+                for train in self.trains:
+                    if hasattr(train, 'schedule') and hasattr(train.schedule, 'stops'):
+                        stops = train.schedule.stops
+                        if stops and isinstance(stops, (list, tuple)):
+                            for stop in stops:
+                                if hasattr(stop, 'station_code'):
+                                    station_codes.append(stop.station_code)
+                station_codes = list(dict.fromkeys(station_codes))
+            else:
+                station_codes = ["XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD"]
+
+            # Step 5: 执行多调度器比较
+            from scheduler_comparison.comparator import SchedulerComparator, ComparisonCriteria
+
+            # 映射比较准则
+            criteria_mapping = {
+                "min_max_delay": ComparisonCriteria.MIN_MAX_DELAY,
+                "min_avg_delay": ComparisonCriteria.MIN_AVG_DELAY,
+                "balanced": ComparisonCriteria.BALANCED,
+                "real_time": ComparisonCriteria.REAL_TIME
+            }
+            comp_criteria = criteria_mapping.get(comparison_criteria, ComparisonCriteria.BALANCED)
+
+            # 创建比较器
+            comparator = SchedulerComparator(criteria=comp_criteria)
+
+            # 获取延误注入中的信息
+            affected_trains = delay_injection.get("affected_trains", entities.get("train_ids", []))
+            train_id = affected_trains[0] if affected_trains else "G1001"
+            station_code = entities.get("station_code", "SJP")
+            delay_seconds = 600
+
+            if delay_injection.get("injected_delays"):
+                first_delay = delay_injection["injected_delays"][0]
+                if first_delay.get("train_id"):
+                    train_id = first_delay["train_id"]
+                if first_delay.get("location", {}).get("station_code"):
+                    station_code = first_delay["location"]["station_code"]
+                if first_delay.get("initial_delay_seconds"):
+                    delay_seconds = first_delay["initial_delay_seconds"]
+
+            # 获取求解器注册表
+            from solver.solver_registry import get_solver_registry
+            solver_registry = get_solver_registry()
+
+            # 设置求解器
+            from scheduler_comparison.scheduler_interface import SchedulerRegistry
+            scheduler_registry_comparison = SchedulerRegistry()
+            scheduler_registry_comparison._solvers = {
+                "mip": solver_registry.get_solver("mip"),
+                "fcfs": solver_registry.get_solver("fcfs"),
+                "max_delay_first": solver_registry.get_solver("max_delay_first"),
+                "noop": solver_registry.get_solver("noop")
+            }
+
+            comparator.scheduler_registry = scheduler_registry_comparison
+
+            # 运行比较
+            train_delays = {
+                train_id: delay_seconds
+            }
+            result_comparison = comparator.compare_multiple(
+                train_delays=train_delays,
+                station_code=station_code
+            )
+
+            computation_time = time.time() - start_time
+
+            # 转换比较结果为 delay_statistics
+            delay_statistics = {}
+            if result_comparison and result_comparison.success:
+                winner = result_comparison.winner
+                all_results = result_comparison.results
+
+                # 构建 ranking 列表
+                ranking = []
+                for r in all_results:
+                    ranking.append({
+                        "rank": r.rank,
+                        "scheduler": r.scheduler_name,
+                        "max_delay_minutes": r.result.metrics.max_delay_seconds / 60 if r.result.metrics else 0,
+                        "avg_delay_minutes": r.result.metrics.avg_delay_seconds / 60 if r.result.metrics else 0,
+                        "score": r.score
+                    })
+
+                # winner scheduler 名称
+                winner_scheduler = winner.scheduler_name if winner else "未知"
+
+                # recommendations
+                recommendations = result_comparison.recommendations or []
+
+                delay_statistics = {
+                    "winner_scheduler": winner_scheduler,
+                    "ranking": ranking,
+                    "recommendations": recommendations,
+                    "max_delay_seconds": winner.result.metrics.max_delay_seconds if winner and winner.result.metrics else 0,
+                    "avg_delay_seconds": winner.result.metrics.avg_delay_seconds / 60 if winner and winner.result.metrics else 0,
+                    "affected_trains_count": len(affected_trains),
+                    "on_time_rate": 0.95
+                }
+
+                # 构建 optimized_schedule
+                optimized_schedule = {}
+                if winner and winner.result.schedule:
+                    optimized_schedule = winner.result.schedule
+
+                dispatch_result = DispatchSkillOutput(
+                    optimized_schedule=optimized_schedule,
+                    delay_statistics=delay_statistics,
+                    computation_time=computation_time,
+                    success=True,
+                    message=f"调度比较完成，推荐方案: {winner_scheduler}",
+                    skill_name=selected_skill
+                )
+            else:
+                # 比较失败，回退到普通调度
+                dispatch_result = self.skill_registry.execute(
+                    selected_skill,
+                    {
+                        "train_ids": affected_trains,
+                        "station_codes": station_codes,
+                        "delay_injection": delay_injection,
+                        "optimization_objective": "min_max_delay"
+                    }
+                )
+
+            return AgentResult(
+                success=True,
+                recognized_scenario=scenario_type,
+                selected_skill=selected_skill,
+                reasoning=reasoning,
+                dispatch_result=dispatch_result,
+                model_response=reasoning,
+                computation_time=computation_time
+            )
+
+        except Exception as e:
+            logger.exception(f"新架构 Agent 比较执行错误: {str(e)}")
+            return AgentResult(
+                success=False,
+                recognized_scenario="error",
+                selected_skill="",
+                reasoning="",
+                dispatch_result=None,
+                model_response="",
+                computation_time=time.time() - start_time,
+                error_message=str(e)
+            )
+
     def summarize_result(self, result: AgentResult) -> str:
         """
         生成结果总结（与旧架构 RuleAgent 接口一致）

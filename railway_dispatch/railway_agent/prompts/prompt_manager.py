@@ -366,8 +366,6 @@ class PromptManager:
 
 描述：{user_input}
 
-已知信息：{canonical_request}
-
 车站名称到站码的映射：
 - 北京西 -> BJX, 杜家坎线路所 -> DJK, 涿州东 -> ZBD, 高碑店东 -> GBD
 - 徐水东 -> XSD, 保定东 -> BDD, 定州东 -> DZD, 正定机场 -> ZDJ

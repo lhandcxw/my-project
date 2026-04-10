@@ -116,18 +116,17 @@
                 document.getElementById('dispatchLoading').style.display = 'none';
 
                 if (result.success) {
-                    // 转换为统一格式，添加空值检查
-                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
+                    // 智能调度模块返回格式直接使用
                     const unified = {
                         success: true,
-                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
-                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
-                        reasoning: '基于自然语言输入执行智能调度',
-                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
-                        message: skillMessage,
-                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
-                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
-                        original_schedule: result.original_schedule
+                        recognized_scenario: result.recognized_scenario || '',
+                        selected_skill: result.selected_skill || '',
+                        reasoning: result.reasoning || '',
+                        delay_statistics: result.delay_statistics || {},
+                        message: result.message || '',
+                        computation_time: result.computation_time || 0,
+                        optimized_schedule: result.optimized_schedule || {},
+                        original_schedule: result.original_schedule || {}
                     };
                     showDispatchResult(unified);
                 } else {
@@ -601,23 +600,11 @@
             })
             .then(response => response.json())
             .then(result => {
-                document.getElementById('dispatchLoading').style.display = 'none';
+                document.getElementById('comparisonLoading').style.display = 'none';
 
-                if (result.success) {
-                    // 转换为统一格式，添加空值检查
-                    const skillMessage = result.skill_result && result.skill_result.message ? result.skill_result.message : '';
-                    const unified = {
-                        success: true,
-                        recognized_scenario: result.planner ? result.planner.recognized_scenario : '',
-                        selected_skill: skillMessage.includes('限速') ? 'temporary_speed_limit_skill' : 'sudden_failure_skill',
-                        reasoning: '基于自然语言输入执行调度优化',
-                        delay_statistics: result.skill_result ? result.skill_result.delay_statistics : {},
-                        message: skillMessage,
-                        computation_time: result.skill_result ? result.skill_result.computation_time : 0,
-                        optimized_schedule: result.skill_result ? result.skill_result.optimized_schedule : {},
-                        original_schedule: result.original_schedule
-                    };
-                    showDispatchResult(unified);
+                if (result.success && result.comparison) {
+                    // 显示比较报告
+                    displayComparisonReport(result);
                 } else {
                     alert('执行失败: ' + result.message);
                 }
