@@ -17,6 +17,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.data_models import Train, Station, DelayInjection
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,18 @@ class MIPScheduler:
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,  # 追踪间隔 - 3分钟（高铁设计标准）
-        min_stop_time: int = 60,   # 最小停站时间 - 1分钟
-        min_headway_time: int = 180  # 最小安全间隔 - 3分钟
+        headway_time: int = None,  # 追踪间隔 - 从配置读取
+        min_stop_time: int = None,   # 最小停站时间 - 从配置读取
+        min_headway_time: int = None  # 最小安全间隔 - 从配置读取
     ):
+        # 从统一配置加载默认值
+        if headway_time is None:
+            headway_time = DispatchEnvConfig.headway_time()
+        if min_stop_time is None:
+            min_stop_time = DispatchEnvConfig.min_stop_time()
+        if min_headway_time is None:
+            min_headway_time = DispatchEnvConfig.min_headway_time()
+
         self.trains = trains
         self.stations = stations
         self.headway_time = headway_time
@@ -100,7 +109,9 @@ class MIPScheduler:
 
     def _get_min_section_time(self, from_station: str, to_station: str) -> int:
         key = (from_station, to_station)
-        return self.min_running_times.get(key, 600)
+        # 从配置读取默认区间运行时间（默认10分钟）
+        default_section_time = DispatchEnvConfig.get("defaults.section_running_time", 600)
+        return self.min_running_times.get(key, default_section_time)
 
     def _get_original_stop_duration(self, train: Train, station_code: str) -> int:
         """获取列车在指定站的原始停站时间（秒）"""
@@ -254,8 +265,10 @@ class MIPScheduler:
                 else:
                     # 多股道：使用简化模型
                     # 虽然有多股道，但咽喉区能力有限，仍需按顺序发车
-                    # 约束：相邻两列车发车间隔至少为 headway_time * 0.5（咽喉区通行时间）
-                    prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + max(60, self.headway_time // 3)
+                    # 约束：相邻两列车发车间隔从配置读取
+                    min_interval = DispatchEnvConfig.get("constraints.min_departure_interval", 60)
+                    headway_factor = DispatchEnvConfig.get("constraints.multi_track_headway_factor", 3)
+                    prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + max(min_interval, self.headway_time // headway_factor)
 
         # 5. 第一站到达时间约束（修正：允许受影响列车在注入站延误）
         for t in self.trains:

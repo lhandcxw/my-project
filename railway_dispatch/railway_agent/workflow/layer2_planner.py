@@ -204,19 +204,24 @@ class Layer2Planner:
             solver_candidates = [main_skill] + [s for s in valid_solvers if s != main_skill]
             preferred_solver = main_skill
         else:
-            # 规则校验：根据场景类型确定主技能
+            # 规则校验：根据场景类型确定主技能和求解器
             if scene_category == "临时限速":
                 main_skill = "mip"
             elif scene_category == "突发故障":
                 main_skill = "fcfs"
             elif scene_category == "区间封锁":
-                main_skill = "noop"
+                # 区间中断场景：使用section_interrupt_skill（这是一个skill，不是solver）
+                # section_interrupt_skill内部会使用FCFS solver进行调度
+                main_skill = "section_interrupt"
             else:
                 main_skill = self._intent_to_solver(planning_intent)
-            logger.info(f"[L2] 使用规则确定的solver: {main_skill}")
-            # 默认候选列表
-            solver_candidates = ["mip", "fcfs", "noop"]
-            preferred_solver = main_skill
+            logger.info(f"[L2] 使用规则确定的skill: {main_skill}")
+
+            # valid_solvers只包含求解器（mip, fcfs, max_delay_first, noop）
+            # 注意：section_interrupt是一个skill，不是solver，所以不在solver_candidates中
+            # section_interrupt_skill内部会使用FCFS solver
+            solver_candidates = ["mip", "fcfs", "max_delay_first", "noop"]
+            preferred_solver = main_skill if main_skill in solver_candidates else "fcfs"
 
         # 如果有 LLM 提供的原始候选列表，使用它
         if solver_candidates_raw and isinstance(solver_candidates_raw, list):
@@ -242,6 +247,6 @@ class Layer2Planner:
         intent_solver_map = {
             "recalculate_corridor_schedule": "mip",
             "recover_from_disruption": "fcfs",
-            "handle_section_block": "noop"
+            "handle_section_block": "section_interrupt"  # 区间封锁使用section_interrupt技能
         }
         return intent_solver_map.get(planning_intent, "mip")

@@ -1,0 +1,209 @@
+# 铁路调度环境配置文件
+# 列车调度复杂建模环境参数配置
+
+# ============================================
+# 核心调度约束参数
+# ============================================
+constraints:
+  # 追踪间隔时间（秒）
+  # 定义：同方向相邻两列车之间的最小安全时间间隔
+  # 高铁设计标准：180秒（3分钟）
+  headway_time: 180
+
+  # 最小停站时间（秒）
+  # 定义：列车在车站的最短停靠时间
+  # 默认值：60秒（1分钟）
+  min_stop_time: 60
+
+  # 最小安全间隔（秒）
+  # 定义：列车之间的绝对最小安全时间间隔
+  # 用于多股道车站的简化模型计算
+  min_headway_time: 180
+
+  # 停站冗余利用比例（0.0-1.0）
+  # 定义：FCFS调度器可压缩的停站时间比例
+  # 例如：0.5表示最多可利用50%的冗余停站时间
+  stop_time_redundancy_ratio: 0.5
+
+  # 区间运行冗余利用比例（0.0-1.0）
+  # 定义：FCFS调度器可压缩的区间运行时间比例
+  # 例如：0.3表示最多可利用30%的冗余运行时间
+  running_time_redundancy_ratio: 0.3
+
+  # 多股道车站发车间隔系数
+  # 定义：多股道车站的追踪间隔 = headway_time // multi_track_headway_factor
+  multi_track_headway_factor: 3
+
+  # 最小发车间隔（秒）
+  # 定义：多股道车站的最小发车间隔下限
+  min_departure_interval: 60
+
+  # 默认最小区间运行时间（秒）
+  # 当无法从时刻表计算时使用
+  default_min_section_time: 600  # 10分钟
+
+  # 默认停站时间（秒）
+  default_stop_time: 180  # 3分钟
+
+  # 最小停站时间计算系数
+  # 实际最小停站时间 = max(min_stop_time, original_duration * min_stop_ratio)
+  min_stop_ratio: 0.5
+
+  # 最小区间运行时间系数
+  # 用于计算最小区间运行时间 = standard_time * min_section_time_ratio
+  min_section_time_ratio: 0.9
+
+# ============================================
+# 延误等级定义
+# ============================================
+delay_levels:
+  # 微延误：[0, 5) 分钟
+  micro:
+    min_minutes: 0
+    max_minutes: 5
+    code: "0"
+
+  # 小延误：[5, 30) 分钟
+  small:
+    min_minutes: 5
+    max_minutes: 30
+    code: "5"
+
+  # 中等延误：[30, 100) 分钟
+  medium:
+    min_minutes: 30
+    max_minutes: 100
+    code: "30"
+
+  # 大延误：[100, +∞) 分钟
+  large:
+    min_minutes: 100
+    max_minutes: 9999
+    code: "100"
+
+# ============================================
+# 求解器配置
+# ============================================
+solver:
+  # MIP求解器配置
+  mip:
+    # 求解时间限制（秒）
+    time_limit: 300
+
+    # 最优性间隙（0.0-1.0）
+    # 例如：0.01表示在最优解的1%范围内停止
+    optimality_gap: 0.01
+
+    # 是否启用详细日志
+    verbose: false
+
+  # FCFS求解器配置
+  fcfs:
+    # 是否启用延误传播计算
+    enable_delay_propagation: true
+
+    # 是否启用停站冗余利用
+    enable_stop_redundancy: true
+
+    # 是否启用区间运行冗余利用
+    enable_running_redundancy: true
+
+  # MaxDelayFirst求解器配置
+  max_delay_first:
+    # 优先处理延误阈值（秒）
+    # 超过此阈值的列车将优先处理
+    priority_delay_threshold: 1800  # 30分钟
+
+    # 最大迭代次数
+    max_iterations: 10
+
+    # 每次最大压缩时间（秒）
+    max_compression_per_step: 30
+
+    # 最大停站压缩时间（秒）
+    max_stop_compression: 60
+
+# ============================================
+# 车站默认配置
+# ============================================
+station_defaults:
+  # 默认股道数量
+  default_track_count: 2
+
+  # 站台占用时间（秒）
+  # 列车进站前和出站后的额外占用时间
+  platform_occupancy_time: 300  # 5分钟
+
+  # 最大冗余时间（秒）
+  max_station_slack: 300  # 5分钟
+
+  # 最大区间冗余时间（秒）
+  max_section_slack: 180  # 3分钟
+
+# ============================================
+# 系统规模约束
+# ============================================
+system_limits:
+  # 最大车站数量
+  max_stations: 20
+
+  # 最大列车数量
+  max_trains: 200
+
+  # 最大延误注入数量
+  max_delay_injections: 50
+
+# ============================================
+# 场景类型配置
+# ============================================
+scenario_types:
+  temporary_speed_limit:
+    name: "临时限速"
+    default_solver: "mip"
+    default_speed_kmh: 200
+    default_duration_minutes: 120
+
+  sudden_failure:
+    name: "突发故障"
+    default_solver: "fcfs"
+    default_repair_time_minutes: 60
+
+  section_interrupt:
+    name: "区间封锁"
+    default_solver: "noop"
+
+# ============================================
+# 验证器配置
+# ============================================
+validator:
+  # 标准区间运行时间（秒）
+  # 用于验证调度方案的合理性
+  standard_section_times:
+    - from: "BJP"
+      to: "TJG"
+      time: 900  # 15分钟
+
+    - from: "TJG"
+      to: "JNZ"
+      time: 2400  # 40分钟
+
+    - from: "JNZ"
+      to: "NJH"
+      time: 4200  # 70分钟
+
+    - from: "NJH"
+      to: "SHH"
+      time: 3600  # 60分钟
+
+# ============================================
+# 日志配置
+# ============================================
+logging:
+  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+
+  # 是否记录详细求解过程
+  verbose_solver: false
+
+  # 是否记录LLM调用详情
+  verbose_llm: false

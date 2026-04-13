@@ -71,7 +71,7 @@ skills = create_skills(scheduler)
 evaluator = Evaluator()
 
 # 从统一配置中心导入配置
-from config import AppConfig, LLMConfig, get_config_summary, validate_config
+from config import AppConfig, LLMConfig, DispatchEnvConfig, get_config_summary, validate_config
 
 # 验证配置（失败时明确报错并终止）
 validate_config()
@@ -373,6 +373,19 @@ def agent_chat():
         delay_injection = parse_user_prompt(prompt)
         logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
 
+        # 检查关键信息是否缺失
+        missing_info = []
+        if not delay_injection.get("affected_trains"):
+            missing_info.append("列车号（如：G1563）")
+        if not delay_injection.get("injected_delays"):
+            missing_info.append("延误时间（如：延误10分钟）")
+        if missing_info:
+            logger.warning(f"用户输入缺少必要信息: {missing_info}")
+            return jsonify({
+                "success": False,
+                "message": f"请提供以下信息：{', '.join(missing_info)}"
+            })
+
         # 调用Agent分析（LLM驱动，传入原始prompt）
         result = agent.analyze(delay_injection, user_prompt=prompt)
 
@@ -493,11 +506,12 @@ def parse_user_prompt(prompt: str) -> dict:
     train_ids = re.findall(train_pattern, prompt)
     delays = re.findall(delay_pattern, prompt)
 
-    # 如果没有提取到，使用默认
+    # 如果没有提取到关键信息，不再使用默认值，而是设置为空
+    # 这样后续流程可以检测到缺失并提示用户
     if not train_ids:
-        train_ids = ['G1001']
+        train_ids = []  # 不再使用['G1001']作为默认值
     if not delays:
-        delays = ['600']
+        delays = []  # 不再使用['600']作为默认值
 
     # 提取车站信息
     # 车站名称到代码的映射
@@ -517,21 +531,83 @@ def parse_user_prompt(prompt: str) -> dict:
         "安阳东": "AYD", "ayd": "AYD"
     }
 
-    # 尝试从输入中提取车站
-    detected_station_code = None
-    for name, code in station_name_to_code.items():
-        if name in prompt:
-            detected_station_code = code
-            break
+    # 创建反向映射（代码到名称）
+    code_to_station = {code: name for name, code in station_name_to_code.items()}
 
-    # 如果没有检测到车站，使用默认第一个车站
+    # 尝试提取区间（使用正则匹配区间格式）
+    # 匹配格式：A到B、A至B、A-B、A和B、A与B等，以及站码格式
+    detected_section_id = None
+    detected_station_code = None
+    location_type = "station"  # 默认为车站
+
+    section_patterns = [
+        # 站码区间：XSD-BDD、XSD-BDD区间、XSD到BDD
+        r'([A-Z]{3})[－\-至到]\s*([A-Z]{3})(?:区间|段)?',
+        # 中文车站名：石家庄到保定东
+        r'([^与和－\-]{2,})[－\-到至]\s*([^与和－\-]{2,})(?:站|线路所|区间|段)?',
+        # 中文车站名（之间）：涿州东与高碑店东之间
+        r'([^与和－\-]{2,})[与和]\s*([^与和－\-]{2,})(?:站|线路所)?(?:之间)?',
+    ]
+
+    for pattern in section_patterns:
+        section_match = re.search(pattern, prompt)
+        if section_match:
+            station1 = section_match.group(1).strip()
+            station2 = section_match.group(2).strip()
+
+            # 查找两个站点的代码和名称
+            code1, code2 = None, None
+            name1, name2 = None, None
+
+            # 优先匹配站码
+            if station1 in code_to_station:
+                code1 = station1
+                name1 = code_to_station[station1]
+            else:
+                # 匹配中文名称（精确匹配）
+                for station_name, code in station_name_to_code.items():
+                    if station1 == station_name or station_name in station1:
+                        code1 = code
+                        name1 = station_name
+                        break
+
+            if station2 in code_to_station:
+                code2 = station2
+                name2 = code_to_station[station2]
+            else:
+                # 匹配中文名称（精确匹配）
+                for station_name, code in station_name_to_code.items():
+                    if station2 == station_name or station_name in station2:
+                        code2 = code
+                        name2 = station_name
+                        break
+
+            # 如果找到两个站点，构建区间ID
+            if code1 and code2:
+                detected_section_id = f"{code1}-{code2}"
+                detected_station_code = code1  # 使用第一个站作为车站代码
+                location_type = "section"
+                logger.info(f"[parse_user_prompt] 提取到区间: {detected_section_id} ({name1}-{name2})")
+                break
+
+    # 如果没有提取到区间，尝试提取单个车站
+    if not detected_section_id:
+        for name, code in station_name_to_code.items():
+            if name in prompt:
+                detected_station_code = code
+                location_type = "station"
+                logger.info(f"[parse_user_prompt] 提取到车站: {code} ({name})")
+                break
+
+    # 如果没有检测到车站，设置为None，让后续流程处理
     if detected_station_code is None:
-        detected_station_code = "BJX"  # 使用北京西作为默认车站
+        detected_station_code = None  # 不再使用"BJX"作为默认值
 
     # 构建DelayInjection
     injected_delays = []
     for i, train_id in enumerate(train_ids):
-        delay_seconds = int(delays[i]) * 60 if i < len(delays) else 600
+        # 如果没有延误信息，设置为None，让后续流程处理
+        delay_seconds = int(delays[i]) * 60 if i < len(delays) and delays[i] else None
 
         # 验证列车是否停靠在选定的车站
         # 如果不停靠，使用列车的第一个停靠站
@@ -542,41 +618,73 @@ def parse_user_prompt(prompt: str) -> dict:
                 break
 
         actual_station_code = detected_station_code
-        if train and train.schedule:
+
+        # 如果没有检测到车站代码，尝试从列车的时刻表中获取
+        if not actual_station_code:
+            if train and train.schedule and train.schedule.stops and len(train.schedule.stops) > 0:
+                # 使用列车的第一个停靠站
+                first_stop = train.schedule.stops[0]
+                if hasattr(first_stop, 'station_code'):
+                    actual_station_code = first_stop.station_code
+                    logger.info(f"未检测到车站代码，使用列车 {train_id} 的第一个停靠站: {actual_station_code}")
+
+        # 如果有检测到的车站代码，检查列车是否停靠
+        if actual_station_code and train and train.schedule:
             # 检查列车是否停靠在选定车站（增强安全性检查）
             train_stations = []
             if train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
                 train_stations = [stop.station_code for stop in train.schedule.stops if hasattr(stop, 'station_code')]
-            if detected_station_code not in train_stations and train_stations:
+            if detected_station_code and detected_station_code not in train_stations and train_stations:
                 # 使用列车的第一个停靠站
                 first_stop = train.schedule.stops[0]
                 if hasattr(first_stop, 'station_code'):
                     actual_station_code = first_stop.station_code
                     logger.warning(f"列车 {train_id} 不停靠在 {detected_station_code}，使用 {actual_station_code} 作为延误车站")
         elif not train:
-            logger.warning(f"列车 {train_id} 不在列车列表中，使用默认车站 {detected_station_code}")
+            logger.warning(f"列车 {train_id} 不在列车列表中，使用检测的车站 {actual_station_code}")
         elif not train.schedule:
-            logger.warning(f"列车 {train_id} 没有时刻表信息，使用默认车站 {detected_station_code}")
+            logger.warning(f"列车 {train_id} 没有时刻表信息，使用检测的车站 {actual_station_code}")
 
-        injected_delays.append({
-            "train_id": train_id,
-            "location": {"location_type": "station", "station_code": actual_station_code},
-            "initial_delay_seconds": delay_seconds,
-            "timestamp": "2024-01-15T10:00:00Z"
-        })
+        # 只有当delay_seconds不为None时才添加延误
+        if delay_seconds is not None and actual_station_code is not None:
+            # 根据位置类型构建location对象
+            if location_type == "section" and detected_section_id:
+                location_obj = {"location_type": "section", "section_id": detected_section_id}
+            else:
+                location_obj = {"location_type": "station", "station_code": actual_station_code}
+            injected_delays.append({
+                "train_id": train_id,
+                "location": location_obj,
+                "initial_delay_seconds": delay_seconds,
+                "timestamp": "2024-01-15T10:00:00Z"
+            })
 
     # 构建完整的delay_injection
     if scenario_type == 'temporary_speed_limit':
+        # 如果没有车站代码，提供默认值但不影响关键功能
+        station_code_for_section = detected_station_code if detected_station_code else "UNKNOWN"
+
+        scenario_params = {}
+        # 只有当检测到车站时，才设置scenario_params
+        if detected_station_code:
+            scenario_params = {
+                "limit_speed_kmh": DispatchEnvConfig.scenario_temporary_speed_limit_default_speed(),
+                "duration_minutes": DispatchEnvConfig.scenario_temporary_speed_limit_default_duration(),
+                "affected_section": f"{station_code_for_section} -> {station_code_for_section}"
+            }
+        else:
+            # 没有车站信息时，只设置必要的参数
+            scenario_params = {
+                "limit_speed_kmh": DispatchEnvConfig.scenario_temporary_speed_limit_default_speed(),
+                "duration_minutes": DispatchEnvConfig.scenario_temporary_speed_limit_default_duration()
+            }
+
         return {
             "scenario_type": scenario_type,
             "scenario_id": "AGENT_CHAT_001",
             "injected_delays": injected_delays,
             "affected_trains": train_ids,
-            "scenario_params": {
-                "limit_speed_kmh": 200,
-                "duration_minutes": 120,
-                "affected_section": f"{detected_station_code} -> {detected_station_code}"
-            }
+            "scenario_params": scenario_params
         }
     else:  # sudden_failure
         return {
@@ -675,7 +783,8 @@ def scheduler_comparison():
         
         train_id = data.get('train_id')
         station_code = data.get('station_code')
-        delay_seconds = data.get('delay_seconds', 1200)
+        from config import DispatchEnvConfig
+        delay_seconds = data.get('delay_seconds', DispatchEnvConfig.default_delay_seconds())
         criteria = data.get('criteria', 'balanced')
         
         if not train_id:
@@ -861,41 +970,33 @@ def workflow_start():
 
         logger.info(f"启动多轮工作流，输入: {user_input[:50]}...")
 
-        # 导入新架构工作流引擎
-        from railway_agent.llm_workflow_engine_v2 import LLMWorkflowEngineV2, create_workflow_engine
-        from railway_agent.workflow.layer1_data_modeling import Layer1DataModeling
+        # 使用与智能调度相同的L1数据建模层（仅执行第一层）
+        from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
 
-        # 步骤1：L0+L1 合并处理（数据建模层）
-        # 先进行L0预处理，构建CanonicalDispatchRequest
-        layer1 = Layer1DataModeling()
-        canonical_request = layer1.build_canonical_request_from_input(user_input)
-        logger.info(f"[L0] 预处理完成，scene_type={canonical_request.scene_type_code}, location={canonical_request.location.station_code if canonical_request.location else 'None'}")
-
-        # 创建工作流引擎
         workflow_engine = create_workflow_engine()
+        l1_result = workflow_engine.execute_layer1(
+            user_input=user_input,
+            canonical_request=None,
+            enable_rag=True
+        )
 
-        # 执行第1层（数据建模），传入L0预处理结果
-        result = workflow_engine.execute_layer1(user_input=user_input, canonical_request=canonical_request)
-
-        # 获取 accident_card 并检查有效性
-        accident_card = result.get("accident_card")
-        if not accident_card:
-            return jsonify({
-                "success": False,
-                "message": "无法从输入中提取事故信息，LLM返回结果为空"
-            })
+        accident_card = l1_result.get("accident_card", {})
+        if hasattr(accident_card, 'model_dump'):
+            accident_card_data = accident_card.model_dump()
+        else:
+            accident_card_data = accident_card
 
         # 转换为字典格式（用于JSON序列化）
         result_dict = {
-            "accident_card": accident_card.model_dump() if hasattr(accident_card, "model_dump") else accident_card,
-            "can_solve": accident_card.is_complete if hasattr(accident_card, "is_complete") else True,
-            "missing_info": accident_card.missing_fields if hasattr(accident_card, "missing_fields") else [],
-            "llm_response_type": result.get("llm_response_type", "未知")
+            "accident_card": accident_card_data,
+            "can_solve": accident_card_data.get("is_complete", True),
+            "missing_info": accident_card_data.get("missing_fields", []),
+            "llm_response_type": "llm_real"
         }
 
         # 检查信息是否完整
-        is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else result_dict.get("can_solve", True)
-        missing_fields = accident_card.missing_fields if hasattr(accident_card, "missing_fields") else result_dict.get("missing_info", [])
+        is_complete = accident_card_data.get("is_complete", True)
+        missing_fields = accident_card_data.get("missing_fields", [])
 
         # 创建会话并保存第1层结果
         session_mgr = get_session_manager()

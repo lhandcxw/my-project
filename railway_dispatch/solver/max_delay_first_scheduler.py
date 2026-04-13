@@ -46,15 +46,18 @@ class MaxDelayFirstScheduler:
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,  # 追踪间隔 - 3分钟
-        min_stop_time: int = 60,  # 最小停站时间 - 1分钟
+        headway_time: int = None,  # 追踪间隔 - 从配置读取
+        min_stop_time: int = None,  # 最小停站时间 - 从配置读取
         max_stop_compression: int = 60,  # 最大停站压缩时间
         **kwargs
     ):
+        # 从统一配置加载
+        from config import DispatchEnvConfig
+
         self.trains = trains
         self.stations = stations
-        self.headway_time = headway_time
-        self.min_stop_time = min_stop_time
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
         self.max_stop_compression = max_stop_compression
 
         self.station_names = {s.station_code: s.station_name for s in stations}

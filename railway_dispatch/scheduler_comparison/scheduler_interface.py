@@ -30,6 +30,7 @@ class SchedulerType(str, Enum):
     GENETIC = "genetic"  # 遗传算法
     NOOP = "noop"  # 基线不做调整
     MAX_DELAY_FIRST = "max_delay_first"  # 最大延误优先
+    EARLIEST_ARRIVAL = "earliest_arrival"  # 最早到站优先
     CUSTOM = "custom"
 
 
@@ -125,13 +126,15 @@ class FCFSSchedulerAdapter(BaseScheduler):
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,
-        min_stop_time: int = 60,
+        headway_time: int = None,
+        min_stop_time: int = None,
         **kwargs
     ):
         super().__init__(trains, stations, name="FCFS调度器", **kwargs)
-        self.headway_time = headway_time
-        self.min_stop_time = min_stop_time
+        # 从统一配置加载默认值
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
         
         # 延迟导入FCFS调度器
         self._scheduler = None
@@ -189,13 +192,15 @@ class MIPSchedulerAdapter(BaseScheduler):
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,
-        min_stop_time: int = 60,
+        headway_time: int = None,
+        min_stop_time: int = None,
         **kwargs
     ):
         super().__init__(trains, stations, name="MIP调度器", **kwargs)
-        self.headway_time = headway_time
-        self.min_stop_time = min_stop_time
+        # 从统一配置加载默认值
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
 
         self._scheduler = None
 
@@ -309,13 +314,15 @@ class MaxDelayFirstSchedulerAdapter(BaseScheduler):
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,
-        min_stop_time: int = 60,
+        headway_time: int = None,
+        min_stop_time: int = None,
         **kwargs
     ):
         super().__init__(trains, stations, name="最大延误优先调度器", **kwargs)
-        self.headway_time = headway_time
-        self.min_stop_time = min_stop_time
+        # 从统一配置加载默认值
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
 
         self._scheduler = None
 
@@ -563,7 +570,7 @@ class SchedulerRegistry:
         return schedulers
 
 
-class ReinforcementLearningSchedulerAdapter(BaseScheduler):
+class EarliestArrivalFirstScheduler(BaseScheduler):
     """
     最早到站优先调度器（Earliest Arrival First）
 
@@ -591,7 +598,7 @@ class ReinforcementLearningSchedulerAdapter(BaseScheduler):
 
     @property
     def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.EARLIEST_ARRIVAL
+        return SchedulerType.EARLIEST_ARRIVAL_FIRST
 
     def _time_to_seconds(self, time_str: str) -> int:
         parts = time_str.split(':')
@@ -784,6 +791,8 @@ SchedulerRegistry.register("no-op", NoOpSchedulerAdapter)
 SchedulerRegistry.register("baseline", NoOpSchedulerAdapter)
 SchedulerRegistry.register("max_delay_first", MaxDelayFirstSchedulerAdapter)
 SchedulerRegistry.register("max-delay-first", MaxDelayFirstSchedulerAdapter)
+SchedulerRegistry.register("eaf", EarliestArrivalFirstScheduler)
+SchedulerRegistry.register("earliest_arrival", EarliestArrivalFirstScheduler)
 
 
 # 测试代码

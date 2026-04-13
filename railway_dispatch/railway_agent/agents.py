@@ -241,14 +241,89 @@ class LLMAgent:
             if not result.success:
                 return result
 
-            # 执行调度器比较
+            # 执行调度器比较（对所有场景一致）
             affected_trains = delay_injection.get("affected_trains", result.dispatch_result.optimized_schedule.get("trains", []))
             if not affected_trains:
                 affected_trains = delay_injection.get("injected_delays", [{}])[0].get("train_id", "")
 
-            train_id = affected_trains[0] if affected_trains else "G1001"
-            station_code = delay_injection.get("location", {}).get("station_code", "SJP")
-            delay_seconds = 600
+            # 验证关键信息是否完整
+            if not affected_trains:
+                logger.warning("[Agent] 缺少列车号信息，无法执行调度器比较")
+                return AgentResult(
+                    success=False,
+                    recognized_scenario="error",
+                    selected_skill="",
+                    selected_solver="",
+                    reasoning="",
+                    llm_summary="",
+                    dispatch_result=None,
+                    model_response="",
+                    computation_time=time.time() - start_time,
+                    model_used=self.model_name,
+                    error_message="请提供受影响的列车号（如：G1563）"
+                )
+
+            first_train_id = affected_trains[0] if isinstance(affected_trains, list) else affected_trains
+            
+            # 从injected_delays中提取位置信息（与parse_user_prompt返回的结构一致）
+            location_info = {}
+            injected_delays = delay_injection.get("injected_delays", [])
+            if injected_delays and len(injected_delays) > 0:
+                location_info = injected_delays[0].get("location", {})
+
+            # 检查位置信息
+            if not location_info.get("station_code") and not location_info.get("section_id"):
+                logger.warning("[Agent] 缺少位置信息，无法执行调度器比较")
+                return AgentResult(
+                    success=False,
+                    recognized_scenario="error",
+                    selected_skill="",
+                    selected_solver="",
+                    reasoning="",
+                    llm_summary="",
+                    dispatch_result=None,
+                    model_response="",
+                    computation_time=time.time() - start_time,
+                    model_used=self.model_name,
+                    error_message="请提供事故发生位置（如：SJP站或XSD-BDD区间）"
+                )
+
+            # 检查延误时间信息
+            delay_seconds = None
+            # 从injected_delays中获取delay_seconds
+            if delay_injection.get("injected_delays"):
+                delay_seconds = delay_injection["injected_delays"][0].get("initial_delay_seconds")
+
+            if delay_seconds is None:
+                logger.warning("[Agent] 缺少延误时间信息，无法执行调度器比较")
+                return AgentResult(
+                    success=False,
+                    recognized_scenario="error",
+                    selected_skill="",
+                    selected_solver="",
+                    reasoning="",
+                    llm_summary="",
+                    dispatch_result=None,
+                    model_response="",
+                    computation_time=time.time() - start_time,
+                    model_used=self.model_name,
+                    error_message="请提供延误时间（如：延误10分钟）"
+                )
+
+            station_code = location_info.get("station_code")
+            section_id = location_info.get("section_id")
+
+            # 根据位置类型设置location
+            if section_id:
+                location_type = "section"
+                # 对于区间，提取第一个车站代码作为比较用的车站（临时方案）
+                # 实际应该支持区间比较，但目前scheduler只支持车站
+                temp_station_code = section_id.split("-")[0] if "-" in section_id else station_code
+                actual_station_code = temp_station_code
+                logger.info(f"[Agent] 区间调度比较，使用第一个车站: {actual_station_code}（临时方案，后续应支持区间比较）")
+            else:
+                location_type = "station"
+                actual_station_code = station_code
 
             # 映射比较准则
             criteria_map = {
@@ -264,8 +339,8 @@ class LLMAgent:
                 injected_delays.append(InjectedDelay(
                     train_id=train_id,
                     location=DelayLocation(
-                        location_type="station",
-                        station_code=station_code
+                        location_type=location_type,
+                        station_code=actual_station_code
                     ),
                     initial_delay_seconds=delay_seconds,
                     timestamp="2024-01-15T10:00:00"
@@ -363,6 +438,7 @@ class LLMAgent:
                 selected_skill="",
                 selected_solver="",
                 reasoning="",
+                llm_summary="",
                 dispatch_result=None,
                 model_response="",
                 computation_time=time.time() - start_time,

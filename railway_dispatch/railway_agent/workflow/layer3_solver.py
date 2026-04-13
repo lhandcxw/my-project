@@ -69,12 +69,12 @@ class Layer3Solver:
             planner_decision=planner_decision
         )
 
-        logger.info(f"[L3] 求解器={main_skill}")
+        logger.info(f"[L3] 主技能: {main_skill}")
 
-        # 获取求解器实例
+        # 获取求解器实例（所有场景统一处理）
         solver = self._get_solver(main_skill)
         if solver is None:
-            return self._build_error_result(main_skill, "求解器初始化失败")
+            return self._build_error_result(main_skill, f"无法获取求解器: {main_skill}")
 
         # 构建求解请求
         solver_request = self._build_solver_request(accident_card, trains, stations)
@@ -142,10 +142,10 @@ class Layer3Solver:
         """
         logger.info("[L3] 选择求解器")
 
-        # 规则1：区间封锁 -> noop（最高优先级，无法被覆盖）
+        # 规则1：区间封锁 -> FCFS
         if scene_category == "区间封锁" or planning_intent == "handle_section_block":
-            logger.info("[L3] 规则1：区间封锁，强制使用 noop")
-            return "noop"
+            logger.info("[L3] 规则1：区间封锁，强制使用 fcfs")
+            return "fcfs"
 
         # 规则2：信息不完整 -> FCFS（无法被覆盖）
         if not is_complete:
@@ -172,12 +172,12 @@ class Layer3Solver:
                     elif scene_category == "突发故障" and preferred_solver == "fcfs":
                         logger.info("[L3] L2 建议通过：突发故障 -> fcfs")
                         return preferred_solver
-                    elif scene_category == "区间封锁" and preferred_solver == "noop":
-                        logger.info("[L3] L2 建议通过：区间封锁 -> noop")
-                        return preferred_solver
                     else:
-                        # 如果场景与 solver 不匹配，需要规则校验
-                        logger.warning(f"[L3] L2 建议的 solver ({preferred_solver}) 与场景不匹配，使用规则校验")
+                        # 如果场景与 solver 不匹配，记录警告但继续使用建议的 solver
+                        logger.warning(f"[L3] L2 建议的 solver ({preferred_solver}) 与场景 ({scene_category}) 不匹配，但仍使用建议的 solver")
+                        return preferred_solver
+                else:
+                    logger.warning(f"[L3] L2 建议的 preferred_solver ({preferred_solver}) 不是有效的 solver，使用规则校验")
 
         # 规则3：列车数量少（<=3）且完整 -> MIP
         if train_count <= 3 and is_complete:
@@ -231,7 +231,10 @@ class Layer3Solver:
         # 构建延误注入
         affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1563"]
         location_code = accident_card.location_code if accident_card.location_code else "SJP"
-        delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else 600
+        # 默认延误时间从配置读取（10分钟）
+        from config import DispatchEnvConfig
+        default_delay = DispatchEnvConfig.get("constraints.default_min_section_time", 600)
+        delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else default_delay
 
         injected_delays = []
         for train_id in affected_trains:

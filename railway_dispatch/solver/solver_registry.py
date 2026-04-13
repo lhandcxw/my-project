@@ -88,7 +88,7 @@ class SolverRegistry:
     def select_solver(cls, scene_type: str, config: Dict = None) -> Optional[BaseSolver]:
         """
         根据场景类型选择求解器
-        初版使用规则选择，不依赖LLM
+        从配置文件读取默认求解器配置
 
         Args:
             scene_type: 场景类型
@@ -99,22 +99,13 @@ class SolverRegistry:
         """
         config = config or {}
 
-        # 规则选择策略
-        solver_name = None
+        # 从配置读取默认求解器
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config import DispatchEnvConfig
 
-        # 根据场景类型选择求解器
-        if scene_type == "temporary_speed_limit":
-            # 临时限速：使用 MIP（更精确）
-            solver_name = "mip"
-        elif scene_type == "sudden_failure":
-            # 突发故障：使用 FCFS（快速响应）
-            solver_name = "fcfs"
-        elif scene_type == "section_interrupt":
-            # 区间中断：使用 MIP（优化能力强）
-            solver_name = "mip"
-        else:
-            # 默认使用 FCFS
-            solver_name = "fcfs"
+        solver_name = DispatchEnvConfig.get_default_solver(scene_type)
 
         # 允许通过 config 覆盖
         if "solver" in config:

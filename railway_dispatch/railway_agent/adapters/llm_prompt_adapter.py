@@ -140,8 +140,7 @@ class LLMPromptAdapter:
         raw_response = ""
         response_type = "unknown"
         parsed_output = {}
-        is_mock_response = False
-        mock_reason = ""
+        model_used = "unknown"
 
         try:
             llm = self._get_llm_caller()
@@ -174,9 +173,23 @@ class LLMPromptAdapter:
             parsed_output["_is_mock"] = False
 
         except Exception as e:
-            # LLM调用失败时抛出异常，不再回退到模拟响应
-            logger.error(f"[LLM调用失败] {template_id}: {str(e)}")
-            raise RuntimeError(f"LLM调用失败 ({template_id}): {str(e)}") from e
+            # LLM调用失败时检查FORCE_LLM_MODE配置
+            from config import LLMConfig
+            if LLMConfig.FORCE_LLM_MODE:
+                # 强制LLM模式，抛出异常
+                logger.error(f"[LLM调用失败] {template_id}: {str(e)}")
+                raise RuntimeError(f"LLM调用失败 ({template_id}): {str(e)}") from e
+            else:
+                # 非强制模式，返回空结果，让上层使用规则回退
+                logger.warning(f"[LLM调用失败] {template_id}: {str(e)}，将使用规则回退")
+                return PromptResponse(
+                    is_valid=False,
+                    raw_response="",
+                    parsed_output={},
+                    error=str(e),
+                    model_used="rule_fallback",
+                    fallback_reason="LLM调用失败，使用规则回退"
+                )
 
         # 验证输出
         is_valid, validation_errors = self.prompt_manager.validate_output(template_id, parsed_output)

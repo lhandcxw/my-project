@@ -20,6 +20,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.data_models import Train, Station, DelayInjection
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,20 @@ class FCFSScheduler:
         self,
         trains: List[Train],
         stations: List[Station],
-        headway_time: int = 180,  # 追踪间隔 - 3分钟
-        min_stop_time: int = 60,  # 最小停站时间 - 1分钟
-        stop_time_redundancy_ratio: float = 0.5,  # 停站冗余利用比例
-        running_time_redundancy_ratio: float = 0.3  # 区间运行冗余利用比例
+        headway_time: int = None,  # 追踪间隔 - 3分钟
+        min_stop_time: int = None,  # 最小停站时间 - 1分钟
+        stop_time_redundancy_ratio: float = None,  # 停站冗余利用比例
+        running_time_redundancy_ratio: float = None  # 区间运行冗余利用比例
     ):
+        # 使用配置文件中的默认值
+        if headway_time is None:
+            headway_time = DispatchEnvConfig.headway_time()
+        if min_stop_time is None:
+            min_stop_time = DispatchEnvConfig.min_stop_time()
+        if stop_time_redundancy_ratio is None:
+            stop_time_redundancy_ratio = DispatchEnvConfig.stop_time_redundancy_ratio()
+        if running_time_redundancy_ratio is None:
+            running_time_redundancy_ratio = DispatchEnvConfig.running_time_redundancy_ratio()
         self.trains = trains
         self.stations = stations
         self.headway_time = headway_time
@@ -134,12 +144,15 @@ class FCFSScheduler:
     def _get_min_section_time(self, from_station: str, to_station: str) -> int:
         """获取指定区间的最小运行时间"""
         key = (from_station, to_station)
-        return self.min_running_times.get(key, 600)
+        # 从配置读取默认区间运行时间，默认600秒（10分钟）
+        default_time = DispatchEnvConfig.get("defaults.section_running_time", 600)
+        return self.min_running_times.get(key, default_time)
 
     def _get_original_section_time(self, from_station: str, to_station: str) -> int:
         """获取指定区间的原始平均运行时间"""
         key = (from_station, to_station)
-        return self.original_running_times.get(key, 600)
+        default_time = DispatchEnvConfig.get("defaults.section_running_time", 600)
+        return self.original_running_times.get(key, default_time)
 
     def _get_original_stop_duration(self, train: Train, station_code: str) -> int:
         """获取列车在指定站的原始停站时间（秒）"""

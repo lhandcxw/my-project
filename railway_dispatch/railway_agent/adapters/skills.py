@@ -207,9 +207,7 @@ class SectionInterruptSkill(BaseDispatchSkill):
     """
     区间中断场景调度Skill
     适用于：线路中断、严重自然灾害等导致区间无法通行
-
-    注意：当前版本对区间封锁场景返回基线保底方案（success=True）
-    后续可扩展真正的区间封锁调度能力
+    与其他两个场景功能完全一致，使用FCFS求解器进行调度
     """
 
     name = "section_interrupt_skill"
@@ -222,25 +220,49 @@ class SectionInterruptSkill(BaseDispatchSkill):
         delay_injection: Dict[str, Any],
         optimization_objective: str = "min_max_delay"
     ) -> DispatchSkillOutput:
-        """执行区间中断调度（返回保底展示结果）"""
+        """执行区间中断调度（使用FCFS求解器）"""
         start_time = time.time()
 
-        # 区间中断返回基线/保底方案（success=True，可展示）
+        # 提取区间信息
         affected_section = delay_injection.get("scenario_params", {}).get("affected_section", "未知区段")
+
+        # 提取受影响的列车信息
+        affected_train = "未知"
+        if delay_injection.get("injected_delays"):
+            affected_train = delay_injection["injected_delays"][0].get("train_id", "未知")
+
+        # 使用FCFS求解器（按照用户要求，区间中断通过规则使用FCFS）
+        solver_request = self._build_solver_request(delay_injection)
+        solver = self.solver_registry.get_solver("fcfs")
+        solver_response = solver.solve(solver_request)
 
         computation_time = time.time() - start_time
 
-        # 返回 success=True 的保底展示结果
+        # 构建结果
+        delay_stats = solver_response.metrics or {}
+
+        # 获取优化后的时刻表 - 从 schedule 字段获取
+        optimized_schedule = {}
+        if hasattr(solver_response, 'schedule') and solver_response.schedule:
+            optimized_schedule = solver_response.schedule
+        elif hasattr(solver_response, 'optimized_schedule') and solver_response.optimized_schedule:
+            optimized_schedule = solver_response.optimized_schedule
+
+        # 构建delay_statistics（与SuddenFailureSkill格式一致，使用分钟单位）
+        delay_statistics = {
+            "max_delay_minutes": delay_stats.get("max_delay_seconds", 0) // 60,
+            "avg_delay_minutes": delay_stats.get("avg_delay_seconds", 0) // 60 if "avg_delay_seconds" in delay_stats else 0,
+            "total_delay_minutes": delay_stats.get("total_delay_seconds", 0) // 60,
+            "affected_trains_count": delay_stats.get("affected_trains_count", len(train_ids)),
+            "affected_section": affected_section  # 额外字段，标识影响的区间
+        }
+
         return DispatchSkillOutput(
-            optimized_schedule={},
-            delay_statistics={
-                "status": "baseline_placeholder",
-                "affected_section": affected_section,
-                "message": "区间封锁场景采用基线方案（暂不执行实际调度优化）"
-            },
-            computation_time=computation_time,
-            success=True,  # 修改为 success=True，返回可展示的保底结果
-            message=f"【区间封锁】当前版本采用基线方案。建议处理方案：\n1. 暂停受影响区段的列车运行\n2. 安排列车在封锁区间前车站待避\n3. 视情况启动应急调度预案\n区段: {affected_section}",
+            optimized_schedule=optimized_schedule,
+            delay_statistics=delay_statistics,
+            computation_time=computation_time + (solver_response.solving_time_seconds if hasattr(solver_response, 'solving_time_seconds') else 0),
+            success=solver_response.success,
+            message=f"区间中断调度完成。影响区段: {affected_section}, 受影响列车: {affected_train}",
             skill_name=self.name
         )
 

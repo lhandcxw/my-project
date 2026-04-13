@@ -182,20 +182,46 @@ class Layer1DataModeling:
         """使用L0预处理结果"""
         scene_label = canonical_request.scene_type_label or "临时限速"
 
+        # 根据位置信息构建 AccidentCard
+        location = canonical_request.location
+        if location:
+            # 判断是区间还是车站
+            if location.section_id:
+                # 区间场景
+                location_type = "section"
+                location_code = location.section_id
+                location_name = location.station_name  # 对于区间，station_name 保存的是区间名称，如"徐水东-保定东"
+                affected_section = location.section_id
+                logger.info(f"[L0] 构建区间事故卡片: section_id={location.section_id}, name={location.station_name}")
+            else:
+                # 车站场景
+                location_type = "station"
+                location_code = location.station_code or ""
+                location_name = location.station_name or ""
+                affected_section = f"{location_code}-{location_code}" if location_code else ""
+                logger.info(f"[L0] 构建车站事故卡片: station_code={location_code}, name={location_name}")
+        else:
+            # 没有位置信息
+            location_type = "station"
+            location_code = ""
+            location_name = ""
+            affected_section = ""
+
         accident_card = AccidentCard(
             fault_type=fault_code_to_label(canonical_request.fault_type) if canonical_request.fault_type else "未知",
             scene_category=scene_label,
             start_time=datetime.fromisoformat(canonical_request.event_time) if canonical_request.event_time else None,
             expected_duration=(canonical_request.reported_delay_seconds or 0) / 60 if canonical_request.reported_delay_seconds else None,
-            affected_section=f"{canonical_request.location.station_code}-{canonical_request.location.station_code}" if canonical_request.location and canonical_request.location.station_code else "",
-            location_code=canonical_request.location.station_code if canonical_request.location else "",
-            location_name=canonical_request.location.station_name if canonical_request.location else "",
+            affected_section=affected_section,
+            location_type=location_type,
+            location_code=location_code,
+            location_name=location_name,
             affected_train_ids=canonical_request.affected_train_ids or [],
             is_complete=canonical_request.completeness.can_enter_solver if canonical_request.completeness else False,
             missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
         )
 
-        logger.info(f"第一层完成(L0): scene_category={accident_card.scene_category}")
+        logger.info(f"第一层完成(L0): scene_category={accident_card.scene_category}, location_type={accident_card.location_type}, location_code={accident_card.location_code}")
 
         return {
             "accident_card": accident_card,
@@ -240,20 +266,83 @@ class Layer1DataModeling:
             else:
                 acc_card_data["scene_category"] = "突发故障"
 
-        # 提取车站信息
+        # 提取位置信息（车站或区间）
+        # 车站代码映射表
+        station_to_code = {
+            "石家庄": "SJP", "北京西": "BJX", "保定东": "BDD", "定州东": "DZD",
+            "徐水东": "XSD", "涿州东": "ZBD", "高碑店东": "GBD", "正定机场": "ZDJ",
+            "高邑西": "GYX", "邢台东": "XTD", "邯郸东": "HDD", "安阳东": "AYD",
+            "杜家坎": "DJK", "杜家坎线路所": "DJK"
+        }
+
+        # 创建反向映射（代码到名称）
+        code_to_station = {code: name for name, code in station_to_code.items()}
+
+        # 只有当LLM没有提取到位置信息时，才尝试规则提取
         if not acc_card_data.get("location_code") and not acc_card_data.get("location_name"):
-            station_to_code = {
-                "石家庄": "SJP", "北京西": "BJX", "保定东": "BDD", "定州东": "DZD",
-                "徐水东": "XSD", "涿州东": "ZBD", "高碑店东": "GBD", "正定机场": "ZDJ",
-                "高邑西": "GYX", "邢台东": "XTD", "邯郸东": "HDD", "安阳东": "AYD",
-                "杜家坎": "DJK"
-            }
-            for station_name, code in station_to_code.items():
-                if station_name in user_input:
-                    acc_card_data["location_name"] = station_name
-                    acc_card_data["location_code"] = code
-                    acc_card_data["affected_section"] = f"{code}-{code}"
-                    break
+            # 先尝试提取区间（使用正则匹配区间格式）
+            # 匹配格式：A到B、A至B、A-B、A和B、A与B等，以及站码格式
+            section_patterns = [
+                # 站码区间：XSD-BDD、XSD-BDD区间、XSD到BDD
+                r'([A-Z]{3})[－\-至到]\s*([A-Z]{3})(?:区间|段)?',
+                # 中文车站名：石家庄到保定东
+                r'([^与和－\-]{2,})[－\-到至]\s*([^与和－\-]{2,})(?:站|线路所|区间|段)?',
+                # 中文车站名（之间）：涿州东与高碑店东之间
+                r'([^与和－\-]{2,})[与和]\s*([^与和－\-]{2,})(?:站|线路所)?(?:之间)?',
+            ]
+
+            for pattern in section_patterns:
+                section_match = re.search(pattern, user_input)
+                if section_match:
+                    station1 = section_match.group(1)
+                    station2 = section_match.group(2)
+
+                    # 查找两个站点的代码和名称
+                    code1, code2 = None, None
+                    name1, name2 = None, None
+
+                    # 优先匹配站码
+                    if station1 in code_to_station:
+                        code1 = station1
+                        name1 = code_to_station[station1]
+                    else:
+                        # 匹配中文名称（精确匹配）
+                        for station_name, code in station_to_code.items():
+                            if station1.strip() == station_name or (station_name in station1 and len(station1) >= len(station_name)):
+                                code1 = code
+                                name1 = station_name
+                                break
+
+                    if station2 in code_to_station:
+                        code2 = station2
+                        name2 = code_to_station[station2]
+                    else:
+                        # 匹配中文名称（精确匹配）
+                        for station_name, code in station_to_code.items():
+                            if station2.strip() == station_name or station_name in station2 and len(station2) >= len(station_name):
+                                code2 = code
+                                name2 = station_name
+                                break
+
+                    # 如果两个站点都找到且不同，则构建区间
+                    if code1 and code2 and code1 != code2:
+                        acc_card_data["location_type"] = "section"
+                        acc_card_data["location_code"] = f"{code1}-{code2}"
+                        acc_card_data["location_name"] = f"{name1}-{name2}"
+                        acc_card_data["affected_section"] = f"{code1}-{code2}"
+                        logger.info(f"[_build_accident_card] 提取到区间: {name1}-{name2} ({code1}-{code2})")
+                        break
+
+            # 如果没有提取到区间，则提取单个车站
+            if not acc_card_data.get("location_code"):
+                for station_name, code in station_to_code.items():
+                    if station_name in user_input:
+                        acc_card_data["location_type"] = "station"
+                        acc_card_data["location_name"] = station_name
+                        acc_card_data["location_code"] = code
+                        acc_card_data["affected_section"] = f"{code}-{code}"
+                        logger.info(f"[_build_accident_card] 提取到车站: {station_name} ({code})")
+                        break
 
         # 提取延误时间（如果LLM没有提取到）
         if not acc_card_data.get("expected_duration"):
@@ -272,6 +361,7 @@ class Layer1DataModeling:
             fault_type=acc_card_data.get("fault_type", "未知"),
             scene_category=acc_card_data.get("scene_category", "临时限速"),
             affected_section=acc_card_data.get("affected_section", ""),
+            location_type=acc_card_data.get("location_type", "station"),
             location_code=acc_card_data.get("location_code", ""),
             location_name=acc_card_data.get("location_name", ""),
             affected_train_ids=acc_card_data.get("affected_train_ids", []),
@@ -331,35 +421,94 @@ class Layer1DataModeling:
         if delay_match:
             expected_duration = int(delay_match.group(1))
 
-        # 提取车站（增强：支持更多车站和更灵活的匹配）
+        # 提取位置信息（车站或区间，增强版）
         station_to_code = {
             "石家庄": "SJP", "北京西": "BJX", "保定东": "BDD", "定州东": "DZD",
             "徐水东": "XSD", "涿州东": "ZBD", "高碑店东": "GBD", "正定机场": "ZDJ",
             "高邑西": "GYX", "邢台东": "XTD", "邯郸东": "HDD", "安阳东": "AYD",
             "杜家坎": "DJK", "杜家坎线路所": "DJK"
         }
+        location_type = "station"  # 默认为车站
 
-        # 尝试匹配车站
-        for station_name, code in station_to_code.items():
-            if station_name in user_input:
-                location_name = station_name
-                location_code = code
-                affected_section = f"{code}-{code}"
-                break
+        # 创建反向映射（代码到名称）
+        code_to_station = {code: name for name, code in station_to_code.items()}
 
-        # 如果没有找到车站，尝试匹配"在XX站"模式
+        # 先尝试提取区间（使用正则匹配区间格式）
+        # 匹配格式：A到B、A至B、A-B、A和B、A与B等，以及站码格式
+        section_patterns = [
+            # 站码区间：XSD-BDD、XSD-BDD区间、XSD到BDD
+            r'([A-Z]{3})[－\-至到]\s*([A-Z]{3})(?:区间|段)?',
+            # 中文车站名：石家庄到保定东
+            r'([^与和－\-]{2,})[－\-到至]\s*([^与和－\-]{2,})(?:站|线路所|区间|段)?',
+            # 中文车站名（之间）：涿州东与高碑店东之间
+            r'([^与和－\-]{2,})[与和]\s*([^与和－\-]{2,})(?:站|线路所)?(?:之间)?',
+        ]
+
+        for pattern in section_patterns:
+            section_match = re.search(pattern, user_input)
+            if section_match:
+                station1 = section_match.group(1)
+                station2 = section_match.group(2)
+
+                # 查找两个站点的代码和名称
+                code1, code2 = None, None
+                name1, name2 = None, None
+
+                # 优先匹配站码
+                if station1 in code_to_station:
+                    code1 = station1
+                    name1 = code_to_station[station1]
+                else:
+                    # 匹配中文名称（精确匹配）
+                    for station_name, code in station_to_code.items():
+                        if station1.strip() == station_name or station_name in station1 and len(station1) >= len(station_name):
+                            code1 = code
+                            name1 = station_name
+                            break
+
+                if station2 in code_to_station:
+                    code2 = station2
+                    name2 = code_to_station[station2]
+                else:
+                    # 匹配中文名称（精确匹配）
+                    for station_name, code in station_to_code.items():
+                        if station2.strip() == station_name or station_name in station2 and len(station2) >= len(station_name):
+                            code2 = code
+                            name2 = station_name
+                            break
+
+                # 如果两个站点都找到且不同，则构建区间
+                if code1 and code2 and code1 != code2:
+                    location_type = "section"
+                    location_code = f"{code1}-{code2}"
+                    location_name = f"{name1}-{name2}"
+                    affected_section = f"{code1}-{code2}"
+                    logger.info(f"[_fallback_extraction] 提取到区间: {name1}-{name2} ({code1}-{code2})")
+                    break
+
+        # 如果没有提取到区间，则提取单个车站
         if not location_code:
-            station_pattern = r'在(\w+?)(?:站|线路所)'
-            station_match = re.search(station_pattern, user_input)
-            if station_match:
-                matched_name = station_match.group(1)
-                # 尝试在映射中查找
-                for station_name, code in station_to_code.items():
-                    if matched_name in station_name or station_name in matched_name:
-                        location_name = station_name
-                        location_code = code
-                        affected_section = f"{code}-{code}"
-                        break
+            # 尝试匹配车站
+            for station_name, code in station_to_code.items():
+                if station_name in user_input:
+                    location_name = station_name
+                    location_code = code
+                    affected_section = f"{code}-{code}"
+                    break
+
+            # 如果没有找到车站，尝试匹配"在XX站"模式
+            if not location_code:
+                station_pattern = r'在(\w+?)(?:站|线路所)'
+                station_match = re.search(station_pattern, user_input)
+                if station_match:
+                    matched_name = station_match.group(1)
+                    # 尝试在映射中查找（精确匹配）
+                    for station_name, code in station_to_code.items():
+                        if matched_name.strip() == station_name or station_name in matched_name and len(matched_name) >= len(station_name):
+                            location_name = station_name
+                            location_code = code
+                            affected_section = f"{code}-{code}"
+                            break
 
         # 使用统一的完整性判定逻辑
         accident_card_data = {
@@ -376,6 +525,7 @@ class Layer1DataModeling:
             fault_type=fault_type,
             scene_category=scene_category,
             affected_section=affected_section,
+            location_type=location_type,
             location_code=location_code,
             location_name=location_name,
             affected_train_ids=affected_train_ids,
@@ -592,16 +742,31 @@ class Layer1DataModeling:
         if accident_card.expected_duration:
             reported_delay_seconds = int(accident_card.expected_duration * 60)
         
+        # 根据location_type构建LocationInfo
+        location_info = LocationInfo(
+            station_code=None,
+            station_name=None,
+            section_id=None
+        )
+
+        if accident_card.location_type == "section":
+            # 区间场景
+            location_info.section_id = accident_card.location_code
+            location_info.station_name = accident_card.location_name
+            logger.info(f"[L0+L1] 构建区间位置: section_id={accident_card.location_code}, name={accident_card.location_name}")
+        else:
+            # 车站场景（默认）
+            location_info.station_code = accident_card.location_code
+            location_info.station_name = accident_card.location_name
+            logger.info(f"[L0+L1] 构建车站位置: station_code={accident_card.location_code}, name={accident_card.location_name}")
+
         canonical_request = CanonicalDispatchRequest(
             source_type=RequestSourceType.NATURAL_LANGUAGE,
             raw_text=user_input,
             scene_type_code=scene_type_code,
             scene_type_label=accident_card.scene_category,
             fault_type=fault_type_code,
-            location=LocationInfo(
-                station_code=accident_card.location_code,
-                station_name=accident_card.location_name
-            ),
+            location=location_info,
             affected_train_ids=accident_card.affected_train_ids or [],
             event_time=datetime.now().isoformat(),
             reported_delay_seconds=reported_delay_seconds,

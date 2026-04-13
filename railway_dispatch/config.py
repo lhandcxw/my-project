@@ -47,7 +47,7 @@ class LLMConfig:
     TRANSFORMERS_MAX_LENGTH = 4096
 
     # ========== 通用配置 ==========
-    FORCE_LLM_MODE = True  # 允许LLM失败时使用规则回退（生产环境推荐）
+    FORCE_LLM_MODE = True  # True=强制使用LLM，失败时报错；False=允许LLM失败时使用规则回退（调试模式）
 
     # OpenAI 配置（兼容性）
     OPENAI_API_KEY = ""
@@ -102,10 +102,248 @@ class SolverConfig:
     """求解器配置"""
     # 默认求解器
     DEFAULT_SOLVER = os.getenv("DEFAULT_SOLVER", "mip")
-    
+
     # MIP 求解器配置
     MIP_TIME_LIMIT = int(os.getenv("MIP_TIME_LIMIT", "300"))  # 秒
     MIP_GAP = float(os.getenv("MIP_GAP", "0.01"))  # 1% gap
+
+
+class DispatchEnvConfig:
+    """
+    列车调度环境配置
+    从YAML配置文件加载调度约束参数
+    """
+    _config_data = None
+
+    @classmethod
+    def _load_config(cls):
+        """加载YAML配置文件"""
+        if cls._config_data is not None:
+            return cls._config_data
+
+        import yaml
+        config_path = os.path.join(os.path.dirname(__file__), "config", "dispatch_env.yaml")
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cls._config_data = yaml.safe_load(f)
+        except FileNotFoundError:
+            # 如果配置文件不存在，使用默认配置
+            cls._config_data = cls._get_default_config()
+        except Exception as e:
+            print(f"警告: 加载调度环境配置失败: {e}，使用默认配置", file=sys.stderr)
+            cls._config_data = cls._get_default_config()
+
+        return cls._config_data
+
+    @classmethod
+    def _get_default_config(cls):
+        """获取默认配置"""
+        return {
+            "constraints": {
+                "headway_time": 180,
+                "min_stop_time": 60,
+                "min_headway_time": 180,
+                "stop_time_redundancy_ratio": 0.5,
+                "running_time_redundancy_ratio": 0.3
+            },
+            "station_defaults": {
+                "default_track_count": 2
+            },
+            "solver_settings": {
+                "time_limit": 300,
+                "optimality_gap": 0.01
+            }
+        }
+
+    @classmethod
+    def get(cls, key_path: str, default=None):
+        """
+        获取配置值
+
+        Args:
+            key_path: 点分隔的路径，如 "constraints.headway_time"
+            default: 默认值
+
+        Returns:
+            配置值或默认值
+        """
+        config = cls._load_config()
+        keys = key_path.split('.')
+        value = config
+        for key in keys:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return default
+        return value
+
+    @classmethod
+    def get_constraints(cls) -> dict:
+        """获取所有约束配置"""
+        return cls._load_config().get("constraints", {})
+
+    @classmethod
+    def get_station_defaults(cls) -> dict:
+        """获取车站默认配置"""
+        return cls._load_config().get("station_defaults", {})
+
+    @classmethod
+    def get_solver_settings(cls) -> dict:
+        """获取求解器设置"""
+        return cls._load_config().get("solver_settings", {})
+
+    # 便捷属性
+    @classmethod
+    def headway_time(cls) -> int:
+        """追踪间隔（秒）"""
+        return cls.get("constraints.headway_time", 180)
+
+    @classmethod
+    def min_stop_time(cls) -> int:
+        """最小停站时间（秒）"""
+        return cls.get("constraints.min_stop_time", 60)
+
+    @classmethod
+    def min_headway_time(cls) -> int:
+        """最小安全间隔（秒）"""
+        return cls.get("constraints.min_headway_time", 180)
+
+    @classmethod
+    def stop_time_redundancy_ratio(cls) -> float:
+        """停站冗余利用比例"""
+        return cls.get("constraints.stop_time_redundancy_ratio", 0.5)
+
+    @classmethod
+    def running_time_redundancy_ratio(cls) -> float:
+        """区间运行冗余利用比例"""
+        return cls.get("constraints.running_time_redundancy_ratio", 0.3)
+
+    @classmethod
+    def min_section_time_ratio(cls) -> float:
+        """最小区间运行时间系数（用于计算最小区间运行时间 = 标准时间 * 系数）"""
+        return cls.get("constraints.min_section_time_ratio", 0.9)
+
+    @classmethod
+    def default_track_count(cls) -> int:
+        """默认股道数量"""
+        return cls.get("station_defaults.default_track_count", 2)
+
+    @classmethod
+    def solver_time_limit(cls) -> int:
+        """求解器时间限制（秒）"""
+        return cls.get("solver_settings.time_limit", 300)
+
+    @classmethod
+    def solver_optimality_gap(cls) -> float:
+        """求解器最优性间隙"""
+        return cls.get("solver_settings.optimality_gap", 0.01)
+
+    # 新增：延误等级配置
+    @classmethod
+    def delay_levels(cls) -> dict:
+        """延误等级定义"""
+        return cls.get("delay_levels", {})
+
+    @classmethod
+    def get_delay_level_code(cls, delay_minutes: int) -> str:
+        """根据延误分钟数获取延误等级代码"""
+        levels = cls.delay_levels()
+        for level_name, level_config in levels.items():
+            min_min = level_config.get("min_minutes", 0)
+            max_min = level_config.get("max_minutes", 9999)
+            if min_min <= delay_minutes < max_min:
+                return level_config.get("code", "0")
+        return "0"
+
+    # 新增：求解器配置
+    @classmethod
+    def solver_config(cls, solver_name: str = None) -> dict:
+        """获取求解器配置"""
+        if solver_name:
+            return cls.get(f"solver.{solver_name}", {})
+        return cls.get("solver", {})
+
+    # 新增：场景类型配置
+    @classmethod
+    def scenario_config(cls, scenario_type: str = None) -> dict:
+        """获取场景类型配置"""
+        if scenario_type:
+            return cls.get(f"scenario_types.{scenario_type}", {})
+        return cls.get("scenario_types", {})
+
+    @classmethod
+    def get_default_solver(cls, scenario_type: str) -> str:
+        """获取场景类型的默认求解器"""
+        return cls.get(f"scenario_types.{scenario_type}.default_solver", "fcfs")
+
+    @classmethod
+    def scenario_temporary_speed_limit_default_speed(cls) -> int:
+        """临时限速场景默认限速值（km/h）"""
+        return cls.get("scenario_types.temporary_speed_limit.default_speed_kmh", 200)
+
+    @classmethod
+    def scenario_temporary_speed_limit_default_duration(cls) -> int:
+        """临时限速场景默认持续时间（分钟）"""
+        return cls.get("scenario_types.temporary_speed_limit.default_duration_minutes", 120)
+
+    @classmethod
+    def scenario_sudden_failure_default_repair_time(cls) -> int:
+        """突发故障场景默认修复时间（分钟）"""
+        return cls.get("scenario_types.sudden_failure.default_repair_time_minutes", 60)
+
+    @classmethod
+    def default_delay_seconds(cls) -> int:
+        """默认延误时间（秒）"""
+        return cls.get("constraints.default_delay_seconds", 600)  # 默认10分钟
+
+    # 新增：系统限制
+    @classmethod
+    def system_limits(cls) -> dict:
+        """系统规模限制"""
+        return cls.get("system_limits", {})
+
+    @classmethod
+    def max_stations(cls) -> int:
+        """最大车站数量"""
+        return cls.get("system_limits.max_stations", 20)
+
+    @classmethod
+    def max_trains(cls) -> int:
+        """最大列车数量"""
+        return cls.get("system_limits.max_trains", 200)
+
+    # 新增：验证器配置
+    @classmethod
+    def validator_config(cls) -> dict:
+        """验证器配置"""
+        return cls.get("validator", {})
+
+    @classmethod
+    def standard_section_times(cls) -> list:
+        """标准区间运行时间"""
+        return cls.get("validator.standard_section_times", [])
+
+    # 新增：日志配置
+    @classmethod
+    def logging_config(cls) -> dict:
+        """日志配置"""
+        return cls.get("logging", {})
+
+    @classmethod
+    def log_level(cls) -> str:
+        """日志级别"""
+        return cls.get("logging.level", "INFO")
+
+    @classmethod
+    def verbose_solver(cls) -> bool:
+        """是否记录详细求解过程"""
+        return cls.get("logging.verbose_solver", False)
+
+    @classmethod
+    def verbose_llm(cls) -> bool:
+        """是否记录LLM调用详情"""
+        return cls.get("logging.verbose_llm", False)
 
 
 # 导出常用配置
@@ -159,8 +397,8 @@ def validate_config():
         print(error_msg, file=sys.stderr)
         sys.exit(1)
 
-    # 启动时打印配置摘要
-    print(get_config_summary(), file=sys.stderr)
+    # 配置摘要由app.py统一打印，避免重复输出
+    pass
 
 
 def get_config() -> Config:

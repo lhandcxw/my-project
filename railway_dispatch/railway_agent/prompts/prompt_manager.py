@@ -257,9 +257,6 @@ class PromptManager:
         Returns:
             Dict: 上下文字典
         """
-        import json
-        from datetime import datetime
-
         def json_serial(obj):
             """JSON序列化辅助函数，处理datetime等特殊类型"""
             if isinstance(obj, datetime):
@@ -407,16 +404,34 @@ class PromptManager:
 
 【提取规则】
 1. 从描述中提取列车号（如G1563、D1234）放入affected_train_ids数组
-2. 从描述中提取车站名转换为站码（如"石家庄"->"SJP"）
-3. 如果有"延误"或"晚点"，提取分钟数放入expected_duration（数字，不带单位）
+2. **位置识别（重要）**：
+   a) 区间识别：如果描述中包含"区间"、"段"、"到"、"至"、"-"等词，或明确提到两个车站之间的范围，则为区间
+      - 例如："徐水东到保定东"、"XSD-BDD"、"徐水东-保定东区间"、"保定东至定州东"
+      - 提取两个站名并转换为站码，格式为"XSD-BDD"（按地理位置从前向后）
+      - 设置 location_type 为 "section"
+      - 设置 location_code 为区间代码（如"XSD-BDD"）
+      - 设置 location_name 为区间名称（如"徐水东-保定东"）
+      - 设置 affected_section 为区间代码（如"XSD-BDD"）
+
+   b) 车站识别：如果描述中只提到单个车站，则为车站
+      - 例如："石家庄站"、"石家庄"
+      - 提取车站名转换为站码（如"石家庄"->"SJP"）
+      - 设置 location_type 为 "station"
+      - 设置 location_code 为站码（如"SJP"）
+      - 设置 location_name 为车站名（如"石家庄"）
+      - 设置 affected_section 为"站码-站码"（如"SJP-SJP"）
+
+3. 如果有"延误"或"晚点"，提取分钟数放入expected_duration（数字，不带单位），注意：延误时间是可选字段
 4. 从描述中提取事件类型（如大风、暴雨、设备故障等）放入fault_type
 5. **重要：如果描述中没有明确提到事件类型，fault_type必须设为"未知"，不要猜测或编造**
-6. **判断is_complete**：只有当有列车号+车站+事件类型（fault_type不是"未知"）+延误时间时，才设为true，否则设为false
-7. **如果is_complete为false，在missing_fields中列出缺失的字段**（如"列车号"、"位置"、"事件类型"、"延误时间"）
+6. **判断is_complete**：只有当有列车号+位置（车站或区间）+事件类型（fault_type不是"未知"）时，才设为true，否则设为false
+   - 注意：延误时间（expected_duration）是可选字段，不影响完整性判定
+7. **如果is_complete为false，在missing_fields中列出缺失的字段**（如"列车号"、"位置"、"事件类型"）
 
 【输出示例】（仅作为格式参考，不要照搬内容）：
-- 完整信息示例：{{"accident_card": {{"scene_category": "临时限速", "fault_type": "大风", "expected_duration": 10, "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": true, "missing_fields": []}}}}
-- 不完整信息示例：{{"accident_card": {{"scene_category": "突发故障", "fault_type": "未知", "expected_duration": null, "affected_section": "SJP-SJP", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": false, "missing_fields": ["事件类型", "延误时间"]}}}}
+- 车站示例：{{"accident_card": {{"scene_category": "临时限速", "fault_type": "大风", "expected_duration": 10, "affected_section": "SJP-SJP", "location_type": "station", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": true, "missing_fields": []}}}}
+- 区间示例：{{"accident_card": {{"scene_category": "区间封锁", "fault_type": "设备故障", "expected_duration": 30, "affected_section": "XSD-BDD", "location_type": "section", "location_code": "XSD-BDD", "location_name": "徐水东-保定东", "affected_train_ids": ["G1234"], "is_complete": true, "missing_fields": []}}}}
+- 不完整信息示例：{{"accident_card": {{"scene_category": "突发故障", "fault_type": "未知", "expected_duration": null, "affected_section": "SJP-SJP", "location_type": "station", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": false, "missing_fields": ["事件类型", "延误时间"]}}}}
 
 必须严格按照JSON格式输出，不要添加任何额外文字或markdown标记。""",
             required_output_fields=["accident_card"],
@@ -536,11 +551,13 @@ feasibility_score范围0.0-1.0，表示方案可行性评分。
         self.register_template(l4_template)
 
         # L3求解器选择模板（备用，当L2需要更精细控制时使用）
-        l3_solver_template = PromptTemplate(
-            template_id="l3_solver_selector",
+        # 注意：此模板为备用版本，默认不注册以避免重复注册问题
+        # 如需使用，请通过 register_template 手动注册
+        self._l3_solver_v2_template = PromptTemplate(
+            template_id="l3_solver_selector_v2",
             template_type=PromptTemplateType.L3_SOLVER,
-            template_name="L3求解器选择器",
-            description="根据场景特征选择最优求解器",
+            template_name="L3求解器选择器V2",
+            description="根据场景特征选择最优求解器（备用版本，未注册）",
             system_prompt="你是一个专业的铁路调度求解器选择助手，负责根据场景特征选择最合适的求解算法。必须只输出JSON格式，不要添加任何解释文字或markdown标记。",
             user_prompt_template="""根据事故卡片信息，选择最优求解器。只输出纯JSON，不要添加markdown代码块标记(```)。
 
@@ -566,6 +583,9 @@ solver可选: mip, fcfs, max_delay_first, noop
             tags=["solver", "selection"],
             version="1.0"
         )
+        # 不注册V2版本，避免重复注册问题
+        # 如需使用，请通过 register_template 手动注册
+        # self.register_template(l3_solver_template)
 
 
 # 全局实例

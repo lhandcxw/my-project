@@ -8,9 +8,15 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+# 导入配置
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DispatchEnvConfig
+
 
 # ============================================
-# 常量定义（与 rules/README.md 保持一致）
+# 常量定义（从配置文件读取）
 # ============================================
 
 class DelayLevel(str, Enum):
@@ -28,28 +34,30 @@ class ScenarioType(str, Enum):
     SECTION_INTERRUPT = "section_interrupt"
 
 
-# 追踪间隔时间（秒）
-HEADWAY_TIME = 600  # 10分钟
+# 追踪间隔时间（秒）- 从配置读取
+HEADWAY_TIME = DispatchEnvConfig.headway_time()
 
-# 站台占用时间（秒）
-PLATFORM_OCCUPANCY_TIME = 300  # 5分钟
+# 站台占用时间（秒）- 从配置读取
+PLATFORM_OCCUPANCY_TIME = DispatchEnvConfig.get("station_defaults.platform_occupancy_time", 300)
 
-# 冗余时间约束（秒）
-MAX_STATION_SLACK = 300
-MAX_SECTION_SLACK = 180
-TOTAL_SLACK = 480
+# 冗余时间约束（秒）- 从配置读取
+MAX_STATION_SLACK = DispatchEnvConfig.get("station_defaults.max_station_slack", 300)
+MAX_SECTION_SLACK = DispatchEnvConfig.get("station_defaults.max_section_slack", 180)
+TOTAL_SLACK = MAX_STATION_SLACK + MAX_SECTION_SLACK
 
-# 标准区间运行时间（秒）
-STANDARD_SECTION_TIMES = {
-    ("BJP", "TJG"): 900,   # 15分钟
-    ("TJG", "JNZ"): 2400, # 40分钟
-    ("JNZ", "NJH"): 4200, # 70分钟
-    ("NJH", "SHH"): 3600, # 60分钟
-}
+# 标准区间运行时间（秒）- 从配置读取
+_standard_times = DispatchEnvConfig.standard_section_times()
+STANDARD_SECTION_TIMES = {}
+for item in _standard_times:
+    from_station = item.get("from")
+    to_station = item.get("to")
+    time_val = item.get("time", 600)
+    if from_station and to_station:
+        STANDARD_SECTION_TIMES[(from_station, to_station)] = time_val
 
-# 系统规模约束
-MAX_STATIONS = 10
-MAX_TRAINS = 20
+# 系统规模约束 - 从配置读取
+MAX_STATIONS = DispatchEnvConfig.max_stations()
+MAX_TRAINS = DispatchEnvConfig.max_trains()
 
 
 # ============================================
@@ -124,9 +132,10 @@ def calculate_delay_level(delay_seconds: int) -> DelayLevel:
 
 
 def get_min_section_time(from_station: str, to_station: str) -> int:
-    """获取最小区间运行时间（标准时间的90%）"""
+    """获取最小区间运行时间（标准时间乘以配置系数）"""
     standard = STANDARD_SECTION_TIMES.get((from_station, to_station), 1800)
-    return int(standard * 0.9)
+    ratio = DispatchEnvConfig.get("constraints.min_section_time_ratio", 0.9)
+    return int(standard * ratio)
 
 
 def validate_schedule(

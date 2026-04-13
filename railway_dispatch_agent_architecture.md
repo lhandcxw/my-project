@@ -1,8 +1,8 @@
-# 铁路调度Agent系统架构设计文档（v6.2）
+# 铁路调度Agent系统架构设计文档（v6.3）
 
 ## 文档概述
 
-基于大模型和整数规划的智能铁路调度Agent系统（v6.2 - 统一LLM驱动架构 + 改进规划）。
+基于大模型和整数规划的智能铁路调度Agent系统（v6.3 - 统一LLM驱动架构 + 调度器接口修复）。
 
 **设计约束**：
 - 部署规模：13站，147列列车（京广高铁北京西→安阳东）
@@ -15,6 +15,12 @@
 - 数据模式：统一使用 `data/` 目录下的真实数据
 - schema_version: dispatch_v6_2
 
+**v6.3更新（当前版本）**：
+- **修复调度器接口**：修正`scheduler_interface.py`中`EarliestArrivalFirstScheduler`类名错误（原错误命名为`ReinforcementLearningSchedulerAdapter`）
+- **新增调度器类型**：添加`EARLIEST_ARRIVAL_FIRST`到`SchedulerType`枚举
+- **更新FORCE_LLM_MODE注释**：修正注释说明，明确`True=强制使用LLM，False=允许规则回退`
+- **代码审查完成**：修复重复类定义问题
+
 **v6.2更新**：
 - **新增：系统不足与改进方向文档（第11-12节）**
 - **更新：后续规划（短期/中期/长期改进任务清单）**
@@ -22,9 +28,8 @@
 
 **v6.1更新**：
 - **移除NetworkSnapshot**：简化架构，使用完整时刻表进行调度
-- **新增调度器比较**：支持MIP/FCFS/最大延误优先/基线调度器对比
+- **新增调度器比较**：支持MIP/FCFS/最大延误优先/基线/最早到站优先调度器对比
 - **修复多个bug**：workflow_continue空值检查、求解器名称获取、调度器比较属性名等
-- **FORCE_LLM_MODE改为False**：允许LLM失败时使用规则回退
 - **优化推理输出**：显示正确的求解器名称和调度器比较结果
 
 ---
@@ -102,9 +107,22 @@
 │                      求解器层 (solver/)                              │
 │  - fcfs_scheduler.py: FCFS调度器（快速响应）                            │
 │  - mip_scheduler.py: MIP求解器（优化策略）                              │
-│  - max_delay_first_scheduler.py: 最大延误优先                           │
-│  - noop_scheduler.py: 空操作调度器                                      │
+│  - max_delay_first_scheduler.py: 最大延误优先调度器                     │
+│  - noop_scheduler.py: 空操作调度器（基线）                              │
 │  - solver_registry.py: 求解器注册与自动选择                             │
+│                                                                         │
+│              调度器比较层 (scheduler_comparison/)                       │
+│  - scheduler_interface.py: 统一调度器接口                               │
+│    * BaseScheduler: 调度器抽象基类                                      │
+│    * FCFSSchedulerAdapter: FCFS适配器                                   │
+│    * MIPSchedulerAdapter: MIP适配器                                     │
+│    * MaxDelayFirstSchedulerAdapter: 最大延误优先适配器                  │
+│    * NoOpSchedulerAdapter: 基线调度器适配器                             │
+│    * EarliestArrivalFirstScheduler: 最早到站优先调度器                  │
+│    * ReinforcementLearningSchedulerAdapter: 强化学习适配器（预留）      │
+│    * SchedulerRegistry: 调度器注册表                                    │
+│  - comparator.py: 调度器比较器                                          │
+│  - metrics.py: 评估指标定义                                             │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -341,7 +359,7 @@ data/
 - **大模型架构**：统一LLM驱动，支持API和本地模型
 - **阿里云API**：DashScope (qwen3.6-plus) - 云端API
 - **本地模型**：Ollama/vLLM/Transformers - 微调模型
-- **求解器**：PuLP + CBC (整数规划)
+- **求解器**：PuLP + CBC (整数规划)、FCFS（先到先服务）、MaxDelayFirst（最大延误优先）、EarliestArrivalFirst（最早到站优先）
 - **Web**：Flask + Pydantic
 - **可视化**：Matplotlib
 - **Prompt管理**：自定义PromptManager
@@ -355,7 +373,6 @@ data/
   - **移除NetworkSnapshot**：简化架构，使用完整时刻表进行调度
   - **新增调度器比较**：支持MIP/FCFS/最大延误优先/基线调度器对比
   - **修复多个bug**：workflow_continue空值检查、求解器名称获取、调度器比较属性名等
-  - **FORCE_LLM_MODE改为False**：允许LLM失败时使用规则回退
   - **优化推理输出**：显示正确的求解器名称和调度器比较结果
 
 - **v6.0** (2026-04-10):
@@ -541,7 +558,7 @@ print(f"消息: {result.message}")
 4. **工作流顺序**：L1 → L2 → L3 → L4
 5. **不使用NetworkSnapshot**：使用完整时刻表进行调度，简化架构
 6. **调度器比较**：analyze_with_comparison方法支持MIP/FCFS/最大延误优先/基线对比
-7. **FORCE_LLM_MODE=False**：LLM失败时可使用规则回退
+7. **FORCE_LLM_MODE=True**：强制使用LLM，失败时报错（不启用规则回退）
 8. **思考模式支持**：仅qwen3系列和qwen-max支持enable_thinking
 9. **本地模型部署**：需要配置模型路径，使用Ollama/vLLM/Transformers部署
 
@@ -564,5 +581,5 @@ print(f"消息: {result.message}")
   - **移除NetworkSnapshot**：简化架构，使用完整时刻表进行调度
   - **新增调度器比较**：支持MIP/FCFS/最大延误优先/基线调度器对比
   - **修复多个bug**：workflow_continue空值检查、求解器名称获取、调度器比较属性名等
-  - **FORCE_LLM_MODE改为False**：允许LLM失败时使用规则回退
+  - **FORCE_LLM_MODE保持True**：强制使用LLM，失败时报错
   - **优化推理输出**：显示正确的求解器名称和调度器比较结果
