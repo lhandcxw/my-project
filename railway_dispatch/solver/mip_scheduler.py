@@ -203,9 +203,14 @@ class MIPScheduler:
                 for stop in train.schedule.stops:
                     if stop.station_code == station_code:
                         scheduled_dep = self._time_to_seconds(stop.departure_time)
-                        # 只约束发车时间 >= 计划 + 初始延误
+                        # 约束1: 发车时间 >= 计划 + 初始延误（至少延误这么多）
                         prob += departure[train_id, station_code] >= scheduled_dep + initial_delay
+                        # 约束2: 延误 >= 初始延误（确保延误不会被优化掉）
                         prob += delay[train_id, station_code] >= initial_delay
+                        # 约束3: 发车时间 <= 计划 + 初始延误 + 容忍度（确保不会过度优化）
+                        # 恶劣天气下的延误是不可避免的，优化器不应该通过压缩其他时间来"消除"这个延误
+                        tolerance_seconds = DispatchEnvConfig.get("constraints.delay_tolerance_seconds", 60)  # 默认1分钟容忍度
+                        prob += departure[train_id, station_code] <= scheduled_dep + initial_delay + tolerance_seconds
                         break
 
         # 检查是否有有效的受影响列车
@@ -236,9 +241,15 @@ class MIPScheduler:
         # 3. 追踪间隔约束（所有车站）
         # 修正：无论是单股道还是多股道，都需要添加追踪间隔约束
         # 多股道车站使用简化模型：按原始顺序依次发车（避免冲突）
+        # 注意：线路所(node_type=line_post, track_count=0)不停站，跳过约束
         for s in self.stations:
             station_code = s.station_code
             track_count = self.station_track_count.get(station_code, 1)
+
+            # 跳过线路所（track_count=0表示线路所，不停站）
+            if track_count == 0:
+                logger.debug(f"[MIP] 跳过线路所 {station_code} 的追踪间隔约束（不停站）")
+                continue
 
             # 收集该站所有列车，按原始发车时间排序
             trains_at_station = [t for t in self.trains if station_code in self._get_stations_for_train(t)]

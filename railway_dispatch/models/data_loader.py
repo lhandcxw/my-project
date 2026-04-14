@@ -244,12 +244,21 @@ def _load_stations_from_alias() -> List[Dict[str, Any]]:
     for s in real_stations:
         station_name = s["station_name"]
         station_code = station_code_map.get(station_name, station_name[:3])
-        track_count = s.get("track_count", 4) or 4
+        node_type = s.get("node_type", "station")
+        
+        # 根据节点类型处理股道数
+        # line_post(线路所)没有站台，track_count为0
+        # station(车站)使用配置的track_count，默认为4
+        if node_type == "line_post":
+            track_count = 0
+        else:
+            track_count = s.get("track_count", 4) or 4
 
         station = {
             "station_code": station_code,
             "station_name": station_name,
-            "track_count": track_count
+            "track_count": track_count,
+            "node_type": node_type
         }
         stations.append(station)
 

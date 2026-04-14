@@ -270,10 +270,24 @@ class WorkflowResult(BaseModel):
 
 # ============== 第四层：结果输出与评估层模型 ==============
 
+class BaselineMetrics(BaseModel):
+    """
+    基线对比指标
+    用于对比优化方案与基线方案的效果
+    """
+    baseline_max_delay_minutes: float = Field(default=0.0, description="基线最大延误(分钟)")
+    baseline_avg_delay_minutes: float = Field(default=0.0, description="基线平均延误(分钟)")
+    baseline_total_delay_minutes: float = Field(default=0.0, description="基线总延误(分钟)")
+    max_delay_improvement: float = Field(default=0.0, description="最大延误改进百分比(%)")
+    avg_delay_improvement: float = Field(default=0.0, description="平均延误改进百分比(%)")
+    is_better_than_baseline: bool = Field(default=False, description="是否优于基线")
+
+
 class EvaluationReport(BaseModel):
     """
     方案评估单
     第四层输出：对候选方案的多维度评估
+    整合LLM定性评估 + 数值对比指标
 
     L4 增强字段（v2）：
     - feasibility_risks: 可行性风险评估
@@ -287,11 +301,16 @@ class EvaluationReport(BaseModel):
     is_feasible: bool = Field(description="是否可行")
     total_delay_minutes: float = Field(default=0.0, description="总晚点(分钟)")
     max_delay_minutes: float = Field(default=0.0, description="最大晚点(分钟)")
+    avg_delay_minutes: float = Field(default=0.0, description="平均晚点(分钟)")
+    affected_trains_count: int = Field(default=0, description="受影响列车数")
     solving_time_seconds: float = Field(default=0.0, description="运行时间(秒)")
     risk_warnings: List[str] = Field(default_factory=list, description="风险提示")
     constraint_satisfaction: Dict[str, bool] = Field(default_factory=dict, description="约束满足情况")
     llm_summary: str = Field(default="", description="LLM生成的评估摘要")
     feasibility_score: float = Field(default=0.8, description="可行性评分(0-1)")
+
+    # 基线对比指标（整合evaluator.py功能）
+    baseline_metrics: Optional[BaselineMetrics] = Field(default=None, description="基线对比指标")
 
     # L4 增强字段
     feasibility_risks: List[str] = Field(default_factory=list, description="可行性风险列表")

@@ -62,6 +62,8 @@ class MaxDelayFirstScheduler:
 
         self.station_names = {s.station_code: s.station_name for s in stations}
         self.station_track_count = {s.station_code: s.track_count for s in stations}
+        # 识别线路所（track_count=0的节点）
+        self.line_posts = {s.station_code for s in stations if s.track_count == 0}
 
     def _time_to_seconds(self, time_str: str) -> int:
         """将时间字符串转换为秒数"""

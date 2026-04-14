@@ -75,6 +75,7 @@ class Station(BaseModel):
     station_code: str = Field(description="车站编码")
     station_name: str = Field(description="车站名称")
     track_count: int = Field(default=1, description="股道总数")
+    node_type: str = Field(default="station", description="节点类型: station(车站)/line_post(线路所)")
 
     def get_station_index(self, station_code: str, all_stations: List['Station']) -> int:
         """获取车站在线路中的索引位置"""
@@ -82,6 +83,10 @@ class Station(BaseModel):
             if s.station_code == station_code:
                 return i
         return -1
+
+    def is_pass_through_only(self) -> bool:
+        """是否仅通过（不停站）- 线路所没有站台，列车通过但不停靠"""
+        return self.node_type == "line_post" or self.track_count == 0
 
 
 class DelayLocation(BaseModel):

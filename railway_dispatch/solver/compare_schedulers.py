@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
 from models.data_models import InjectedDelay, DelayLocation, ScenarioType, DelayInjection
-from evaluation.evaluator import Evaluator
+from evaluation.evaluator import BaselineComparator
 
 
 def compare_schedulers(delay_seconds=1200, train_id="G1563", station_code="BDD"):
@@ -156,16 +156,16 @@ def compare_schedulers(delay_seconds=1200, train_id="G1563", station_code="BDD")
         "affected_trains": delay_injection.affected_trains
     }
 
-    # 评估FCFS方案
-    evaluator = Evaluator(baseline_strategy="no_adjustment")
-    fcfs_eval = evaluator.evaluate(
+    # 使用BaselineComparator评估FCFS和MIP方案
+    comparator = BaselineComparator(baseline_strategy="no_adjustment")
+    fcfs_eval = comparator.compare(
         fcfs_result.optimized_schedule,
         original_schedule,
         delay_injection_dict
     )
 
     # 评估MIP方案
-    mip_eval = evaluator.evaluate(
+    mip_eval = comparator.compare(
         mip_result.optimized_schedule,
         original_schedule,
         delay_injection_dict

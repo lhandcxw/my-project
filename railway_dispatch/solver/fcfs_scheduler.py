@@ -253,6 +253,11 @@ class FCFSScheduler:
             station_code = station.station_code
             track_count = self.station_track_count.get(station_code, 1)
 
+            # 跳过线路所（股道数为0表示不能停站）
+            if track_count == 0:
+                logger.debug(f"[FCFS] 跳过线路所 {station_code}，不进行追踪间隔处理")
+                continue
+
             # 收集该站的所有列车，按原始发车时间排序（FCFS按计划顺序）
             trains_at_station = []
             for train in self.trains:

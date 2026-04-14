@@ -149,8 +149,8 @@ class LLMPromptAdapter:
             # 记录响应类型 - 明确显示模型名称
             model_used = f"{response_type}"
 
-            # 记录原始响应用于调试
-            logger.info(f"[LLM响应] {template_id}: 原始响应长度={len(raw_response)}, 前200字符={raw_response[:200]}")
+            # 记录原始响应用于调试（显示完整响应）
+            logger.info(f"[LLM响应] {template_id}: 原始响应长度={len(raw_response)}, 完整响应={raw_response}")
 
             # 解析响应（带修复功能的解析器）
             parsed_output = self._parse_json_response(raw_response)

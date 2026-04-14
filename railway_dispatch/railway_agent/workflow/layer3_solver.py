@@ -92,6 +92,50 @@ class Layer3Solver:
             total_delay = total_delay_seconds // 60
             max_delay = max_delay_seconds // 60
 
+            # 构建solver_response字典，包含优化后的时刻表
+            solver_response_dict = solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
+                "success": solver_response.success,
+                "status": solver_response.status,
+                "total_delay_minutes": total_delay,
+                "max_delay_minutes": max_delay,
+                "message": solver_response.message,
+                "optimized_schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {}
+            }
+            
+            # 获取原始时刻表用于基线对比
+            original_schedule = {}
+            if trains:
+                try:
+                    for t in trains:
+                        if hasattr(t, 'train_id'):
+                            original_schedule[t.train_id] = t.model_dump() if hasattr(t, 'model_dump') else t
+                        elif isinstance(t, dict):
+                            train_id = t.get('train_id', t.get('id', 'unknown'))
+                            original_schedule[train_id] = t
+                except Exception as e:
+                    logger.warning(f"构建原始时刻表时出错: {e}")
+            
+            # 从accident_card提取位置信息
+            location_code = accident_card.location_code if accident_card.location_code else ""
+            location_name = accident_card.location_name if accident_card.location_name else ""
+            location_type = accident_card.location_type if accident_card.location_type else "station"
+            
+            # 构建延误注入信息用于基线对比
+            # 从accident_card获取延误时间（分钟转秒）
+            delay_minutes = accident_card.expected_duration if accident_card.expected_duration else 10
+            delay_seconds = delay_minutes * 60
+            
+            delay_injection_info = {
+                "injected_delays": [
+                    {
+                        "train_id": train_id,
+                        "location": {"location_type": location_type, "station_code": location_code},
+                        "initial_delay_seconds": delay_seconds
+                    }
+                    for train_id in (accident_card.affected_train_ids if accident_card.affected_train_ids else [])
+                ]
+            }
+            
             return {
                 "skill_execution_result": {
                     "skill_name": main_skill,
@@ -100,16 +144,17 @@ class Layer3Solver:
                     "solving_time": solver_response.solving_time_seconds,
                     "total_delay_minutes": total_delay,
                     "max_delay_minutes": max_delay,
+                    "location": location_name or location_code or "未知位置",
+                    "location_code": location_code,
+                    "location_type": location_type,
+                    "scenario_type": self._map_scene_to_scenario_type(accident_card.scene_category),
+                    "affected_trains": accident_card.affected_train_ids if accident_card.affected_train_ids else [],
+                    "original_schedule": original_schedule,  # 添加原始时刻表用于基线对比
+                    "delay_injection": delay_injection_info,  # 添加延误注入信息
                     "_response_source": "rule_based_solver",
                     "_response_note": "【规则执行】L3层使用规则选择并执行求解器，不涉及LLM"
                 },
-                "solver_response": solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
-                    "success": solver_response.success,
-                    "status": solver_response.status,
-                    "total_delay_minutes": total_delay,
-                    "max_delay_minutes": max_delay,
-                    "message": solver_response.message
-                },
+                "solver_response": solver_response_dict,
                 "schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {},
                 "metrics": solver_response.metrics if hasattr(solver_response, 'metrics') else {},
                 "llm_response": f"【规则执行】执行{main_skill}求解器，状态: {solver_response.status} (L3层不使用LLM)"
@@ -288,7 +333,14 @@ class Layer3Solver:
                 "success": False,
                 "error_message": error_message,
                 "total_delay_minutes": 0,
-                "max_delay_minutes": 0
+                "max_delay_minutes": 0,
+                "location": "未知位置",
+                "location_code": "",
+                "location_type": "station",
+                "scenario_type": "temporary_speed_limit",
+                "affected_trains": [],
+                "original_schedule": {},  # 添加空原始时刻表
+                "delay_injection": {"injected_delays": []}  # 添加空延误注入信息
             },
             "solver_response": None,
             "llm_response": f"执行失败: {error_message}"

@@ -68,7 +68,7 @@ train_ids = get_train_ids()
 # 创建调度器
 scheduler = MIPScheduler(trains, stations)
 skills = create_skills(scheduler)
-evaluator = Evaluator()
+# evaluator = Evaluator()  # 已弃用：评估功能已整合到Layer4Evaluation
 
 # 从统一配置中心导入配置
 from config import AppConfig, LLMConfig, DispatchEnvConfig, get_config_summary, validate_config
@@ -369,25 +369,13 @@ def agent_chat():
                 "message": "Agent未初始化，请检查配置"
             })
 
-        # 解析用户输入，构建DelayInjection
-        delay_injection = parse_user_prompt(prompt)
-        logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
-
-        # 检查关键信息是否缺失
-        missing_info = []
-        if not delay_injection.get("affected_trains"):
-            missing_info.append("列车号（如：G1563）")
-        if not delay_injection.get("injected_delays"):
-            missing_info.append("延误时间（如：延误10分钟）")
-        if missing_info:
-            logger.warning(f"用户输入缺少必要信息: {missing_info}")
-            return jsonify({
-                "success": False,
-                "message": f"请提供以下信息：{', '.join(missing_info)}"
-            })
+        # 统一LLM驱动架构：实体提取完全由L1层LLM完成，不使用规则解析
+        # 直接传递原始prompt给Agent，由工作流引擎内部处理
+        logger.info("使用LLM驱动工作流进行实体提取和场景识别（无规则解析）")
 
         # 调用Agent分析（LLM驱动，传入原始prompt）
-        result = agent.analyze(delay_injection, user_prompt=prompt)
+        # Agent内部使用WorkflowEngine执行L1-L4完整工作流
+        result = agent.analyze(delay_injection={}, user_prompt=prompt)
 
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -482,21 +470,26 @@ def parse_user_prompt(prompt: str) -> dict:
     """
     解析用户输入，构建DelayInjection
 
-    简单规则解析，后续可接入LLM进行语义理解
+    统一LLM驱动架构：
+    - 不再使用关键词硬判场景类型
+    - 仅提取基本的列车、车站、延误时间信息
+    - 场景识别交由L1层的LLM完成
     """
     import re
 
-    prompt_lower = prompt.lower()
+    # 提取列车和延误信息（纯文本提取，不涉及语义理解）
+    # 匹配格式：G1001延误10分钟，G1003延误15分钟
+    train_pattern = r'([GDCTKZ]\d+)'
+    delay_pattern = r'(\d+)\s*分钟'
 
-    # 检测场景类型
-    # 临时限速场景关键字：限速、大风、暴雨、降雪、冰雪、雨量、风速等天气原因
-    if '限速' in prompt or '大风' in prompt or '暴雨' in prompt or '降雪' in prompt or '冰雪' in prompt or '雨量' in prompt or '风速' in prompt or '天气' in prompt:
-        scenario_type = 'temporary_speed_limit'
-    # 突发故障场景关键字：故障、中断、封锁、设备故障、降弓、线路故障等
-    elif '故障' in prompt or '中断' in prompt or '封锁' in prompt or '设备故障' in prompt or '降弓' in prompt or '线路' in prompt or '设备' in prompt:
-        scenario_type = 'sudden_failure'
-    else:
-        scenario_type = 'temporary_speed_limit'  # 默认
+    train_ids = re.findall(train_pattern, prompt)
+    delays = re.findall(delay_pattern, prompt)
+
+    # 如果没有提取到关键信息，不再使用默认值，而是设置为空
+    if not train_ids:
+        train_ids = []
+    if not delays:
+        delays = []
 
     # 提取列车和延误信息
     # 匹配格式：G1001延误10分钟，G1003延误15分钟
@@ -726,18 +719,13 @@ def agent_chat_with_comparison():
                 "message": "Agent未初始化"
             })
 
-        # 解析用户输入
-        delay_injection = parse_user_prompt(prompt)
-
-        # 添加用户偏好到scenario_params
-        if "scenario_params" not in delay_injection:
-            delay_injection["scenario_params"] = {}
-        delay_injection["scenario_params"]["user_preference"] = comparison_criteria
-
-        logger.info(f"解析后的延误注入: {delay_injection.get('scenario_type')}, 列车: {delay_injection.get('affected_trains')}")
-
-        # 调用Agent分析（带比较）
-        result = agent.analyze_with_comparison(delay_injection, user_prompt=prompt, comparison_criteria=comparison_criteria)
+        # 直接调用Agent分析（Agent内部使用LLM进行语义理解，不再预解析）
+        logger.info(f"调用Agent分析（带比较），prompt: {prompt[:50]}...")
+        result = agent.analyze_with_comparison(
+            delay_injection={"user_prompt": prompt},  # 只传递原始prompt，Agent内部用LLM解析
+            user_prompt=prompt,
+            comparison_criteria=comparison_criteria
+        )
 
         if result.success and result.dispatch_result:
             dispatch = result.dispatch_result
@@ -939,6 +927,8 @@ def rule_workflow_debug():
 def workflow_start():
     """
     启动LLM驱动的4层工作流（多轮对话第一轮）
+    
+    统一架构：直接使用LLMAgent执行完整L1-L4工作流，不再手动编排
 
     请求体:
     {
@@ -970,33 +960,36 @@ def workflow_start():
 
         logger.info(f"启动多轮工作流，输入: {user_input[:50]}...")
 
-        # 使用与智能调度相同的L1数据建模层（仅执行第一层）
-        from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+        # 统一架构：使用LLMAgent执行完整工作流（与agent_chat保持一致）
+        agent = get_agent()
+        if agent is None:
+            return jsonify({
+                "success": False,
+                "message": "Agent未初始化"
+            })
 
-        workflow_engine = create_workflow_engine()
-        l1_result = workflow_engine.execute_layer1(
-            user_input=user_input,
-            canonical_request=None,
-            enable_rag=True
-        )
+        # 统一架构：使用LLMAgent执行完整L1-L4工作流（与agent_chat保持一致）
+        # 注意：这里使用agent.analyze()，它会内部调用WorkflowEngine执行完整工作流
+        delay_injection = {"raw_input": user_input}
+        agent_result = agent.analyze(delay_injection, user_input)
 
-        accident_card = l1_result.get("accident_card", {})
-        if hasattr(accident_card, 'model_dump'):
-            accident_card_data = accident_card.model_dump()
-        else:
-            accident_card_data = accident_card
+        # 从工作流结果中提取accident_card
+        workflow_result = getattr(agent_result, '_workflow_result', None)
+        accident_card_data = getattr(agent_result, '_accident_card', {}) if not workflow_result else None
+        if not accident_card_data and workflow_result:
+            accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
 
         # 转换为字典格式（用于JSON序列化）
         result_dict = {
             "accident_card": accident_card_data,
-            "can_solve": accident_card_data.get("is_complete", True),
-            "missing_info": accident_card_data.get("missing_fields", []),
+            "can_solve": accident_card_data.get("is_complete", True) if accident_card_data else True,
+            "missing_info": accident_card_data.get("missing_fields", []) if accident_card_data else [],
             "llm_response_type": "llm_real"
         }
 
         # 检查信息是否完整
-        is_complete = accident_card_data.get("is_complete", True)
-        missing_fields = accident_card_data.get("missing_fields", [])
+        is_complete = accident_card_data.get("is_complete", True) if accident_card_data else True
+        missing_fields = accident_card_data.get("missing_fields", []) if accident_card_data else []
 
         # 创建会话并保存第1层结果
         session_mgr = get_session_manager()
@@ -1013,7 +1006,15 @@ def workflow_start():
             "current_layer": 1,
             "progress": status["progress"],
             "messages": status["messages"],
-            "layer1_result": result_dict
+            "layer1_result": result_dict,
+            "agent_result": {
+                "success": agent_result.success,
+                "recognized_scenario": agent_result.recognized_scenario,
+                "selected_skill": agent_result.selected_skill,
+                "selected_solver": agent_result.selected_solver,
+                "reasoning": agent_result.reasoning,
+                "llm_summary": agent_result.llm_summary
+            }
         }
 
         # 如果信息不完整，返回提示信息要求补充
@@ -1040,7 +1041,7 @@ def workflow_start():
 @app.route('/api/workflow/next', methods=['POST'])
 def workflow_next():
     """
-    继续执行多轮对话（从当前层继续到下一层）
+    继续执行多轮对话（统一架构：直接使用LLMAgent执行完整工作流）
 
     请求体:
     {
@@ -1051,9 +1052,9 @@ def workflow_next():
     响应:
     {
         "session_id": "会话ID",
-        "current_layer": 2,
+        "current_layer": 4,
         "messages": [...],
-        "layer2_result": {...}
+        "workflow_result": {...}  # 完整工作流结果
     }
     """
     try:
@@ -1106,155 +1107,74 @@ def workflow_next():
                     "missing_fields": missing_info
                 })
 
-        # 根据当前层执行下一层
-        if current_layer == 1:
-            # 执行第2层
-            from models.workflow_models import AccidentCard
-            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-
-            # 从第1层结果构建对象
-            l1_result = status["layer1_result"]
-            accident_card = AccidentCard(**l1_result.get("accident_card", {}))
-
-            # 使用新架构工作流引擎
-            workflow_engine = create_workflow_engine()
-            result = workflow_engine.execute_layer2(
-                accident_card=accident_card
-            )
-            session_mgr.update_layer_result(session_id, 2, result)
-
-            status = session_mgr.get_session_status(session_id)
-
-            return jsonify({
-                "success": True,
-                "session_id": session_id,
-                "current_layer": 2,
-                "progress": status["progress"],
-                "messages": status["messages"],
-                "layer2_result": {
-                    "skill_dispatch": result.get("skill_dispatch", {}),
-                    "reasoning": result.get("reasoning", ""),
-                    "llm_response_type": result.get("llm_response_type", "未知")
-                }
-            })
-
-        elif current_layer == 2:
-            # 执行第3层
-            from models.workflow_models import AccidentCard
-            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-
-            # 从第1层结果构建对象
-            l1_result = status["layer1_result"]
-            accident_card = AccidentCard(**l1_result.get("accident_card", {}))
-
-            # 获取数据（使用完整时刻表）
-            trains = get_trains_pydantic()[:50]
-            stations = get_stations_pydantic()
-
-            # 使用新架构工作流引擎
-            workflow_engine = create_workflow_engine()
-            result = workflow_engine.execute_layer3(
-                planning_intent="recalculate_corridor_schedule",
-                accident_card=accident_card,
-                trains=trains,
-                stations=stations
-            )
-            # 转换为字典 (支持Pydantic模型)
-            def to_dict(obj):
-                if hasattr(obj, 'model_dump'):
-                    return obj.model_dump()
-                elif hasattr(obj, '__dict__'):
-                    return obj.__dict__
-                elif isinstance(obj, dict):
-                    return {k: to_dict(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [to_dict(i) for i in obj]
-                else:
-                    return obj
-            result_dict = to_dict(result)
-            session_mgr.update_layer_result(session_id, 3, result_dict)
-
-            status = session_mgr.get_session_status(session_id)
-
-            return jsonify({
-                "success": True,
-                "session_id": session_id,
-                "current_layer": 3,
-                "progress": status["progress"],
-                "messages": status["messages"],
-                "layer3_result": result_dict
-            })
-
-        elif current_layer == 3:
-            # 执行第4层
-            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-            l3_result = status["layer3_result"]
-
-            # 获取 skill_execution_result 和 solver_response
-            skill_execution_result = l3_result.get("skill_execution_result", {}) if isinstance(l3_result, dict) else {}
-            solver_response_data = l3_result.get("solver_response", {}) if isinstance(l3_result, dict) else {}
-
-            # 构建solver_response的简化对象
-            class SimpleSolverResponse:
-                def __init__(self, data):
-                    self.success = data.get("success", False)
-                    self.total_delay_minutes = data.get("total_delay_minutes", 0)
-                    self.max_delay_minutes = data.get("max_delay_minutes", 0)
-                    self.adjusted_schedule = data.get("adjusted_schedule", [])
-                    self.message = data.get("message", "")
-
-                def model_dump(self):
-                    return {
-                        "success": self.success,
-                        "total_delay_minutes": self.total_delay_minutes,
-                        "max_delay_minutes": self.max_delay_minutes,
-                        "adjusted_schedule": self.adjusted_schedule,
-                        "message": self.message
-                    }
-
-            solver_response = SimpleSolverResponse(solver_response_data)
-
-            # 使用新架构工作流引擎
-            workflow_engine = create_workflow_engine()
-            result = workflow_engine.execute_layer4(
-                skill_execution_result=skill_execution_result,
-                solver_response=solver_response
-            )
-            # 转换为字典
-            result_dict = {
-                "evaluation_report": result.get("evaluation_report", {}).model_dump() if hasattr(result.get("evaluation_report", {}), "model_dump") else result.get("evaluation_report", {}),
-                "ranking_result": result.get("ranking_result", {}).model_dump() if hasattr(result.get("ranking_result", {}), "model_dump") else result.get("ranking_result", {}),
-                "rollback_feedback": result.get("rollback_feedback", {}).model_dump() if hasattr(result.get("rollback_feedback", {}), "model_dump") else result.get("rollback_feedback", {}),
-                "llm_response_type": result.get("llm_response_type", "未知")
-            }
-            session_mgr.update_layer_result(session_id, 4, result_dict)
-
-            status = session_mgr.get_session_status(session_id)
-
-            # 获取所有层的结果用于前端显示
-            all_results = {
-                "layer1_result": status.get("layer1_result", {}),
-                "layer2_result": status.get("layer2_result", {}),
-                "layer3_result": status.get("layer3_result", {}),
-                "layer4_result": result_dict
-            }
-
-            return jsonify({
-                "success": True,
-                "session_id": session_id,
-                "current_layer": 4,
-                "progress": status["progress"],
-                "messages": status["messages"],
-                "layer4_result": result_dict,
-                "is_complete": status["is_complete"],
-                "all_layer_results": all_results  # 返回所有层结果供前端使用
-            })
-
-        else:
+        # 统一架构：直接使用LLMAgent执行完整L1-L4工作流
+        # 不再手动逐层执行，而是复用统一的analyze接口
+        agent = get_agent()
+        if agent is None:
             return jsonify({
                 "success": False,
-                "message": f"当前层 {current_layer} 已完成，无法继续"
+                "message": "Agent未初始化"
             })
+
+        # 获取用户原始输入
+        user_input = status.get("user_input", "")
+        if not user_input:
+            return jsonify({
+                "success": False,
+                "message": "会话中未找到用户输入"
+            })
+
+        logger.info(f"多轮对话继续，执行完整工作流，输入: {user_input[:50]}...")
+
+        # 使用Agent执行完整L1-L4工作流（与agent_chat/workflow_start统一入口）
+        result = agent.analyze(
+            delay_injection={"raw_input": user_input},
+            user_prompt=user_input
+        )
+
+        if not result.success:
+            return jsonify({
+                "success": False,
+                "message": f"工作流执行失败: {result.error_message}"
+            })
+
+        # 构建统一格式的响应
+        workflow_result = {
+            "success": True,
+            "recognized_scenario": result.recognized_scenario,
+            "selected_skill": result.selected_skill,
+            "selected_solver": result.selected_solver,
+            "reasoning": result.reasoning,
+            "llm_summary": result.llm_summary,
+            "dispatch_result": {
+                "optimized_schedule": result.dispatch_result.optimized_schedule if result.dispatch_result else [],
+                "delay_statistics": result.dispatch_result.delay_statistics if result.dispatch_result else {},
+                "computation_time": result.dispatch_result.computation_time if result.dispatch_result else 0,
+                "success": result.dispatch_result.success if result.dispatch_result else False,
+                "message": result.dispatch_result.message if result.dispatch_result else "",
+                "skill_name": result.dispatch_result.skill_name if result.dispatch_result else ""
+            },
+            "computation_time": result.computation_time,
+            "model_used": result.model_used
+        }
+
+        # 更新会话状态为完成
+        session_mgr.update_layer_result(session_id, 4, workflow_result)
+        session_mgr.complete_session(session_id)
+
+        # 获取更新后的状态
+        status = session_mgr.get_session_status(session_id)
+
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "current_layer": 4,
+            "progress": status["progress"],
+            "messages": status["messages"],
+            "workflow_result": workflow_result,
+            "is_complete": True,
+            "message": "工作流执行完成"
+        })
 
     except Exception as e:
         logger.exception(f"workflow_next处理异常: {str(e)}")
@@ -1344,34 +1264,38 @@ def workflow_continue():
                 "message": "会话不存在或已过期"
             })
 
-        # 导入工作流引擎
-        from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-        workflow_engine = create_workflow_engine()
-
-        # 获取之前的状态
-        layer1_result = status.get("layer_results", {}).get("layer1", {})
-        accident_card_data = layer1_result.get("accident_card", {})
+        # 统一架构：使用LLMAgent执行完整工作流（与agent_chat/workflow_start保持一致）
+        agent = get_agent()
+        if agent is None:
+            return jsonify({
+                "success": False,
+                "message": "Agent未初始化"
+            })
 
         # 合并原始输入和补充信息
         original_input = status.get("original_input", "")
         combined_input = f"{original_input} {additional_info}"
 
-        # 重新执行L1，使用合并后的输入
-        result = workflow_engine.execute_layer1(user_input=combined_input)
+        logger.info(f"使用补充信息重新执行完整工作流: {combined_input[:50]}...")
 
-        accident_card = result.get("accident_card")
-        if not accident_card:
-            return jsonify({
-                "success": False,
-                "message": "无法从补充信息中提取事故信息"
-            })
+        # 使用Agent执行完整L1-L4工作流（统一入口）
+        agent_result = agent.analyze(
+            delay_injection={"raw_input": combined_input},
+            user_prompt=combined_input
+        )
 
-        # 转换为字典格式
+        # 从工作流结果中提取accident_card
+        workflow_result = getattr(agent_result, '_workflow_result', None)
+        accident_card_data = getattr(agent_result, '_accident_card', {}) if not workflow_result else None
+        if not accident_card_data and workflow_result:
+            accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
+
+        # 转换为字典格式（用于JSON序列化）
         result_dict = {
-            "accident_card": accident_card.model_dump() if hasattr(accident_card, "model_dump") else accident_card,
-            "can_solve": accident_card.is_complete if hasattr(accident_card, "is_complete") else True,
-            "missing_info": accident_card.missing_fields if hasattr(accident_card, "missing_fields") else [],
-            "llm_response_type": result.get("llm_response_type", "未知")
+            "accident_card": accident_card_data,
+            "can_solve": accident_card_data.get("is_complete", True) if accident_card_data else True,
+            "missing_info": accident_card_data.get("missing_fields", []) if accident_card_data else [],
+            "llm_response_type": "llm_real"
         }
 
         # 更新会话状态
@@ -1388,8 +1312,8 @@ def workflow_continue():
             })
 
         # 检查信息是否完整
-        is_complete = accident_card.is_complete if hasattr(accident_card, "is_complete") else True
-        missing_fields = accident_card.missing_fields if hasattr(accident_card, "missing_fields") else []
+        is_complete = accident_card_data.get("is_complete", True) if accident_card_data else True
+        missing_fields = accident_card_data.get("missing_fields", []) if accident_card_data else []
 
         # 构建响应
         response = {
@@ -1398,7 +1322,15 @@ def workflow_continue():
             "current_layer": 1,
             "progress": status["progress"],
             "messages": status["messages"],
-            "layer1_result": result_dict
+            "layer1_result": result_dict,
+            "agent_result": {
+                "success": agent_result.success,
+                "recognized_scenario": agent_result.recognized_scenario,
+                "selected_skill": agent_result.selected_skill,
+                "selected_solver": agent_result.selected_solver,
+                "reasoning": agent_result.reasoning,
+                "llm_summary": agent_result.llm_summary
+            }
         }
 
         if not is_complete and missing_fields:

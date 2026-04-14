@@ -1,4 +1,4 @@
-# 铁路调度Agent系统架构设计文档（v6.3）
+# 铁路调度Agent系统架构设计文档（v6.4）
 
 ## 文档概述
 
@@ -15,7 +15,12 @@
 - 数据模式：统一使用 `data/` 目录下的真实数据
 - schema_version: dispatch_v6_2
 
-**v6.3更新（当前版本）**：
+**v6.4更新（当前版本）**：
+- **统一多轮对话工作流**：`/api/workflow/start`和`/api/workflow/next`也使用统一的LLM驱动工作流（与`agent_chat`保持一致）
+- **移除手动逐层执行**：`workflow_next`不再手动调用L2/L3/L4，而是直接使用`agent.analyze()`执行完整工作流
+- **统一实体提取**：多轮对话也使用L1层LLM进行场景识别和实体提取，不再依赖规则预处理
+
+**v6.3更新**：
 - **修复调度器接口**：修正`scheduler_interface.py`中`EarliestArrivalFirstScheduler`类名错误（原错误命名为`ReinforcementLearningSchedulerAdapter`）
 - **新增调度器类型**：添加`EARLIEST_ARRIVAL_FIRST`到`SchedulerType`枚举
 - **更新FORCE_LLM_MODE注释**：修正注释说明，明确`True=强制使用LLM，False=允许规则回退`

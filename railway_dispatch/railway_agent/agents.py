@@ -181,7 +181,8 @@ class LLMAgent:
 
             computation_time = time.time() - start_time
 
-            return AgentResult(
+            # 构建AgentResult
+            agent_result = AgentResult(
                 success=workflow_result.success,
                 recognized_scenario=recognized_scenario,
                 selected_skill=selected_skill,
@@ -193,6 +194,12 @@ class LLMAgent:
                 computation_time=computation_time,
                 model_used=self.model_name
             )
+            
+            # 保存工作流结果供后续使用（如调度器比较）
+            agent_result._workflow_result = workflow_result
+            agent_result._accident_card = accident_card_data
+            
+            return agent_result
 
         except Exception as e:
             logger.exception(f"LLM Agent 执行错误: {str(e)}")
@@ -220,7 +227,7 @@ class LLMAgent:
         分析场景并执行调度（带调度器比较）
 
         Args:
-            delay_injection: 延误注入数据
+            delay_injection: 延误注入数据（或仅包含user_prompt的字典）
             user_prompt: 用户输入的原始文本
             comparison_criteria: 比较准则
 
@@ -235,80 +242,78 @@ class LLMAgent:
 
             logger.info("[Agent] 开始带比较的调度分析")
 
-            # 使用analyze方法获取基础结果
+            # 使用analyze方法获取基础结果（LLM驱动，内部完成实体提取）
             result = self.analyze(delay_injection, user_prompt)
 
             if not result.success:
                 return result
 
-            # 执行调度器比较（对所有场景一致）
-            affected_trains = delay_injection.get("affected_trains", result.dispatch_result.optimized_schedule.get("trains", []))
+            # 从工作流结果中提取实体信息（由LLM在L1层提取）
+            # 注意：这里不再依赖delay_injection中的规则提取信息
+            workflow_result = getattr(result, '_workflow_result', None)
+            accident_card_data = getattr(result, '_accident_card', {}) if not workflow_result else None
+            
+            # 从accident_card_data中提取信息
+            if not accident_card_data and workflow_result:
+                accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
+            
+            # 从调度结果中提取受影响列车
+            affected_trains = []
+            if accident_card_data and accident_card_data.get('affected_train_ids'):
+                affected_trains = accident_card_data['affected_train_ids']
+            
+            # 如果没有提取到列车，尝试从调度结果获取
+            if not affected_trains and result.dispatch_result and result.dispatch_result.optimized_schedule:
+                schedule = result.dispatch_result.optimized_schedule
+                if isinstance(schedule, dict):
+                    affected_trains = list(schedule.keys())
+                elif isinstance(schedule, list) and len(schedule) > 0:
+                    affected_trains = [s.get("train_id") for s in schedule if s.get("train_id")]
+            
+            # 如果没有提取到列车，尝试从delay_injection获取（兜底）
+            if not affected_trains and delay_injection.get("affected_trains"):
+                affected_trains = delay_injection["affected_trains"]
+            
             if not affected_trains:
-                affected_trains = delay_injection.get("injected_delays", [{}])[0].get("train_id", "")
-
-            # 验证关键信息是否完整
-            if not affected_trains:
-                logger.warning("[Agent] 缺少列车号信息，无法执行调度器比较")
-                return AgentResult(
-                    success=False,
-                    recognized_scenario="error",
-                    selected_skill="",
-                    selected_solver="",
-                    reasoning="",
-                    llm_summary="",
-                    dispatch_result=None,
-                    model_response="",
-                    computation_time=time.time() - start_time,
-                    model_used=self.model_name,
-                    error_message="请提供受影响的列车号（如：G1563）"
-                )
+                logger.warning("[Agent] 无法识别受影响列车，跳过调度器比较")
+                return result
 
             first_train_id = affected_trains[0] if isinstance(affected_trains, list) else affected_trains
             
-            # 从injected_delays中提取位置信息（与parse_user_prompt返回的结构一致）
+            # 从accident_card_data中提取位置信息
             location_info = {}
-            injected_delays = delay_injection.get("injected_delays", [])
-            if injected_delays and len(injected_delays) > 0:
-                location_info = injected_delays[0].get("location", {})
+            location_code = accident_card_data.get('location_code', '') if accident_card_data else ''
+            if location_code:
+                if '-' in location_code:
+                    location_info = {"section_id": location_code}
+                else:
+                    location_info = {"station_code": location_code}
+            
+            # 如果LLM没有提取到，尝试从delay_injection获取（兜底）
+            if not location_info:
+                injected_delays = delay_injection.get("injected_delays", [])
+                if injected_delays and len(injected_delays) > 0:
+                    location_info = injected_delays[0].get("location", {})
 
             # 检查位置信息
             if not location_info.get("station_code") and not location_info.get("section_id"):
                 logger.warning("[Agent] 缺少位置信息，无法执行调度器比较")
-                return AgentResult(
-                    success=False,
-                    recognized_scenario="error",
-                    selected_skill="",
-                    selected_solver="",
-                    reasoning="",
-                    llm_summary="",
-                    dispatch_result=None,
-                    model_response="",
-                    computation_time=time.time() - start_time,
-                    model_used=self.model_name,
-                    error_message="请提供事故发生位置（如：SJP站或XSD-BDD区间）"
-                )
+                # 返回基础结果，不进行调度器比较
+                return result
 
-            # 检查延误时间信息
+            # 从工作流结果中提取延误时间
             delay_seconds = None
-            # 从injected_delays中获取delay_seconds
-            if delay_injection.get("injected_delays"):
+            if accident_card_data and accident_card_data.get('expected_duration'):
+                delay_seconds = accident_card_data['expected_duration'] * 60  # 分钟转秒
+            
+            # 如果LLM没有提取到，尝试从delay_injection获取（兜底）
+            if delay_seconds is None and delay_injection.get("injected_delays"):
                 delay_seconds = delay_injection["injected_delays"][0].get("initial_delay_seconds")
 
             if delay_seconds is None:
                 logger.warning("[Agent] 缺少延误时间信息，无法执行调度器比较")
-                return AgentResult(
-                    success=False,
-                    recognized_scenario="error",
-                    selected_skill="",
-                    selected_solver="",
-                    reasoning="",
-                    llm_summary="",
-                    dispatch_result=None,
-                    model_response="",
-                    computation_time=time.time() - start_time,
-                    model_used=self.model_name,
-                    error_message="请提供延误时间（如：延误10分钟）"
-                )
+                # 返回基础结果，不进行调度器比较
+                return result
 
             station_code = location_info.get("station_code")
             section_id = location_info.get("section_id")
@@ -317,10 +322,9 @@ class LLMAgent:
             if section_id:
                 location_type = "section"
                 # 对于区间，提取第一个车站代码作为比较用的车站（临时方案）
-                # 实际应该支持区间比较，但目前scheduler只支持车站
                 temp_station_code = section_id.split("-")[0] if "-" in section_id else station_code
                 actual_station_code = temp_station_code
-                logger.info(f"[Agent] 区间调度比较，使用第一个车站: {actual_station_code}（临时方案，后续应支持区间比较）")
+                logger.info(f"[Agent] 区间调度比较，使用第一个车站: {actual_station_code}")
             else:
                 location_type = "station"
                 actual_station_code = station_code
@@ -482,6 +486,126 @@ class LLMAgent:
 如需执行完整调度，请使用智能调度功能。"""
 
         return response
+
+    def analyze_with_session(
+        self,
+        user_input: str,
+        session_history: Optional[List[Dict[str, str]]] = None,
+        enable_rag: bool = True
+    ) -> Dict[str, Any]:
+        """
+        支持多轮对话的统一工作流分析
+        
+        与单轮对话的区别：
+        - 支持会话历史，LLM可以理解上下文
+        - 返回结构化结果，便于多轮对话管理
+        - 信息不完整时返回缺失字段，而不是报错
+        
+        Args:
+            user_input: 用户当前输入
+            session_history: 会话历史消息列表
+            enable_rag: 是否启用RAG
+            
+        Returns:
+            Dict[str, Any]: 包含以下字段：
+                - success: 是否成功
+                - needs_more_info: 是否需要更多信息
+                - missing_fields: 缺失字段列表
+                - layer1_result: L1层结果
+                - workflow_result: 完整工作流结果（如果完成）
+                - message: 状态消息
+        """
+        try:
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+            
+            logger.info(f"[Agent] 执行多轮对话工作流，输入: {user_input[:50]}...")
+            
+            # 构建完整输入（包含历史上下文）
+            if session_history:
+                # 将历史对话转换为上下文
+                context_parts = []
+                for msg in session_history[-4:]:  # 只取最近4轮
+                    role = "用户" if msg.get("role") == "user" else "系统"
+                    context_parts.append(f"{role}: {msg.get('content', '')}")
+                context_parts.append(f"用户: {user_input}")
+                full_input = "\n".join(context_parts)
+            else:
+                full_input = user_input
+            
+            # 执行完整工作流
+            workflow_engine = create_workflow_engine()
+            workflow_result = workflow_engine.execute_full_workflow(
+                user_input=full_input,
+                canonical_request=None,
+                enable_rag=enable_rag
+            )
+            
+            # 从工作流结果提取信息
+            accident_card_data = workflow_result.debug_trace.get("accident_card", {})
+            
+            # 检查信息是否完整
+            is_complete = accident_card_data.get("is_complete", True)
+            missing_fields = accident_card_data.get("missing_fields", [])
+            
+            # 构建L1结果
+            layer1_result = {
+                "accident_card": accident_card_data,
+                "can_solve": is_complete,
+                "missing_info": missing_fields,
+                "llm_response_type": "llm_real"
+            }
+            
+            # 如果信息不完整，返回提示
+            if not is_complete and missing_fields:
+                return {
+                    "success": True,
+                    "needs_more_info": True,
+                    "missing_fields": missing_fields,
+                    "layer1_result": layer1_result,
+                    "message": f"请补充以下信息：{', '.join(missing_fields)}",
+                    "can_proceed": False
+                }
+            
+            # 工作流执行成功，返回完整结果
+            return {
+                "success": workflow_result.success,
+                "needs_more_info": False,
+                "missing_fields": [],
+                "layer1_result": layer1_result,
+                "workflow_result": {
+                    "success": workflow_result.success,
+                    "message": workflow_result.message,
+                    "accident_card": accident_card_data,
+                    "planning_intent": workflow_result.debug_trace.get("planning_intent", ""),
+                    "skill_dispatch": workflow_result.debug_trace.get("skill_dispatch", {}),
+                    "solver_result": self._solver_result_to_dict(workflow_result.solver_result),
+                    "policy_decision": workflow_result.debug_trace.get("policy_decision", {}),
+                    "llm_summary": workflow_result.debug_trace.get("llm_summary", "")
+                },
+                "message": "工作流执行完成" if workflow_result.success else workflow_result.message,
+                "can_proceed": True
+            }
+            
+        except Exception as e:
+            logger.exception(f"多轮对话工作流执行错误: {str(e)}")
+            return {
+                "success": False,
+                "needs_more_info": False,
+                "missing_fields": [],
+                "layer1_result": {},
+                "message": f"执行错误: {str(e)}",
+                "can_proceed": False
+            }
+    
+    def _solver_result_to_dict(self, solver_result) -> Optional[Dict[str, Any]]:
+        """将SolverResult转换为字典"""
+        if solver_result is None:
+            return None
+        if hasattr(solver_result, 'model_dump'):
+            return solver_result.model_dump()
+        elif hasattr(solver_result, '__dict__'):
+            return solver_result.__dict__
+        return None
 
 
 # ============================================

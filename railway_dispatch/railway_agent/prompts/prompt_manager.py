@@ -587,6 +587,58 @@ solver可选: mip, fcfs, max_delay_first, noop
         # 如需使用，请通过 register_template 手动注册
         # self.register_template(l3_solver_template)
 
+        # L4自然语言调度方案生成模板
+        l4_natural_language_template = PromptTemplate(
+            template_id="l4_natural_language_plan",
+            template_type=PromptTemplateType.L4_EVALUATION,
+            template_name="L4自然语言调度方案",
+            description="生成人类可读的自然语言调度方案",
+            system_prompt="你是一个专业的铁路调度方案解释助手，负责将数值化的调度结果转换为调度员易于理解的自然语言调度指令。",
+            user_prompt_template="""根据调度结果，生成自然语言调度方案。
+
+原始时刻表和调度结果：{execution_result}
+
+调度场景信息：
+- 事故类型：{scene_type}
+- 受影响列车：{affected_trains}
+- 延误位置：{delay_location}
+
+请生成详细的自然语言调度方案，包括：
+1. 总体调度策略概述
+2. 每列受影响列车的具体调整（按车站逐个说明）
+3. 发车顺序调整建议（如有）
+4. 关键时间节点提醒
+
+输出格式要求：
+- 使用专业但易懂的铁路调度术语
+- 明确说明每列车的到发时间调整
+- 如有列车顺序调整，说明原因
+- 指出需要特别注意的约束点
+
+示例输出格式：
+【调度方案概述】
+因{delay_location}发生{scene_type}，对{affected_trains}等列车进行如下调整：
+
+【具体调整】
+1. G1563次列车：
+   - 石家庄站：原计划10:00发车，调整为10:05发车（延误5分钟）
+   - 高邑西站：通过不停车，以压缩后续延误
+   
+2. G1567次列车：
+   - 发车顺序调整：从第3顺位调整为第2顺位
+   - 石家庄站：提前2分钟发车，为G1563让行
+
+【注意事项】
+- 请确保石家庄站追踪间隔不小于3分钟
+- G1563在保定东站需要压缩停站时间至2分钟""",
+            required_output_fields=["natural_language_plan"],
+            temperature=0.3,
+            max_tokens=1024,
+            tags=["natural_language", "dispatch_plan"],
+            version="1.0"
+        )
+        self.register_template(l4_natural_language_template)
+
 
 # 全局实例
 _prompt_manager: Optional[PromptManager] = None
