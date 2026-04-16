@@ -278,17 +278,12 @@ class FCFSScheduler:
             # 处理追踪间隔约束（多股道）
             last_departures = [0] * track_count
 
-            for train_info in trains_at_station:
+            for idx, train_info in enumerate(trains_at_station):
                 train_id = train_info['train_id']
                 train = next((t for t in self.trains if t.train_id == train_id), None)
 
-                # 选择最早可用的股道
-                best_track = 0
-                min_available_time = last_departures[0]
-                for track in range(1, track_count):
-                    if last_departures[track] < min_available_time:
-                        min_available_time = last_departures[track]
-                        best_track = track
+                # 按原始发车时间分配股道（遵循原始计划顺序）
+                best_track = idx % track_count
 
                 # 获取当前列车的当前调度时间
                 current_arr, current_dep = schedule[(train_id, station_code)]
@@ -385,7 +380,7 @@ class FCFSScheduler:
                                     arr_next, dep_next = schedule[(train_id, sc_next)]
                                     schedule[(train_id, sc_next)] = [arr_next - compress, dep_next - compress]
 
-                    # 压缩区间运行时间
+                    # 压缩区间运行时间（带安全约束检查）
                     for i, sc in enumerate(self._get_stations_for_train(train)[:-1]):
                         if remaining_recovery <= 0:
                             break
@@ -398,8 +393,21 @@ class FCFSScheduler:
                             compress = min(int(section_redundancy * self.running_time_redundancy_ratio), remaining_recovery)
                             if compress > 0:
                                 arr_next, dep_next = schedule[(train_id, sc_next)]
-                                schedule[(train_id, sc_next)] = [arr_next - compress, dep_next - compress]
-                                remaining_recovery -= compress
+                                # 安全约束检查：确保区间运行时间不小于最小值
+                                dep_current = schedule[(train_id, sc)][1]  # 当前站发车时间
+                                new_arr_next = arr_next - compress
+                                actual_running = new_arr_next - dep_current
+                                if actual_running >= min_running:
+                                    # 满足安全约束，应用压缩
+                                    schedule[(train_id, sc_next)] = [new_arr_next, dep_next - compress]
+                                    remaining_recovery -= compress
+                                else:
+                                    # 不满足安全约束，只压缩到最小运行时间
+                                    safe_arr = dep_current + min_running
+                                    safe_compress = arr_next - safe_arr
+                                    if safe_compress > 0:
+                                        schedule[(train_id, sc_next)] = [safe_arr, dep_next - safe_compress]
+                                        remaining_recovery -= safe_compress
 
         # Step 5: 构建最终结果
         optimized_schedule = {}

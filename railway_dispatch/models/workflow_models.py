@@ -283,6 +283,37 @@ class BaselineMetrics(BaseModel):
     is_better_than_baseline: bool = Field(default=False, description="是否优于基线")
 
 
+class HighSpeedMetrics(BaseModel):
+    """
+    高铁客运专线专用评估指标
+    针对高铁特点设计的专业评估维度
+    """
+    # 延误控制指标
+    median_delay_seconds: float = Field(default=0.0, description="中位数延误(秒)")
+    delay_std_dev: float = Field(default=0.0, description="延误标准差")
+    delay_variance: float = Field(default=0.0, description="延误方差")
+
+    # 准点率指标（高铁关键）
+    on_time_rate: float = Field(default=1.0, description="准点率(延误延误<5分钟)")
+    punctuality_strict: float = Field(default=1.0, description="严格准点率(延误延误<3分钟)")
+    punctuality_loose: float = Field(default=1.0, description="宽松准点率(延误延误<10分钟)")
+
+    # 延误传播控制指标（高铁核心）
+    delay_propagation_depth: int = Field(default=0, description="延误传播深度(站数)")
+    delay_propagation_breadth: int = Field(default=0, description="延误传播广度(车数)")
+    propagation_coefficient: float = Field(default=0.0, description="传播系数(深度/广度)")
+
+    # 延误分布指标
+    micro_delay_count: int = Field(default=0, description="微小延误数量(<5分钟)")
+    small_delay_count: int = Field(default=0, description="小延误数量(5-15分钟)")
+    medium_delay_count: int = Field(default=0, description="中延误数量(15-30分钟)")
+    large_delay_count: int = Field(default=0, description="大延误数量(>30分钟)")
+
+    # 综合评分
+    overall_score: float = Field(default=0.0, description="综合评分(0-100)")
+    grade: str = Field(default="未知", description="等级评定:优秀/良好/合格/不合格")
+
+
 class EvaluationReport(BaseModel):
     """
     方案评估单
@@ -311,6 +342,22 @@ class EvaluationReport(BaseModel):
 
     # 基线对比指标（整合evaluator.py功能）
     baseline_metrics: Optional[BaselineMetrics] = Field(default=None, description="基线对比指标")
+
+    # 高铁专用评估指标（新增）- 直接字段
+    on_time_rate: float = Field(default=1.0, description="准点率（延误<5分钟的列车比例）")
+    punctuality_strict: float = Field(default=1.0, description="严格准点率（延误<3分钟的列车比例）")
+    delay_std_dev: float = Field(default=0.0, description="延误标准差")
+    delay_propagation_depth: int = Field(default=0, description="传播深度（影响车站数）")
+    delay_propagation_breadth: int = Field(default=0, description="传播广度（影响列车数）")
+    propagation_coefficient: float = Field(default=0.0, description="传播系数")
+    micro_delay_count: int = Field(default=0, description="微延误次数（<2分钟）")
+    small_delay_count: int = Field(default=0, description="小延误次数（2-5分钟）")
+    medium_delay_count: int = Field(default=0, description="中延误次数（5-15分钟）")
+    large_delay_count: int = Field(default=0, description="大延误次数（>15分钟）")
+    evaluation_grade: str = Field(default="A", description="综合评级")
+
+    # 兼容性字段（保持向后兼容）
+    high_speed_metrics: Optional[HighSpeedMetrics] = Field(default=None, description="高铁专用评估指标（已废弃）")
 
     # L4 增强字段
     feasibility_risks: List[str] = Field(default_factory=list, description="可行性风险列表")

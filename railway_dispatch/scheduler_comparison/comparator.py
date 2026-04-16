@@ -12,9 +12,9 @@ import time
 import logging
 
 from .metrics import (
-    MetricsDefinition, 
-    EvaluationMetrics, 
-    MetricsWeight
+    MetricsDefinition,
+    EvaluationMetrics,
+    HighSpeedMetricsWeight as MetricsWeight
 )
 from .scheduler_interface import (
     BaseScheduler, 
@@ -168,11 +168,11 @@ class SchedulerComparator:
         criteria_weight_map = {
             ComparisonCriteria.MIN_MAX_DELAY: MetricsWeight.for_min_max_delay,
             ComparisonCriteria.MIN_AVG_DELAY: MetricsWeight.for_min_avg_delay,
-            ComparisonCriteria.BALANCED: MetricsWeight.for_balance,
+            ComparisonCriteria.BALANCED: MetricsWeight.for_balanced,
             ComparisonCriteria.REAL_TIME: MetricsWeight.for_real_time
         }
-        
-        weight_func = criteria_weight_map.get(criteria, MetricsWeight.for_balance)
+
+        weight_func = criteria_weight_map.get(criteria, MetricsWeight.for_balanced)
         return weight_func()
     
     def _calculate_score(
@@ -275,7 +275,7 @@ class SchedulerComparator:
         
         for name, scheduler in schedulers_to_compare.items():
             try:
-                logger.info(f"执行调度器: {name}")
+                logger.debug(f"执行调度器: {name}")
                 result = scheduler.solve(delay_injection, objective)
                 
                 if result.success:
@@ -503,6 +503,7 @@ def create_comparator(
     trains: List,
     stations: List,
     include_fcfs: bool = True,
+    include_fsfs: bool = True,
     include_mip: bool = True,
     include_rl: bool = False,
     include_noop: bool = True,
@@ -516,6 +517,7 @@ def create_comparator(
         trains: 列车列表
         stations: 车站列表
         include_fcfs: 是否包含FCFS调度器
+        include_fsfs: 是否包含FSFS调度器（先计划先服务）
         include_mip: 是否包含MIP调度器
         include_rl: 是否包含强化学习调度器
         include_noop: 是否包含基线调度器（不做调整）
@@ -529,6 +531,9 @@ def create_comparator(
 
     if include_fcfs:
         comparator.register_scheduler_by_name("fcfs", **kwargs)
+
+    if include_fsfs:
+        comparator.register_scheduler_by_name("fsfs", **kwargs)
 
     if include_mip:
         comparator.register_scheduler_by_name("mip", **kwargs)

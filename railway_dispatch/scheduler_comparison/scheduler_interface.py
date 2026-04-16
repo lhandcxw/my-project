@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 class SchedulerType(str, Enum):
     """调度器类型枚举"""
     FCFS = "fcfs"
+    FSFS = "fsfs"  # 先计划先服务（First Scheduled First Served）
     MIP = "mip"
     RL = "reinforcement_learning"  # 强化学习
     GREEDY = "greedy"
@@ -570,6 +571,71 @@ class SchedulerRegistry:
         return schedulers
 
 
+class FSFSSchedulerAdapter(BaseScheduler):
+    """
+    FSFS调度器适配器（First Scheduled First Served - 先计划先服务）
+    封装 solver/fsfs_scheduler.py 的实现
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = None,
+        min_stop_time: int = None,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="先计划先服务调度器(FSFS)", **kwargs)
+        # 从统一配置加载默认值
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
+
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载FSFS调度器"""
+        if self._scheduler is None:
+            from solver.fsfs_scheduler import FSFSScheduler
+            self._scheduler = FSFSScheduler(
+                trains=self.trains,
+                stations=self.stations,
+                headway_time=self.headway_time,
+                min_stop_time=self.min_stop_time
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.FSFS
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        start_time = time.time()
+
+        result = scheduler.solve(delay_injection, objective)
+
+        # 计算完整指标
+        metrics = MetricsDefinition.calculate_metrics(
+            result.optimized_schedule,
+            self.get_original_schedule(),
+            result.computation_time
+        )
+
+        return SchedulerResult(
+            success=result.success,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=result.optimized_schedule,
+            metrics=metrics,
+            message=result.message
+        )
+
+
 class EarliestArrivalFirstScheduler(BaseScheduler):
     """
     最早到站优先调度器（Earliest Arrival First）
@@ -791,6 +857,8 @@ SchedulerRegistry.register("no-op", NoOpSchedulerAdapter)
 SchedulerRegistry.register("baseline", NoOpSchedulerAdapter)
 SchedulerRegistry.register("max_delay_first", MaxDelayFirstSchedulerAdapter)
 SchedulerRegistry.register("max-delay-first", MaxDelayFirstSchedulerAdapter)
+SchedulerRegistry.register("fsfs", FSFSSchedulerAdapter)
+SchedulerRegistry.register("FSFS", FSFSSchedulerAdapter)
 SchedulerRegistry.register("eaf", EarliestArrivalFirstScheduler)
 SchedulerRegistry.register("earliest_arrival", EarliestArrivalFirstScheduler)
 

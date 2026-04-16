@@ -150,14 +150,14 @@ class LLMPromptAdapter:
             model_used = f"{response_type}"
 
             # 记录原始响应用于调试（显示完整响应）
-            logger.info(f"[LLM响应] {template_id}: 原始响应长度={len(raw_response)}, 完整响应={raw_response}")
+            logger.debug(f"[LLM响应] {template_id}: 原始响应长度={len(raw_response)}, 完整响应={raw_response}")
 
             # 解析响应（带修复功能的解析器）
             parsed_output = self._parse_json_response(raw_response)
 
             # 记录解析结果
             if parsed_output:
-                logger.info(f"[LLM解析] {template_id}: 成功解析，包含字段={list(parsed_output.keys())}")
+                logger.debug(f"[LLM解析] {template_id}: 成功解析，包含字段={list(parsed_output.keys())}")
             else:
                 logger.error(f"[LLM解析] {template_id}: 解析失败，原始响应={raw_response[:300]}")
 

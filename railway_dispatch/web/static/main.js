@@ -253,6 +253,52 @@
                 llmEvalDiv.style.display = 'none';
             }
 
+            // 高铁专用评估指标
+            const evalReport = result.evaluation_report || {};
+            document.getElementById('resultOnTimeRate').textContent = (evalReport.on_time_rate !== undefined ? (evalReport.on_time_rate * 100).toFixed(1) : '-') + '%';
+            document.getElementById('resultAffectedTrains').textContent = evalReport.affected_trains_count !== undefined ? evalReport.affected_trains_count : '-';
+            document.getElementById('resultPropagationDepth').textContent = evalReport.delay_propagation_depth !== undefined ? evalReport.delay_propagation_depth : '-';
+            document.getElementById('resultDelayStdDev').textContent = evalReport.delay_std_dev !== undefined ? (evalReport.delay_std_dev / 60).toFixed(2) : '-';
+            document.getElementById('resultPunctualityStrict').textContent = (evalReport.punctuality_strict !== undefined ? (evalReport.punctuality_strict * 100).toFixed(1) : '-') + '%';
+            document.getElementById('resultEvaluationGrade').textContent = evalReport.evaluation_grade || '-';
+
+            // 风险提示
+            const riskSection = document.getElementById('riskWarningsSection');
+            const riskList = document.getElementById('riskWarningsList');
+            if (evalReport.risk_warnings && evalReport.risk_warnings.length > 0) {
+                riskSection.style.display = 'block';
+                riskList.innerHTML = evalReport.risk_warnings.map(r => '<li>' + r + '</li>').join('');
+            } else {
+                riskSection.style.display = 'none';
+            }
+
+            // 自然语言调度方案
+            const planSection = document.getElementById('naturalLanguagePlanSection');
+            const planText = document.getElementById('naturalLanguagePlanText');
+            if (result.natural_language_plan) {
+                planSection.style.display = 'block';
+                planText.textContent = result.natural_language_plan;
+            } else {
+                planSection.style.display = 'none';
+            }
+
+            // 调度员操作指南
+            const opsGuideDiv = document.getElementById('dispatcherOperationsSection');
+            const opsGuideScene = document.getElementById('dispatcherOperationsScene');
+            const opsGuideList = document.getElementById('dispatcherOperationsList');
+            const opsGuideSource = document.getElementById('dispatcherOperationsSource');
+            if (result.operations_guide && result.operations_guide.operations && result.operations_guide.operations.length > 0) {
+                opsGuideDiv.style.display = 'block';
+                const guide = result.operations_guide;
+                opsGuideScene.textContent = guide.scene_name || '调度操作指南';
+                opsGuideList.innerHTML = guide.operations.map(op => '<li>' + op + '</li>').join('');
+                opsGuideSource.textContent = '来源: ' + (guide.source || '-') + ' | 匹配度: ' + (guide.match_score || 0);
+                console.log('显示调度员操作指南，步骤数:', guide.operations.length);
+            } else {
+                opsGuideDiv.style.display = 'none';
+                console.log('调度员操作指南为空，不显示');
+            }
+
             // 时刻表
             let tableHtml = '<table class="schedule-table"><thead><tr><th>车次</th><th>车站</th><th>到达</th><th>发车</th><th>延误</th></tr></thead><tbody>';
             for (let [trainId, stops] of Object.entries(result.optimized_schedule || {})) {

@@ -42,7 +42,7 @@ class Layer2Planner:
         Returns:
             Dict: 包含完整 PlannerDecision 结构化信息的字典
         """
-        logger.info("[L2] Planner层")
+        logger.debug("[L2] Planner层")
 
         # 构建Prompt上下文（仅使用accident_card）
         context = PromptContext(
@@ -97,7 +97,17 @@ class Layer2Planner:
         # 判断响应来源
         is_mock = "[MOCK]" in response.model_used if response.model_used else False
         response_source = "模拟响应" if is_mock else "LLM输出"
-        logger.info(f"[L2] 完成: planning_intent={planning_intent}, solver={skill_dispatch['主技能']}, 来源={response_source}")
+        logger.info(f"[L2] 规划完成: intent={planning_intent}, 主solver={skill_dispatch['主技能']}")
+
+        # 打印规划决策详情
+        logger.info("=" * 50)
+        logger.info("【L2规划决策】")
+        logger.info(f"  规划意图: {planning_intent}")
+        logger.info(f"  主技能: {skill_dispatch['主技能']}")
+        logger.info(f"  候选求解器: {solver_candidates}")
+        logger.info(f"  偏好求解器: {preferred_solver}")
+        logger.info(f"  响应来源: {response_source}")
+        logger.info("=" * 50)
 
         # 返回完整的 PlannerDecision 结构化信息
         return {
@@ -199,27 +209,17 @@ class Layer2Planner:
         valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
         if llm_solver_suggestion and llm_solver_suggestion in valid_solvers:
             main_skill = llm_solver_suggestion
-            logger.info(f"[L2] 使用LLM建议的solver: {main_skill}")
+            logger.debug(f"[L2] 使用LLM建议的solver: {main_skill}")
             # 构建候选列表（LLM建议优先）
             solver_candidates = [main_skill] + [s for s in valid_solvers if s != main_skill]
             preferred_solver = main_skill
         else:
-            # 规则校验：根据场景类型确定主技能和求解器
-            if scene_category == "临时限速":
-                main_skill = "mip"
-            elif scene_category == "突发故障":
-                main_skill = "fcfs"
-            elif scene_category == "区间封锁":
-                # 区间中断场景：使用section_interrupt_skill（这是一个skill，不是solver）
-                # section_interrupt_skill内部会使用FCFS solver进行调度
-                main_skill = "section_interrupt"
-            else:
-                main_skill = self._intent_to_solver(planning_intent)
-            logger.info(f"[L2] 使用规则确定的skill: {main_skill}")
+            # 强制使用LLM意图映射，不进行规则校验
+            logger.debug("[L2] LLM未提供有效solver建议，基于LLM intent映射")
+            main_skill = self._intent_to_solver(planning_intent)
+            logger.debug(f"[L2] 基于LLM intent使用skill: {main_skill}")
 
             # valid_solvers只包含求解器（mip, fcfs, max_delay_first, noop）
-            # 注意：section_interrupt是一个skill，不是solver，所以不在solver_candidates中
-            # section_interrupt_skill内部会使用FCFS solver
             solver_candidates = ["mip", "fcfs", "max_delay_first", "noop"]
             preferred_solver = main_skill if main_skill in solver_candidates else "fcfs"
 

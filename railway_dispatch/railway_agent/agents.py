@@ -44,6 +44,9 @@ class AgentResult:
     computation_time: float
     model_used: str = ""
     error_message: str = ""
+    evaluation_report: Optional[Dict[str, Any]] = None  # L4层评估报告（含高铁专用指标）
+    natural_language_plan: str = ""  # 自然语言调度方案
+    operations_guide: Optional[Dict[str, Any]] = None  # 调度员操作指南
 
 
 # ============================================
@@ -77,9 +80,9 @@ class LLMAgent:
         self.provider = LLMConfig.PROVIDER
         self.model_name = LLMConfig.get_model_name()
 
-        logger.info(f"LLM驱动 Agent 初始化完成")
-        logger.info(f"  - 提供商: {LLMConfig.get_provider_name()}")
-        logger.info(f"  - 模型: {self.model_name}")
+        logger.debug(f"LLM驱动 Agent 初始化完成")
+        logger.debug(f"  - 提供商: {LLMConfig.get_provider_name()}")
+        logger.debug(f"  - 模型: {self.model_name}")
 
     def analyze(self, delay_injection: Dict[str, Any], user_prompt: str = "") -> AgentResult:
         """
@@ -98,7 +101,7 @@ class LLMAgent:
             # 使用 WorkflowEngine 执行完整工作流（方案A推荐）
             from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
 
-            logger.info("[Agent] 使用 WorkflowEngine 执行完整 L1-L4 工作流")
+            logger.debug("[Agent] 使用 WorkflowEngine 执行完整 L1-L4 工作流")
 
             workflow_engine = create_workflow_engine()
             workflow_result = workflow_engine.execute_full_workflow(
@@ -181,6 +184,15 @@ class LLMAgent:
 
             computation_time = time.time() - start_time
 
+            # 提取L4层评估报告（包含高铁专用指标）
+            evaluation_report = workflow_result.debug_trace.get("evaluation_report", {})
+
+            # 提取自然语言调度方案
+            natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
+
+            # 提取调度员操作指南
+            operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
+
             # 构建AgentResult
             agent_result = AgentResult(
                 success=workflow_result.success,
@@ -192,9 +204,12 @@ class LLMAgent:
                 dispatch_result=dispatch_result,
                 model_response=reasoning,
                 computation_time=computation_time,
-                model_used=self.model_name
+                model_used=self.model_name,
+                evaluation_report=evaluation_report,
+                natural_language_plan=natural_language_plan,  # 添加自然语言调度方案
+                operations_guide=operations_guide  # 添加调度员操作指南
             )
-            
+
             # 保存工作流结果供后续使用（如调度器比较）
             agent_result._workflow_result = workflow_result
             agent_result._accident_card = accident_card_data
@@ -240,22 +255,36 @@ class LLMAgent:
             from scheduler_comparison.comparator import SchedulerComparator, ComparisonCriteria
             from models.data_models import DelayInjection, InjectedDelay, DelayLocation
 
-            logger.info("[Agent] 开始带比较的调度分析")
+            logger.debug("[Agent] 开始带比较的调度分析")
 
             # 使用analyze方法获取基础结果（LLM驱动，内部完成实体提取）
+            logger.debug("[Agent] 调用analyze方法获取基础结果...")
             result = self.analyze(delay_injection, user_prompt)
+            logger.info(f"[Agent] analyze完成，success={result.success}, 计算时间={result.computation_time:.2f}秒")
 
             if not result.success:
+                logger.warning("[Agent] analyze方法失败，直接返回")
                 return result
 
             # 从工作流结果中提取实体信息（由LLM在L1层提取）
             # 注意：这里不再依赖delay_injection中的规则提取信息
             workflow_result = getattr(result, '_workflow_result', None)
             accident_card_data = getattr(result, '_accident_card', {}) if not workflow_result else None
-            
+
             # 从accident_card_data中提取信息
             if not accident_card_data and workflow_result:
                 accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
+
+            # 打印事故卡片信息
+            if accident_card_data:
+                logger.info("=" * 50)
+                logger.info("事故卡片（Accident Card）:")
+                logger.info(f"  - 场景类型: {accident_card_data.get('scene_category', '未知')}")
+                logger.info(f"  - 故障类型: {accident_card_data.get('fault_type', '未知')}")
+                logger.info(f"  - 位置: {accident_card_data.get('location_name', '未知')} ({accident_card_data.get('location_code', '')})")
+                logger.info(f"  - 预计延误: {accident_card_data.get('expected_duration', 0)}分钟")
+                logger.info(f"  - 受影响列车: {accident_card_data.get('affected_train_ids', [])}")
+                logger.info("=" * 50)
             
             # 从调度结果中提取受影响列车
             affected_trains = []
@@ -321,10 +350,47 @@ class LLMAgent:
             # 根据位置类型设置location
             if section_id:
                 location_type = "section"
-                # 对于区间，提取第一个车站代码作为比较用的车站（临时方案）
+                # 对于区间，提取第一个车站代码
                 temp_station_code = section_id.split("-")[0] if "-" in section_id else station_code
+
+                # 验证提取的车站代码是否在时刻表数据中，且受影响列车经过该站
                 actual_station_code = temp_station_code
-                logger.info(f"[Agent] 区间调度比较，使用第一个车站: {actual_station_code}")
+                station_found = False
+
+                # 检查该车站是否在车站列表中
+                if hasattr(self, 'stations') and self.stations:
+                    station_codes = [s.station_code for s in self.stations if hasattr(s, 'station_code')]
+                    if temp_station_code not in station_codes:
+                        logger.warning(f"[Agent] 提取的车站 {temp_station_code} 不在时刻表数据中，尝试查找匹配")
+                        # 尝试模糊匹配（处理编码格式问题）
+                        for sc in station_codes:
+                            if temp_station_code in sc or sc in temp_station_code:
+                                actual_station_code = sc
+                                logger.debug(f"[Agent] 找到匹配车站: {sc}")
+                                break
+
+                # 检查受影响列车是否经过该车站
+                if affected_trains and hasattr(self, 'trains') and self.trains:
+                    train_stations_found = []
+                    for train in self.trains:
+                        if train.train_id in affected_trains and hasattr(train, 'schedule') and train.schedule:
+                            if hasattr(train.schedule, 'stops') and train.schedule.stops:
+                                train_stations = [stop.station_code for stop in train.schedule.stops if hasattr(stop, 'station_code')]
+                                if actual_station_code in train_stations:
+                                    station_found = True
+                                    train_stations_found.append(train.train_id)
+                                    logger.debug(f"[Agent] 列车 {train.train_id} 经过车站 {actual_station_code}")
+                                else:
+                                    logger.warning(f"[Agent] 列车 {train.train_id} 不经过车站 {actual_station_code}，经过的车站: {train_stations}")
+
+                    if not station_found:
+                        logger.error(f"[Agent] 严重错误：所有受影响列车都不经过车站 {actual_station_code}")
+                        logger.error(f"[Agent] 这将导致MIP调度器返回Infeasible")
+                        # 如果没有找到任何列车经过该车站，返回错误结果
+                        return result
+
+                if station_found:
+                    logger.debug(f"[Agent] 区间调度比较，使用车站: {actual_station_code}，受影响列车: {train_stations_found}")
             else:
                 location_type = "station"
                 actual_station_code = station_code
@@ -358,7 +424,12 @@ class LLMAgent:
                 scenario_params={}
             )
 
-            # 创建比较器
+            # 使用完整的列车和车站数据（不删减）
+            # 网络快照将用于后续规模优化
+            logger.info(f"[Agent] 使用完整数据：列车数={len(self.trains)}，车站数={len(self.stations)}")
+
+            # 创建比较器（使用完整数据）
+            logger.info("[Agent] 创建调度器比较器...")
             comparator = SchedulerComparator(
                 trains=self.trains,
                 stations=self.stations,
@@ -366,22 +437,47 @@ class LLMAgent:
             )
 
             # 注册多个调度器进行比较
-            available_schedulers = ["mip", "fcfs", "max_delay_first", "noop"]
+            available_schedulers = ["mip", "fcfs", "fsfs", "max_delay_first", "noop"]
+            logger.debug(f"[Agent] 开始注册调度器: {available_schedulers}")
             for sched_name in available_schedulers:
                 try:
                     comparator.register_scheduler_by_name(sched_name)
+                    logger.debug(f"[Agent] 成功注册调度器: {sched_name}")
                 except Exception as e:
                     logger.warning(f"注册调度器 {sched_name} 失败: {e}")
 
-            logger.info(f"已注册的调度器: {comparator.list_schedulers()}")
+            logger.debug(f"[Agent] 已注册的调度器: {comparator.list_schedulers()}")
 
             # 执行比较（使用compare_all方法）
+            logger.debug("[Agent] 开始执行调度器比较...")
             result_comparison = comparator.compare_all(
                 delay_injection=delay_injection_obj,
                 criteria=criteria
             )
-            
-            logger.info(f"比较结果: success={result_comparison.success}, 结果数={len(result_comparison.results) if result_comparison else 0}")
+            logger.info(f"[Agent] 调度器比较完成，success={result_comparison.success}")
+
+            logger.debug(f"比较结果: success={result_comparison.success}, 结果数={len(result_comparison.results) if result_comparison else 0}")
+
+            # 检查是否有成功的调度器
+            if result_comparison.success and result_comparison.results:
+                # 统计成功的调度器
+                successful_schedulers = [r.scheduler_name for r in result_comparison.results if r.result.success]
+                failed_schedulers = [r.scheduler_name for r in result_comparison.results if not r.result.success]
+
+                if successful_schedulers:
+                    logger.debug(f"[Agent] 成功的调度器: {successful_schedulers}")
+                if failed_schedulers:
+                    logger.warning(f"[Agent] 失败的调度器: {failed_schedulers}")
+
+                # 如果MIP失败但其他调度器成功，记录警告
+                if "MIP调度器" in failed_schedulers and successful_schedulers:
+                    logger.warning("[Agent] MIP调度器失败，使用其他调度器的结果")
+            elif result_comparison.results:
+                # 所有调度器都失败了
+                logger.error("[Agent] 所有调度器都失败了！")
+                logger.error(f"[Agent] 失败原因: {[r.result.message for r in result_comparison.results]}")
+                # 返回失败结果，但仍尝试显示部分信息
+                return result
 
             # 构建比较结果
             if result_comparison and result_comparison.success and result_comparison.results:
@@ -397,11 +493,19 @@ class LLMAgent:
                     })
 
                 winner_scheduler = winner.scheduler_name if winner else "unknown"
+                # 转换秒为分钟（前端显示用）
+                max_delay_min = (winner.result.metrics.max_delay_seconds / 60) if winner and winner.result.metrics else 0
+                avg_delay_min = (winner.result.metrics.avg_delay_seconds / 60) if winner and winner.result.metrics else 0
+                total_delay_min = (winner.result.metrics.total_delay_seconds / 60) if winner and winner.result.metrics else 0
                 delay_statistics = {
                     "winner_scheduler": winner_scheduler,
                     "ranking": ranking,
                     "max_delay_seconds": winner.result.metrics.max_delay_seconds if winner and winner.result.metrics else 0,
-                    "avg_delay_seconds": winner.result.metrics.avg_delay_seconds / 60 if winner and winner.result.metrics else 0,
+                    "avg_delay_seconds": winner.result.metrics.avg_delay_seconds if winner and winner.result.metrics else 0,
+                    "total_delay_seconds": winner.result.metrics.total_delay_seconds if winner and winner.result.metrics else 0,
+                    "max_delay_minutes": max_delay_min,
+                    "avg_delay_minutes": avg_delay_min,
+                    "total_delay_minutes": total_delay_min,
                     "comparison_enabled": True,
                     "schedulers_compared": len(ranking)
                 }
@@ -431,6 +535,53 @@ class LLMAgent:
             computation_time = time.time() - start_time
             result.computation_time = computation_time
             result.selected_solver = result.dispatch_result.delay_statistics.get("winner_scheduler", result.selected_solver)
+
+            # 打印调度方案摘要
+            if result.dispatch_result and result.dispatch_result.delay_statistics:
+                logger.info("=" * 50)
+                logger.info("调度方案摘要:")
+                stats = result.dispatch_result.delay_statistics
+                logger.info(f"  - 总延误: {stats.get('total_delay_minutes', 0)}分钟")
+                logger.info(f"  - 最大延误: {stats.get('max_delay_minutes', 0)}分钟")
+                logger.info(f"  - 平均延误: {stats.get('avg_delay_minutes', 0):.2f}分钟")
+                logger.info(f"  - 推荐调度器: {stats.get('winner_scheduler', '未知')}")
+                logger.info(f"  - 计算时间: {computation_time:.2f}秒")
+                logger.info("=" * 50)
+
+            # 打印自然语言调度方案
+            if result.natural_language_plan:
+                logger.info("=" * 50)
+                logger.info("自然语言调度方案:")
+                logger.info(result.natural_language_plan)
+                logger.info("=" * 50)
+            elif hasattr(result, '_workflow_result'):
+                workflow_result = result._workflow_result
+                if hasattr(workflow_result, 'debug_trace'):
+                    result.natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
+                    if result.natural_language_plan:
+                        logger.info("=" * 50)
+                        logger.info("自然语言调度方案:")
+                        logger.info(result.natural_language_plan)
+                        logger.info("=" * 50)
+                    # 同样处理 operations_guide
+                    if not result.operations_guide:
+                        result.operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
+                        if result.operations_guide:
+                            logger.info(f"[Agent] 从工作流结果获取调度员操作指南: {result.operations_guide.get('scene_name', '未知')}")
+
+            # 确保 operations_guide 和 natural_language_plan 被正确传递
+            # 从工作流结果中提取（如果还没有的话）
+            if hasattr(result, '_workflow_result') and result._workflow_result:
+                workflow_result = result._workflow_result
+                if hasattr(workflow_result, 'debug_trace') and workflow_result.debug_trace:
+                    if not result.natural_language_plan:
+                        result.natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
+                        if result.natural_language_plan:
+                            logger.info(f"[Agent] 从工作流提取自然语言方案，长度: {len(result.natural_language_plan)}")
+                    if not result.operations_guide:
+                        result.operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
+                        if result.operations_guide:
+                            logger.info(f"[Agent] 从工作流提取操作指南: {result.operations_guide.get('scene_name', '未知')}")
 
             return result
 
@@ -517,8 +668,8 @@ class LLMAgent:
         """
         try:
             from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-            
-            logger.info(f"[Agent] 执行多轮对话工作流，输入: {user_input[:50]}...")
+
+            logger.debug(f"[Agent] 执行多轮对话工作流，输入: {user_input[:50]}...")
             
             # 构建完整输入（包含历史上下文）
             if session_history:

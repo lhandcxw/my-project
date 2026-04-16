@@ -241,15 +241,41 @@ def create_comparison_diagram(original_trains: List[Dict], optimized_trains: Lis
 
 def _draw_single_diagram(ax, trains: List[Dict], title: str):
     """绘制单幅运行图（内部函数，优化的版本）"""
-    # ========== 1. 使用固定车站顺序 ==========
-    station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
+    # ========== 1. 收集所有车站（先收集所有车站，再建立Y轴）==========
+    # 首先收集数据中的所有车站
+    all_stations_in_data = set()
+    for train in trains:
+        schedule = train.get('schedule', {})
+        stops = schedule.get('stops', [])
+        for stop in stops:
+            station = stop.get('station_code', '')
+            if station:
+                all_stations_in_data.add(station)
+
+    # 定义完整的车站顺序（标准13个车站）
+    standard_station_codes = ["BJX", "DJK", "ZBD", "GBD", "XSD", "BDD", "DZD", "ZDJ", "SJP", "GYX", "XTD", "HDD", "AYD"]
+
+    # 合并标准车站和数据中的车站，去重并保持顺序
+    station_codes = []
+    for sc in standard_station_codes:
+        if sc in all_stations_in_data:
+            station_codes.append(sc)
+
+    # 添加数据中存在但标准列表中没有的车站
+    for sc in all_stations_in_data:
+        if sc not in station_codes:
+            station_codes.append(sc)
+            # 不再打印车站列表日志
 
     # ========== 2. 确定时间范围 ==========
     all_times = []
     for train in trains:
-        for stop in train['schedule']['stops']:
-            all_times.append(time_to_minutes(stop['arrival_time']))
-            all_times.append(time_to_minutes(stop['departure_time']))
+        # 修复：正确访问schedule结构
+        schedule = train.get('schedule', {})
+        stops = schedule.get('stops', [])
+        for stop in stops:
+            all_times.append(time_to_minutes(stop.get('arrival_time', '00:00')))
+            all_times.append(time_to_minutes(stop.get('departure_time', '00:00')))
 
     if not all_times:
         all_times = [6 * 60, 12 * 60]
@@ -258,7 +284,7 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
     time_max = max(all_times) + 10
     time_ticks = list(range((time_min // 10) * 10, (time_max // 10 + 1) * 10, 10))
 
-    # ========== 3. 绘制网格 ==========
+    # ========== 3. 绘制网格（基于完整的车站列表）==========
     for i in range(len(station_codes)):
         ax.axhline(y=i, color='#D3D3D3', linestyle='--', linewidth=0.8, zorder=1)
 
@@ -271,20 +297,28 @@ def _draw_single_diagram(ax, trains: List[Dict], title: str):
 
     for idx, train in enumerate(trains):
         train_id = train['train_id']
-        stops = train['schedule']['stops']
+        # 修复：正确访问schedule结构
+        schedule = train.get('schedule', {})
+        stops = schedule.get('stops', [])
         color = TRAIN_COLORS[idx % len(TRAIN_COLORS)]
 
         x_points = []
         y_points = []
 
         for stop in stops:
-            station = stop['station_code']
-            if station not in station_codes:
+            station = stop.get('station_code', '')
+            if not station:
                 continue
+
+            # 检查车站是否在列表中，不在则跳过
+            if station not in station_codes:
+                logger.warning(f"列车 {train_id} 的车站 {station} 不在运行图车站列表中，跳过")
+                continue
+
             station_idx = station_codes.index(station)
 
-            arrival_time = time_to_minutes(stop['arrival_time'])
-            departure_time = time_to_minutes(stop['departure_time'])
+            arrival_time = time_to_minutes(stop.get('arrival_time', '00:00'))
+            departure_time = time_to_minutes(stop.get('departure_time', '00:00'))
 
             # 停站矩形（使用列车颜色）
             if departure_time > arrival_time:

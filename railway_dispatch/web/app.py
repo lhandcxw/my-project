@@ -384,7 +384,21 @@ def agent_chat():
             original_schedule = get_original_schedule()
 
             logger.info("Agent分析成功，返回结果")
-            return jsonify({
+            
+            # 构建评估报告（包含高铁专用指标）
+            evaluation_report = {}
+            if result.evaluation_report:
+                eval_report = result.evaluation_report
+                # 如果是对象，转换为字典
+                if hasattr(eval_report, 'model_dump'):
+                    evaluation_report = eval_report.model_dump()
+                elif hasattr(eval_report, '__dict__'):
+                    evaluation_report = eval_report.__dict__
+                else:
+                    evaluation_report = eval_report
+            
+            # 构建返回数据
+            response_data = {
                 "success": True,
                 "recognized_scenario": result.recognized_scenario,
                 "selected_skill": result.selected_skill,
@@ -395,8 +409,16 @@ def agent_chat():
                 "message": dispatch.message,
                 "computation_time": result.computation_time,
                 "optimized_schedule": dispatch.optimized_schedule,
-                "original_schedule": original_schedule
-            })
+                "original_schedule": original_schedule,
+                "evaluation_report": evaluation_report
+            }
+
+            # 添加调度员操作指南
+            if hasattr(result, 'operations_guide') and result.operations_guide:
+                response_data["operations_guide"] = result.operations_guide
+                logger.info(f"添加调度员操作指南: {result.operations_guide.get('scene_name', '未知场景')}")
+
+            return jsonify(response_data)
         else:
             logger.error(f"Agent分析失败: {result.error_message}")
             return jsonify({
@@ -732,7 +754,9 @@ def agent_chat_with_comparison():
             original_schedule = get_original_schedule()
 
             logger.info("Agent比较分析成功，返回结果")
-            return jsonify({
+
+            # 构建返回数据
+            response_data = {
                 "success": True,
                 "recognized_scenario": result.recognized_scenario,
                 "selected_skill": result.selected_skill,
@@ -745,7 +769,51 @@ def agent_chat_with_comparison():
                 "original_schedule": original_schedule,
                 "ranking": dispatch.delay_statistics.get("ranking", []),
                 "comparison_details": dispatch.delay_statistics.get("ranking", [])
-            })
+            }
+
+            # 添加评估报告相关字段
+            if hasattr(result, 'evaluation_report') and result.evaluation_report:
+                # 如果是pydantic模型，使用model_dump
+                if hasattr(result.evaluation_report, 'model_dump'):
+                    response_data["evaluation_report"] = result.evaluation_report.model_dump()
+                else:
+                    response_data["evaluation_report"] = result.evaluation_report
+
+            # 添加LLM摘要（从evaluation_report中获取）
+            if hasattr(result, 'evaluation_report') and result.evaluation_report:
+                eval_report = result.evaluation_report
+                if isinstance(eval_report, dict):
+                    llm_summary = eval_report.get('llm_summary', '')
+                elif hasattr(eval_report, 'llm_summary'):
+                    llm_summary = eval_report.llm_summary
+                else:
+                    llm_summary = ''
+
+                if llm_summary:
+                    response_data["llm_summary"] = llm_summary
+
+            # 添加调度员操作指南
+            if hasattr(result, 'operations_guide') and result.operations_guide:
+                response_data["operations_guide"] = result.operations_guide
+                logger.info(f"添加调度员操作指南，场景: {result.operations_guide.get('scene_name', '未知')}")
+            else:
+                logger.warning("调度员操作指南为空或不存在")
+
+            # 添加自然语言调度方案（优先从result.natural_language_plan获取）
+            if hasattr(result, 'natural_language_plan') and result.natural_language_plan:
+                response_data["natural_language_plan"] = result.natural_language_plan
+                logger.info(f"添加自然语言调度方案，长度: {len(result.natural_language_plan)}")
+            else:
+                logger.warning("自然语言调度方案为空或不存在")
+                # 提供默认的自然语言方案
+                winner_scheduler = response_data.get("delay_statistics", {}).get("winner_scheduler", "未知调度器")
+                if result.dispatch_result and result.dispatch_result.delay_statistics:
+                    max_delay = result.dispatch_result.delay_statistics.get("max_delay_seconds", 0) / 60
+                    default_plan = f"使用{winner_scheduler}进行调度，最大延误{max_delay:.1f}分钟。"
+                    response_data["natural_language_plan"] = default_plan
+                    logger.info(f"使用默认自然语言方案: {default_plan}")
+
+            return jsonify(response_data)
         else:
             return jsonify({
                 "success": False,
@@ -1450,10 +1518,31 @@ if __name__ == '__main__':
             logger.info(f"使用本地微调模型，路径: {LLMConfig.TRANSFORMERS_MODEL_PATH or LLMConfig.OLLAMA_MODEL}")
         else:
             logger.info("自动模式：优先本地模型，失败则用API")
-        logger.info("访问地址: http://localhost:8081")
+
+        # 改进：检查端口是否被占用
+        import socket
+        port = 8081
+        host = '127.0.0.1'  # 修改为本地回环地址，提高连接稳定性
+
+        # 检查端口是否被占用
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex((host, port))
+        sock.close()
+
+        if result == 0:
+            logger.warning(f"警告: 端口 {port} 已被占用！")
+            logger.warning("请先关闭占用该端口的其他服务")
+            logger.warning("或者修改config.py中的WEB_PORT配置")
+            # 尝试下一个端口
+            port = 8082
+            logger.info(f"尝试使用端口 {port}...")
+
+        logger.info(f"访问地址: http://localhost:{port}")
+        logger.info(f"或者访问: http://127.0.0.1:{port}")
         logger.info("按 Ctrl+C 停止服务")
         logger.info("=" * 50)
-        
+
         # 检查API连通性
         logger.info("正在检查API连通性...")
         if not check_api_connectivity():
@@ -1462,5 +1551,21 @@ if __name__ == '__main__':
             logger.error("1. DASHSCOPE_API_KEY 是否正确设置")
             logger.error("2. 网络连接是否正常")
             logger.error("3. 阿里云DashScope服务是否可用")
-    # 关闭debug模式以避免重复启动，但保留自动重载功能
-    app.run(host='0.0.0.0', port=8081, debug=False)
+
+        # 改进Flask运行配置
+        try:
+            # 使用更稳定的配置
+            app.run(
+                host=host,  # 使用127.0.0.1而不是0.0.0.0
+                port=port,
+                debug=False,
+                threaded=True,  # 启用多线程
+                use_reloader=False  # 禁用自动重载避免端口冲突
+            )
+        except OSError as e:
+            if "Address already in use" in str(e):
+                logger.error(f"错误: 端口 {port} 被占用")
+                logger.error("请关闭占用该端口的进程或更换端口")
+            else:
+                logger.error(f"服务启动失败: {e}")
+            sys.exit(1)

@@ -42,7 +42,7 @@ def get_comparator():
         trains = get_trains_pydantic()  # 使用全部列车
         stations = get_stations_pydantic()
         _comparator = create_comparator(trains, stations)
-        logger.info(f"比较器初始化完成，已注册调度器: {_comparator.list_schedulers()}")
+        logger.debug(f"比较器初始化完成，已注册调度器: {_comparator.list_schedulers()}")
     
     return _comparator
 
@@ -424,9 +424,9 @@ def register_comparison_routes(app):
     # 检查是否已注册，避免重复注册
     for rule in app.url_map.iter_rules():
         if rule.endpoint.startswith('comparison.'):
-            logger.info("调度比较API路由已存在，跳过重复注册")
+            logger.debug("调度比较API路由已存在，跳过重复注册")
             return
-    
+
     app.register_blueprint(comparison_bp)
     logger.info("调度比较API路由已注册")
 

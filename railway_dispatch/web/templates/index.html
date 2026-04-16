@@ -139,9 +139,83 @@
                             </div>
                         </div>
 
+                        <!-- 工作流执行详情 -->
+                        <div id="workflowDetailSection" style="display: none; margin-top: 20px;">
+                            <h3 style="margin: 20px 0 15px; color: #1565C0;">📊 工作流执行详情</h3>
+                            <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap: 10px;">
+                                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <h4 style="margin: 0 0 10px; color: #666; font-size: 0.9em;">L1: 数据建模</h4>
+                                    <div id="layer1Detail" style="font-size: 0.85em; color: #333;"></div>
+                                </div>
+                                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <h4 style="margin: 0 0 10px; color: #666; font-size: 0.9em;">L2: Planner</h4>
+                                    <div id="layer2Detail" style="font-size: 0.85em; color: #333;"></div>
+                                </div>
+                                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <h4 style="margin: 0 0 10px; color: #666; font-size: 0.9em;">L3: Solver</h4>
+                                    <div id="layer3Detail" style="font-size: 0.85em; color: #333;"></div>
+                                </div>
+                                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <h4 style="margin: 0 0 10px; color: #666; font-size: 0.9em;">L4: 评估</h4>
+                                    <div id="layer4Detail" style="font-size: 0.85em; color: #333;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 高铁专用评估指标 -->
+                        <h4 style="margin: 20px 0 10px; color: #1565C0;">📊 高铁客运专线评估指标</h4>
+                        <div class="grid">
+                            <div class="metric">
+                                <div class="metric-value" id="resultOnTimeRate">-</div>
+                                <div class="metric-label">准点率(&lt;5min)</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="resultAffectedTrains">-</div>
+                                <div class="metric-label">受影响列车</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="resultPropagationDepth">-</div>
+                                <div class="metric-label">传播深度(站)</div>
+                            </div>
+                        </div>
+                        <div class="grid" style="margin-top: 10px;">
+                            <div class="metric">
+                                <div class="metric-value" id="resultDelayStdDev">-</div>
+                                <div class="metric-label">延误标准差(分钟)</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="resultPunctualityStrict">-</div>
+                                <div class="metric-label">严格准点率(&lt;3min)</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="resultEvaluationGrade">-</div>
+                                <div class="metric-label">综合评级</div>
+                            </div>
+                        </div>
+
+                        <!-- 风险提示 -->
+                        <div id="riskWarningsSection" style="background: #ffebee; padding: 12px; border-radius: 5px; margin-top: 15px; display: none; border-left: 4px solid #c62828;">
+                            <h4 style="margin: 0 0 8px; color: #c62828;">⚠️ 风险提示</h4>
+                            <ul id="riskWarningsList" style="margin: 8px 0; padding-left: 20px; line-height: 1.6;"></ul>
+                        </div>
+
                         <div id="llmEvaluationSummary" style="background: #fff3e0; padding: 12px; border-radius: 5px; margin-top: 15px; display: none;">
-                            <h4 style="margin: 0 0 8px;">LLM评估建议</h4>
-                            <div id="llmSummaryText"></div>
+                            <h4 style="margin: 0 0 8px; color: #f57c00;">🤖 LLM评估建议</h4>
+                            <div id="llmSummaryText" style="white-space: pre-wrap; line-height: 1.6;"></div>
+                        </div>
+
+                        <!-- 自然语言调度方案 -->
+                        <div id="naturalLanguagePlanSection" style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin-top: 15px; display: none; border-left: 4px solid #1565C0;">
+                            <h4 style="margin: 0 0 12px; color: #1565C0;">📋 调度方案说明</h4>
+                            <div id="naturalLanguagePlanText" style="white-space: pre-wrap; line-height: 1.8; font-size: 1.05em;"></div>
+                        </div>
+
+                        <!-- 调度员操作指南 -->
+                        <div id="dispatcherOperationsSection" style="background: #fff8e1; padding: 15px; border-radius: 8px; margin-top: 15px; display: none; border-left: 4px solid #ff8f00;">
+                            <h4 style="margin: 0 0 12px; color: #e65100;">👨‍💼 调度员操作指南</h4>
+                            <div id="dispatcherOperationsScene" style="font-weight: bold; color: #e65100; margin-bottom: 10px;"></div>
+                            <ol id="dispatcherOperationsList" style="margin: 0; padding-left: 20px; line-height: 1.8;"></ol>
+                            <div id="dispatcherOperationsSource" style="margin-top: 10px; font-size: 0.85em; color: #666; text-align: right;"></div>
                         </div>
 
                         <div id="resultMessage" style="background: #e8f5e9; padding: 12px; border-radius: 5px; margin-top: 15px;"></div>

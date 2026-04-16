@@ -30,7 +30,19 @@
         .solver-fallback { background: #ffebee; color: #c62828; }
         
         /* 卡片 */
-        .card { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            border: 1px solid #e0e0e0;
+            transition: all 0.3s ease;
+        }
+        .card:hover {
+            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+            transform: translateY(-2px);
+        }
         .card h2 { color: #333; margin-bottom: 20px; font-size: 1.3rem; border-left: 4px solid #1E88E5; padding-left: 15px; }
         
         /* 表单 */
@@ -49,7 +61,18 @@
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         
         /* 指标卡片 */
-        .metric { background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; }
+        .metric {
+            background: linear-gradient(135deg, #f8f9fa, #ffffff);
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #e0e0e0;
+            transition: all 0.3s ease;
+        }
+        .metric:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(21, 101, 192, 0.15);
+        }
         .metric-value { font-size: 1.8rem; font-weight: bold; color: #1E88E5; }
         .metric-label { color: #666; margin-top: 5px; }
         

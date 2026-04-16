@@ -8,7 +8,7 @@ v3.2增强：添加真实高铁调度场景的领域知识
 
 import os
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import json
 import logging
 
@@ -424,6 +424,92 @@ class RAGRetriever:
 
         # 默认：在开头插入知识
         return "\n".join(knowledge_parts) + "\n\n" + base_prompt
+
+
+    def retrieve_dispatcher_guide(
+        self,
+        accident_card: Dict[str, Any],
+        top_k: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        检索调度员操作指南（基于关键词匹配）
+
+        Args:
+            accident_card: 事故卡片数据
+            top_k: 返回结果数量
+
+        Returns:
+            List[Dict]: 检索到的调度员操作指南
+        """
+        # 从 layer1_data_modeling 导入 DispatcherOperationGuideRetriever
+        from railway_agent.workflow.layer1_data_modeling import DispatcherOperationGuideRetriever
+
+        guide_retriever = DispatcherOperationGuideRetriever()
+
+        # 提取场景类别和故障类型
+        scene_category = accident_card.get("scene_category", "")
+        fault_type = accident_card.get("fault_type", "")
+        user_input = accident_card.get("raw_input", "")
+
+        # 检索操作指南
+        guide = guide_retriever.retrieve_operations(scene_category, fault_type, user_input)
+
+        if guide:
+            # 转换为统一格式
+            return [{
+                "scene_name": guide["scene_name"],
+                "operations": guide["operations"],
+                "source": guide["source"],
+                "relevance_score": guide["match_score"]
+            }]
+        return []
+
+    def format_prompt_with_dispatcher_guide(
+        self,
+        base_prompt: str,
+        accident_card: Dict[str, Any]
+    ) -> str:
+        """
+        将调度员操作指南注入到prompt中
+
+        Args:
+            base_prompt: 基础prompt
+            accident_card: 事故卡片数据
+
+        Returns:
+            str: 增强后的prompt
+        """
+        guides = self.retrieve_dispatcher_guide(accident_card, top_k=1)
+
+        if not guides:
+            return base_prompt
+
+        guide = guides[0]
+
+        # 构建操作指南文本
+        guide_parts = ["\n" + "=" * 60]
+        guide_parts.append("【调度员操作指南】")
+        guide_parts.append(f"场景: {guide['scene_name']}")
+        guide_parts.append(f"匹配度: {guide['relevance_score']:.1f}")
+        guide_parts.append("-" * 60)
+
+        # 添加操作步骤
+        for i, operation in enumerate(guide['operations'], 1):
+            guide_parts.append(f"{i}. {operation}")
+
+        guide_parts.append("")
+        guide_parts.append(f"来源: {guide['source']}")
+        guide_parts.append("=" * 60 + "\n")
+
+        # 将操作指南插入到prompt中
+        guide_text = "\n".join(guide_parts)
+
+        # 策略：在prompt末尾插入操作指南
+        if "请输出JSON格式" in base_prompt:
+            parts = base_prompt.split("请输出JSON格式", 1)
+            return parts[0] + guide_text + "\n请输出JSON格式" + (parts[1] if len(parts) > 1 else "")
+
+        return base_prompt + "\n" + guide_text
 
 
 # 全局实例

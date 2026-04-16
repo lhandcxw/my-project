@@ -94,7 +94,7 @@ class LLMWorkflowEngineV2:
         try:
             # 如果有对话ID，尝试恢复之前的状态并合并信息
             if dialogue_id and dialogue_id in self._dialogue_states:
-                logger.info(f"[对话工作流] 恢复对话状态: {dialogue_id}")
+                logger.debug(f"[对话工作流] 恢复对话状态: {dialogue_id}")
                 previous_state = self._dialogue_states[dialogue_id]
                 # 合并用户新输入到之前的信息中
                 combined_input = self._merge_user_input(
@@ -113,7 +113,7 @@ class LLMWorkflowEngineV2:
                 }
 
             # 步骤1：L1数据建模
-            logger.info("[对话工作流] ========== 步骤1：L1 数据建模层 ==========")
+            logger.debug("[对话工作流] ========== 步骤1：L1 数据建模层 ==========")
             l1_result = self.layer1.execute(
                 user_input=combined_input,
                 enable_rag=enable_rag
@@ -122,10 +122,10 @@ class LLMWorkflowEngineV2:
             accident_card = l1_result["accident_card"]
 
             # 检查信息完整性
-            if not accident_card.is_complete:
-                # 信息不完整，保存状态并返回询问
-                missing_fields = accident_card.missing_fields or []
-                logger.info(f"[对话工作流] 信息不完整，缺少: {missing_fields}")
+            if l1_result.get("needs_more_info", False):
+                missing_fields = l1_result.get("missing_questions", [])
+                missing_info = [q["question"] for q in missing_fields]
+                logger.debug(f"[对话工作流] 信息不完整，缺少: {missing_fields}")
 
                 # 保存对话状态
                 self._dialogue_states[dialogue_id].update({
@@ -148,7 +148,7 @@ class LLMWorkflowEngineV2:
                 }
 
             # 信息完整，继续后续流程
-            logger.info("[对话工作流] 信息完整，继续后续流程")
+            logger.debug("[对话工作流] 信息完整，继续后续流程")
             self._dialogue_states[dialogue_id]["status"] = "info_complete"
 
             # 构建调度元数据（无需网络快照）
@@ -166,7 +166,8 @@ class LLMWorkflowEngineV2:
                 "status": "l1_complete"
             })
 
-            return {
+            # 构建响应结果
+            response = {
                 "dialogue_id": dialogue_id,
                 "status": "l1_complete",
                 "message": "信息提取完成",
@@ -174,6 +175,15 @@ class LLMWorkflowEngineV2:
                 "can_proceed": True,
                 "response_source": l1_result.get("response_source", "unknown")
             }
+
+            # 添加调度员操作指南（如果存在）
+            if "dispatcher_operations" in l1_result and l1_result["dispatcher_operations"]:
+                response["dispatcher_operations"] = l1_result["dispatcher_operations"]
+                # 添加格式化后的操作指南文本
+                operations_guide = l1_result["dispatcher_operations"]
+                response["dispatcher_operations_text"] = self._format_operations_guide(operations_guide)
+
+            return response
 
         except Exception as e:
             logger.error(f"[对话工作流] 启动失败: {e}", exc_info=True)
@@ -271,7 +281,7 @@ class LLMWorkflowEngineV2:
         """清除对话状态"""
         if dialogue_id in self._dialogue_states:
             del self._dialogue_states[dialogue_id]
-            logger.info(f"[对话工作流] 清除对话状态: {dialogue_id}")
+            logger.debug(f"[对话工作流] 清除对话状态: {dialogue_id}")
 
     def execute_full_workflow(
         self,
@@ -292,7 +302,7 @@ class LLMWorkflowEngineV2:
         """
         try:
             # 步骤1：L1 - 数据建模层（只构建 AccidentCard）
-            logger.info("========== 步骤1：L1 数据建模层 ==========")
+            logger.debug("========== 步骤1：L1 数据建模层 ==========")
             l1_result = self.layer1.execute(
                 user_input=user_input,
                 canonical_request=canonical_request,
@@ -302,7 +312,7 @@ class LLMWorkflowEngineV2:
             accident_card = l1_result["accident_card"]
 
             # 步骤2：构建调度元数据
-            logger.info("========== 步骤2：构建调度元数据 ==========")
+            logger.debug("========== 步骤2：构建调度元数据 ==========")
             dispatch_metadata = DispatchContextMetadata(
                 can_solve=accident_card.is_complete,
                 missing_info=accident_card.missing_fields,
@@ -311,7 +321,7 @@ class LLMWorkflowEngineV2:
 
             # 检查是否可以进入求解
             if not dispatch_metadata.can_solve:
-                logger.info(f"信息不完整，无法求解: {dispatch_metadata.missing_info}")
+                logger.debug(f"信息不完整，无法求解: {dispatch_metadata.missing_info}")
                 return self._build_incomplete_result(
                     user_input,
                     accident_card,
@@ -319,7 +329,7 @@ class LLMWorkflowEngineV2:
                 )
 
             # 步骤3：L2 - Planner层
-            logger.info("========== 步骤3：L2 Planner层 ==========")
+            logger.debug("========== 步骤3：L2 Planner层 ==========")
             l2_result = self.layer2.execute(
                 accident_card=accident_card,
                 enable_rag=enable_rag
@@ -331,7 +341,7 @@ class LLMWorkflowEngineV2:
             planner_decision = l2_result.get("planner_decision", {})
 
             # 步骤4：L3 - Solver执行层（传递 PlannerDecision）
-            logger.info("========== 步骤4：L3 Solver执行层 ==========")
+            logger.debug("========== 步骤4：L3 Solver执行层 ==========")
             l3_result = self.layer3.execute(
                 planning_intent=planning_intent,
                 accident_card=accident_card,
@@ -341,7 +351,7 @@ class LLMWorkflowEngineV2:
             )
 
             # 步骤5：L4 - 评估层
-            logger.info("========== 步骤5：L4 评估层 ==========")
+            logger.debug("========== 步骤5：L4 评估层 ==========")
             l4_result = self.layer4.execute(
                 skill_execution_result=l3_result["skill_execution_result"],
                 solver_response=l3_result.get("solver_response"),
@@ -474,7 +484,9 @@ class LLMWorkflowEngineV2:
                 "solver_result": l3_result["skill_execution_result"],
                 "evaluation_report": l4_result.get("evaluation_report").model_dump() if l4_result.get("evaluation_report") else None,
                 "policy_decision": l4_result.get("policy_decision"),
-                "llm_summary": l4_result.get("llm_summary", "")
+                "llm_summary": l4_result.get("llm_summary", ""),
+                "natural_language_plan": l4_result.get("natural_language_plan", ""),  # 添加自然语言调度方案
+                "dispatcher_operations": l1_result.get("dispatcher_operations", {})  # 添加调度员操作指南
             }
         )
 

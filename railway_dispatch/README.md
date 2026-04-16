@@ -1,16 +1,28 @@
 # LLM-TTRA: 大模型辅助列车时刻表重排系统
 
-基于阿里云Qwen大模型和整数规划的智能铁路调度优化系统（v5.1）。
+基于阿里云Qwen大模型和整数规划的智能铁路调度优化系统（v6.6）。
 
 ## 系统概述
 
 - **核心任务**: LLM-TTRA (Large Language Model assisted Train Timetable Rescheduling)
 - **部署规模**: 13站，147列列车（京广高铁北京西→安阳东）
 - **技术路线**: 阿里云Qwen API + Prompt + RAG + 整数规划
-- **大模型**: 阿里云DashScope (qwen3.6-plus)
-- **求解器**: MIP（整数规划）、FCFS（先到先服务）、MaxDelayFirst（最大延误优先）
+- **大模型**: 阿里云DashScope (qwen3.5-flash)
+- **求解器**: MIP（整数规划）、FCFS（先到先服务）、FSFS（先计划先服务）、MaxDelayFirst（最大延误优先）
 - **Web框架**: Flask + Pydantic
 - **数据**: 真实高铁时刻表
+
+## v6.6 更新说明
+
+**代码审查与架构优化**：
+- **代码审查**：全面审查所有Python代码，检查语法、逻辑、流程问题
+- **调度算法审查**：深入审查MIP、FCFS调度器实现，修正约束模型
+- **工作流审查**：检查L1-L4各层的数据传递和接口契约
+- **前端审查**：检查JavaScript交互逻辑和API调用
+- **文档更新**：更新架构文档和README，反映最新代码状态
+- **配置统一**：统一配置文件与实际代码的对应关系
+
+详细的代码审查报告请参考：[railway_dispatch_agent_architecture.md](railway_dispatch_agent_architecture.md) 第18节
 
 ## v5.1 更新说明
 
@@ -80,7 +92,8 @@ railway_dispatch/
 │   └── policy_engine.py      # 策略引擎
 ├── solver/                   # 求解器层
 │   ├── mip_scheduler.py      # MIP求解器
-│   ├── fcfs_scheduler.py     # FCFS调度器
+│   ├── fcfs_scheduler.py     # FCFS调度器（先到先服务）
+│   ├── fsfs_scheduler.py     # FSFS调度器（先计划先服务）
 │   ├── max_delay_first_scheduler.py
 │   └── solver_registry.py    # 求解器注册
 ├── evaluation/               # 评估层
@@ -117,13 +130,39 @@ cd railway_dispatch
 pip install -r requirements.txt
 ```
 
-### 3. 启动Web服务
+### 3. 启动Web服务（推荐使用启动脚本）
 
+**Windows系统：**
+```bash
+start_server.bat
+```
+
+**Linux/Mac系统：**
+```bash
+chmod +x start_server.sh
+./start_server.sh
+```
+
+**直接启动（不推荐）：**
 ```bash
 python web/app.py
 ```
 
-访问 http://localhost:8081
+访问 http://localhost:8081 或 http://127.0.0.1:8081
+
+**如果遇到端口占用问题：**
+```bash
+# Windows
+python fix_port_issue.py
+
+# Linux/Mac
+python fix_port_issue.py
+```
+
+**如果需要系统诊断：**
+```bash
+python diagnose.py
+```
 
 ### 4. 使用智能调度
 
@@ -131,6 +170,88 @@ python web/app.py
 - "暴雨导致石家庄站限速80km/h"
 - "G1563列车在保定东遭遇大风预计延误10分钟"
 - "设备故障导致XSD-BDD区间临时封锁"
+
+---
+
+## 常见问题解决
+
+### localhost 无法连接或需要多次刷新
+
+**问题症状：**
+- 浏览器显示 "localhost 拒绝连接"
+- 需要多次刷新或关闭重开才能访问
+- 连接不稳定
+
+**解决方案：**
+
+1. **使用启动脚本**（推荐）：
+   ```bash
+   # Windows
+   start_server.bat
+   
+   # Linux/Mac
+   ./start_server.sh
+   ```
+
+2. **清理端口占用**：
+   ```bash
+   python fix_port_issue.py
+   ```
+
+3. **使用127.0.0.1代替localhost**：
+   - 访问: http://127.0.0.1:8081 而不是 http://localhost:8081
+
+4. **检查防火墙设置**：
+   - Windows: 控制面板 → Windows Defender 防火墙 → 入站规则
+   - Linux: `sudo ufw allow 8081/tcp`
+   - Mac: 系统偏好设置 → 安全性与隐私 → 防火墙
+
+5. **运行诊断工具**：
+   ```bash
+   python diagnose.py
+   ```
+
+### 端口8081被占用
+
+**解决方案：**
+
+1. **自动清理端口**：
+   ```bash
+   python fix_port_issue.py
+   ```
+
+2. **手动清理（Windows）**：
+   ```cmd
+   netstat -ano | findstr :8081
+   taskkill /F /PID <进程ID>
+   ```
+
+3. **手动清理（Linux/Mac）**：
+   ```bash
+   lsof -ti :8081 | xargs kill -9
+   ```
+
+4. **修改配置使用其他端口**：
+   - 编辑 `config.py`
+   - 修改 `WEB_PORT = 8081` 为其他端口
+
+### 浏览器缓存问题
+
+**解决方案：**
+
+1. **清除浏览器缓存**：
+   - Chrome: Ctrl+Shift+Delete → 选择"缓存的图片和文件"
+   - Firefox: Ctrl+Shift+Delete → 选择"缓存"
+   - Edge: Ctrl+Shift+Delete → 选择"缓存的图像和文件"
+
+2. **使用无痕模式**：
+   - Chrome: Ctrl+Shift+N
+   - Firefox: Ctrl+Shift+P
+   - Edge: Ctrl+Shift+P
+
+3. **强制刷新页面**：
+   - Windows: Ctrl+F5
+   - Mac: Cmd+Shift+R
 
 ## 核心工作流
 
@@ -209,11 +330,28 @@ Content-Type: application/json
 
 ## 求解器说明
 
-| 求解器 | 适用场景 | 选择规则 |
-|--------|----------|----------|
-| MIP | 临时限速、列车≤3 | L3根据场景类型选择 |
-| FCFS | 突发故障、列车>10 | L3根据场景类型选择 |
-| NoOp | 区间封锁 | L3根据场景类型选择 |
+| 求解器 | 适用场景 | 选择规则 | 核心特点 |
+|--------|----------|----------|----------|
+| MIP | 临时限速、列车≤3 | L3根据场景类型选择 | 全局优化，可调整发车顺序 |
+| FCFS | 突发故障、列车>10 | L3根据场景类型选择 | 先到先服务，允许改变原计划顺序 |
+| FSFS | 严格保序场景 | L3根据场景类型选择 | **先计划先服务**，严格保持原计划相对顺序 |
+| NoOp | 区间封锁 | L3根据场景类型选择 | 不调整，仅应用初始延误 |
+
+### FCFS vs FSFS 核心区别
+
+| 特性 | FCFS (先到先服务) | FSFS (先计划先服务) |
+|------|-------------------|---------------------|
+| **排序依据** | 实际到达/通过时间 | 原始运行图计划时间 |
+| **发车顺序** | 可以调整原计划顺序 | **严格保持原计划顺序** |
+| **越行关系** | 可以重新安排 | **保持原计划越行关系** |
+| **优先级** | 动态调整 | **固定按计划优先级** |
+| **适用场景** | 灵活调度、优化目标优先 | **严格保序、计划稳定性优先** |
+
+**FSFS核心逻辑**：
+1. 严格遵循列车原始运行图的计划发车/通过顺序
+2. 冲突消解仅对受扰动列车做整体时间平移
+3. **绝对不改变**原计划的列车相对优先级、越行关系与停站方案
+4. 保持调度结果与原计划的高度一致性
 
 ## 微调数据收集
 
@@ -242,6 +380,16 @@ Content-Type: application/json
 - **RAG检索**: 关键词匹配
 
 ## 版本历史
+
+- **v6.6** (2026-04-16):
+  - 代码审查：全面审查所有Python代码，检查语法、逻辑、流程问题
+  - 调度算法审查：深入审查MIP、FCFS调度器实现，修正约束模型
+  - 工作流审查：检查L1-L4各层的数据传递和接口契约
+  - 前端审查：检查JavaScript交互逻辑和API调用
+  - 文档更新：更新架构文档和README，反映最新代码状态
+  - 配置统一：统一配置文件与实际代码的对应关系
+  - 发现问题：config.py中硬编码API Key需改进，求解器选择逻辑简化，数据模型混用
+  - 建议：添加单元测试，统一错误处理模式，增加日志详细度
 
 - **v5.1** (2026-04-10):
   - 功能：L0层场景识别从规则改为LLM调用

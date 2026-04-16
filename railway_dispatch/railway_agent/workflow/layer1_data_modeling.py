@@ -31,6 +31,154 @@ from config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# 调度员操作指南检索器（关键词匹配版）
+class DispatcherOperationGuideRetriever:
+    """
+    调度员操作指南检索器
+    基于关键词匹配，从知识库中检索调度员操作指南
+    """
+
+    def __init__(self):
+        self.knowledge_base = self._load_operation_knowledge()
+
+    def _load_operation_knowledge(self) -> Dict[str, Any]:
+        """加载调度员操作知识库"""
+        knowledge = {
+            "大风天气": {
+                "keywords": ["大风", "风速", "侧风", "台风", "强风"],
+                "operations": [
+                    "立即确认大风报警地点（区段、里程）",
+                    "确认风速监测子系统显示的风速值",
+                    "根据风速设置列控限速：15-20m/s限速200km/h，20-25m/s限速120km/h，>25m/s禁止运行",
+                    "立即呼叫已进入区间的列车司机，通知限速要求",
+                    "若显示禁止运行报警，立即命令列车停车",
+                    "台风登录前72小时发布预警，48小时启动应急预案",
+                    "持续监控风速变化，每5分钟确认一次"
+                ],
+                "source": "高铁非正常情况调度员操作知识库"
+            },
+            "雨天天气": {
+                "keywords": ["大雨", "暴雨", "降雨", "洪水", "积水"],
+                "operations": [
+                    "立即确认降雨报警地点和等级",
+                    "确认降雨量监测数据（小时雨量/连续雨量）",
+                    "通知工务部门开展区间巡视",
+                    "根据警戒等级执行限速或扣停：限速警戒限速120km/h或160km/h，封锁警戒禁止进入",
+                    "暴雨红色预警时立即封锁相关区间线路",
+                    "暴雨持续期间每10分钟确认一次雨量数据",
+                    "解除警戒后逐步恢复常速运行"
+                ],
+                "source": "高铁非正常情况调度员操作知识库"
+            },
+            "冰雪天气": {
+                "keywords": ["冰雪", "结冰", "冻雨", "降雪", "道岔冻结", "覆冰"],
+                "operations": [
+                    "立即确认冰雪天气报警地点和类型",
+                    "通知车务部门启动道岔融雪装置",
+                    "通知工务部门组织扫雪除冰",
+                    "确认接触网覆冰情况，必要时组织热滑除冰",
+                    "根据冰雪情况设置列控限速：小雪限速200km/h，中雪限速120km/h，大雪限速80km/h或停车",
+                    "冰雪天气持续期间每15分钟确认一次设备状态",
+                    "降雪结束后组织添乘检查线路状况"
+                ],
+                "source": "高铁非正常情况调度员操作知识库"
+            },
+            "设备故障": {
+                "keywords": ["设备故障", "信号故障", "接触网故障", "线路故障", "道岔故障"],
+                "operations": [
+                    "立即扣停后续列车",
+                    "确认故障类型和影响范围",
+                    "通知相关设备管理部门（电务、供电、工务）",
+                    "评估故障恢复时间",
+                    "安排故障列车处理（救援或拖行）",
+                    "调整后续列车时刻表",
+                    "做好旅客转运安排"
+                ],
+                "source": "铁路调度操作规则知识库"
+            },
+            "临时限速": {
+                "keywords": ["临时限速", "限速运行", "限速命令"],
+                "operations": [
+                    "确认限速区段和限速值",
+                    "计算受影响列车数量和延误时间",
+                    "设置列控限速（明确起止里程、限速值、原因）",
+                    "调整列车发车时间（顺延）",
+                    "压缩停站时间（在安全范围内）",
+                    "发布限速调度命令",
+                    "持续监控，及时调整"
+                ],
+                "source": "铁路调度操作规则知识库"
+            },
+            "区间封锁": {
+                "keywords": ["区间封锁", "线路封锁", "封锁区间"],
+                "operations": [
+                    "确认封锁区段和原因",
+                    "评估封锁持续时间",
+                    "停止新列车发车（进入封锁区段）",
+                    "区间内列车就近停靠",
+                    "安排绕行（如可行）",
+                    "启动应急预案",
+                    "确认设备正常后方可解除封锁"
+                ],
+                "source": "铁路调度操作规则知识库"
+            }
+        }
+        return knowledge
+
+    def retrieve_operations(self, scene_category: str, fault_type: str, user_input: str) -> Optional[Dict[str, Any]]:
+        """
+        检索调度员操作指南
+
+        Args:
+            scene_category: 场景类型
+            fault_type: 故障类型
+            user_input: 用户原始输入
+
+        Returns:
+            操作指南字典，包含operations列表
+        """
+        query = f"{scene_category} {fault_type} {user_input}".lower()
+
+        best_match = None
+        best_score = 0
+
+        for scene_name, knowledge in self.knowledge_base.items():
+            score = 0
+            # 关键词匹配
+            for keyword in knowledge["keywords"]:
+                if keyword in query:
+                    score += 2  # 关键词匹配得2分
+
+            # 场景名称匹配
+            if scene_name.lower() in query:
+                score += 3  # 场景名称匹配得3分
+
+            if score > best_score:
+                best_score = score
+                best_match = {
+                    "scene_name": scene_name,
+                    "operations": knowledge["operations"],
+                    "source": knowledge["source"],
+                    "match_score": score
+                }
+
+        return best_match if best_score > 0 else None
+
+    def format_operations_for_display(self, operations_data: Dict[str, Any]) -> str:
+        """格式化操作指南为显示文本"""
+        if not operations_data:
+            return ""
+
+        lines = [
+            f"\n【调度员操作指南 - {operations_data['scene_name']}】",
+            f"来源：{operations_data['source']}\n"
+        ]
+
+        for i, op in enumerate(operations_data["operations"], 1):
+            lines.append(f"{i}. {op}")
+
+        return "\n".join(lines)
+
 
 class Layer1DataModeling:
     """
@@ -49,6 +197,7 @@ class Layer1DataModeling:
     def __init__(self):
         """初始化第一层"""
         self.prompt_adapter = get_llm_prompt_adapter()
+        self.operations_retriever = DispatcherOperationGuideRetriever()
 
     @classmethod
     def _check_completeness(cls, accident_card_data: Dict[str, Any]) -> tuple:
@@ -100,7 +249,7 @@ class Layer1DataModeling:
         Returns:
             Dict: 包含 accident_card 的字典，如果信息不完整会返回询问问题
         """
-        logger.info("[L1] 数据建模层")
+        logger.debug("[L1] 数据建模层")
 
         # 如果有L0预处理结果，直接使用
         if canonical_request and canonical_request.scene_type_code:
@@ -128,11 +277,9 @@ class Layer1DataModeling:
             response_source = response.parsed_output.get("_response_source", "")
             response_note = response.parsed_output.get("_response_note", "")
             if response_source.startswith("rule_based"):
-                logger.info(f"[L1] 使用模拟响应: {response_note}")
+                logger.debug(f"[L1] 使用模拟响应: {response_note}")
             elif response_source.startswith("llm_"):
-                logger.info(f"[L1] 使用LLM真实响应: {response_note}")
-            else:
-                logger.info(f"[L1] 响应来源: {response_source}, {response_note}")
+                logger.debug(f"[L1] 使用LLM真实响应: {response_note}")
         else:
             # LLM失败，根据配置决定是否使用回退逻辑
             from config import LLMConfig
@@ -149,12 +296,12 @@ class Layer1DataModeling:
         # 如果有之前的事故卡片，合并信息
         if previous_accident_card:
             accident_card = self._merge_accident_cards(previous_accident_card, accident_card)
-            logger.info(f"[L1] 合并之前的事故卡片信息")
+            logger.debug(f"[L1] 合并之前的事故卡片信息")
 
         # 检查信息完整性
         if not accident_card.is_complete:
             missing_questions = self._generate_missing_questions(accident_card.missing_fields)
-            logger.info(f"[L1] 信息不完整，需要补充: {accident_card.missing_fields}")
+            logger.debug(f"[L1] 信息不完整，需要补充: {accident_card.missing_fields}")
         # 构建返回结果
         result = {
             "accident_card": accident_card,
@@ -171,7 +318,31 @@ class Layer1DataModeling:
             result["needs_more_info"] = False
             result["missing_questions"] = []
 
-        logger.info(f"[L1] 第一层完成: scene_category={accident_card.scene_category}, is_complete={accident_card.is_complete}")
+        # 检索调度员操作指南（Prompt+RAG）
+        operations_guide = self.operations_retriever.retrieve_operations(
+            scene_category=accident_card.scene_category or "",
+            fault_type=accident_card.fault_type or "",
+            user_input=user_input
+        )
+        if operations_guide:
+            result["dispatcher_operations"] = operations_guide
+            # 记录日志
+            logger.info("=" * 50)
+            logger.info("【调度员操作指南】")
+            logger.info(f"  场景: {operations_guide['scene_name']}")
+            logger.info(f"  匹配度: {operations_guide['match_score']}")
+            logger.info(f"  来源: {operations_guide['source']}")
+            logger.info("=" * 50)
+
+        logger.info("=" * 50)
+        logger.info("【事故卡片】")
+        logger.info(f"  场景类型: {accident_card.scene_category}")
+        logger.info(f"  故障类型: {accident_card.fault_type}")
+        logger.info(f"  位置: {accident_card.location_name} ({accident_card.location_code})")
+        logger.info(f"  延误时间: {accident_card.expected_duration}分钟" if accident_card.expected_duration else "  延误时间: 未知")
+        logger.info(f"  受影响列车: {accident_card.affected_train_ids}")
+        logger.info(f"  信息完整性: {'完整' if accident_card.is_complete else '不完整'}")
+        logger.info("=" * 50)
 
         return result
 
@@ -223,10 +394,29 @@ class Layer1DataModeling:
 
         logger.info(f"第一层完成(L0): scene_category={accident_card.scene_category}, location_type={accident_card.location_type}, location_code={accident_card.location_code}")
 
-        return {
+        # 检索调度员操作指南
+        operations_guide = self.operations_retriever.retrieve_operations(
+            scene_category=accident_card.scene_category,
+            fault_type=accident_card.fault_type,
+            user_input=canonical_request.raw_text if hasattr(canonical_request, 'raw_text') else ""
+        )
+
+        result = {
             "accident_card": accident_card,
-            "llm_response": "使用L0预处理结果"
+            "llm_response": "使用L0预处理结果",
+            "dispatcher_operations": operations_guide
         }
+
+        # 记录操作指南
+        if operations_guide:
+            logger.info("=" * 50)
+            logger.info("【调度员操作指南】")
+            logger.info(f"  场景: {operations_guide['scene_name']}")
+            logger.info(f"  匹配度: {operations_guide['match_score']}")
+            logger.info(f"  来源: {operations_guide['source']}")
+            logger.info("=" * 50)
+
+        return result
 
     def _build_accident_card(
         self,
@@ -330,7 +520,7 @@ class Layer1DataModeling:
                         acc_card_data["location_code"] = f"{code1}-{code2}"
                         acc_card_data["location_name"] = f"{name1}-{name2}"
                         acc_card_data["affected_section"] = f"{code1}-{code2}"
-                        logger.info(f"[_build_accident_card] 提取到区间: {name1}-{name2} ({code1}-{code2})")
+                        logger.debug(f"[_build_accident_card] 提取到区间: {name1}-{name2} ({code1}-{code2})")
                         break
 
             # 如果没有提取到区间，则提取单个车站
@@ -341,7 +531,7 @@ class Layer1DataModeling:
                         acc_card_data["location_name"] = station_name
                         acc_card_data["location_code"] = code
                         acc_card_data["affected_section"] = f"{code}-{code}"
-                        logger.info(f"[_build_accident_card] 提取到车站: {station_name} ({code})")
+                        logger.debug(f"[_build_accident_card] 提取到车站: {station_name} ({code})")
                         break
 
         # 提取延误时间（如果LLM没有提取到）
@@ -349,7 +539,7 @@ class Layer1DataModeling:
             delay_match = re.search(r'(\d+)\s*分钟', user_input)
             if delay_match:
                 acc_card_data["expected_duration"] = int(delay_match.group(1))
-                logger.info(f"[_build_accident_card] 从用户输入提取延误时间: {acc_card_data['expected_duration']}分钟")
+                logger.debug(f"[_build_accident_card] 从用户输入提取延误时间: {acc_card_data['expected_duration']}分钟")
 
         # 使用统一的完整性判定逻辑
         if not acc_card_data.get("is_complete") or not acc_card_data.get("missing_fields"):
@@ -638,6 +828,11 @@ class Layer1DataModeling:
                     "fault_type": fault_type
                 }
                 is_complete, missing_fields = self._check_completeness(accident_card_data)
+
+                # 检索调度员操作指南
+                dispatcher_guide = self._retrieve_dispatcher_guide(scene_category, fault_type)
+                if dispatcher_guide:
+                    logger.info(f"[L1] 检索到调度员操作指南: {len(dispatcher_guide)} 条")
 
                 return AccidentCard(
                     fault_type=fault_type,

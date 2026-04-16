@@ -4,7 +4,7 @@
 支持FCFS、MIP、强化学习等多种调度方法的对比和优选
 """
 
-from .metrics import MetricsDefinition, EvaluationMetrics, MetricsWeight
+from .metrics import MetricsDefinition, EvaluationMetrics, HighSpeedMetricsWeight, HighSpeedMetricsWeight as MetricsWeight
 from .comparator import (
     SchedulerComparator, 
     ComparisonResult, 

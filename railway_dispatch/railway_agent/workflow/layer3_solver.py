@@ -58,7 +58,7 @@ class Layer3Solver:
         Returns:
             Dict: 包含求解结果的字典
         """
-        logger.info("[L3] 求解技能层")
+        logger.debug("[L3] 求解技能层")
 
         # 选择求解器（优先使用 L2 的 preferred_solver，再经过规则校验）
         main_skill = self.select_solver(
@@ -69,7 +69,7 @@ class Layer3Solver:
             planner_decision=planner_decision
         )
 
-        logger.info(f"[L3] 主技能: {main_skill}")
+        logger.debug(f"[L3] 主技能: {main_skill}")
 
         # 获取求解器实例（所有场景统一处理）
         solver = self._get_solver(main_skill)
@@ -83,14 +83,26 @@ class Layer3Solver:
         try:
             solver_response = solver.solve(solver_request)
 
-            logger.info(f"第三层完成: 求解状态={solver_response.status}, 成功={solver_response.success}")
+            logger.info(f"[L3] 求解完成: 状态={solver_response.status}, 成功={solver_response.success}, 耗时={solver_response.solving_time_seconds:.2f}秒")
 
-            # 提取指标
+            # 提取指标（先定义变量）
             metrics = solver_response.metrics or {}
             total_delay_seconds = metrics.get("total_delay_seconds", 0)
             max_delay_seconds = metrics.get("max_delay_seconds", 0)
             total_delay = total_delay_seconds // 60
             max_delay = max_delay_seconds // 60
+            avg_delay = metrics.get("avg_delay_seconds", 0) / 60 if metrics.get("avg_delay_seconds") else 0
+            affected_trains = len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0
+
+            # 打印求解结果摘要
+            if solver_response.success:
+                logger.info("=" * 50)
+                logger.info("【L3求解结果】")
+                logger.info(f"  总延误: {total_delay}分钟")
+                logger.info(f"  最大延误: {max_delay}分钟")
+                logger.info(f"  平均延误: {avg_delay:.2f}分钟")
+                logger.info(f"  影响列车数: {affected_trains}列")
+                logger.info("=" * 50)
 
             # 构建solver_response字典，包含优化后的时刻表
             solver_response_dict = solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
@@ -149,6 +161,7 @@ class Layer3Solver:
                     "location_type": location_type,
                     "scenario_type": self._map_scene_to_scenario_type(accident_card.scene_category),
                     "affected_trains": accident_card.affected_train_ids if accident_card.affected_train_ids else [],
+                    "affected_trains_count": len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,  # 添加受影响列车数量
                     "original_schedule": original_schedule,  # 添加原始时刻表用于基线对比
                     "delay_injection": delay_injection_info,  # 添加延误注入信息
                     "_response_source": "rule_based_solver",
@@ -185,57 +198,30 @@ class Layer3Solver:
         Returns:
             str: 求解器名称
         """
-        logger.info("[L3] 选择求解器")
+        logger.debug("[L3] 选择求解器")
 
-        # 规则1：区间封锁 -> FCFS
-        if scene_category == "区间封锁" or planning_intent == "handle_section_block":
-            logger.info("[L3] 规则1：区间封锁，强制使用 fcfs")
-            return "fcfs"
-
-        # 规则2：信息不完整 -> FCFS（无法被覆盖）
-        if not is_complete:
-            logger.info("[L3] 规则2：信息不完整，强制使用 fcfs")
-            return "fcfs"
-
-        # 尝试使用 L2 的 preferred_solver
-        preferred_solver = None
+        # 强制使用 L2 的 preferred_solver（来自LLM建议）
         if planner_decision and isinstance(planner_decision, dict):
             preferred_solver = planner_decision.get("preferred_solver")
             solver_candidates = planner_decision.get("solver_candidates", [])
 
             if preferred_solver:
-                logger.info(f"[L3] L2 建议的 preferred_solver: {preferred_solver}")
-                logger.info(f"[L3] L2 建议的 solver_candidates: {solver_candidates}")
-
-                # 验证 preferred_solver 是否有效
+                logger.debug(f"[L3] 使用L2 LLM建议的 preferred_solver: {preferred_solver}")
                 valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
                 if preferred_solver in valid_solvers:
-                    # 进一步规则校验
-                    if scene_category == "临时限速" and preferred_solver == "mip":
-                        logger.info("[L3] L2 建议通过：临时限速 -> mip")
-                        return preferred_solver
-                    elif scene_category == "突发故障" and preferred_solver == "fcfs":
-                        logger.info("[L3] L2 建议通过：突发故障 -> fcfs")
-                        return preferred_solver
-                    else:
-                        # 如果场景与 solver 不匹配，记录警告但继续使用建议的 solver
-                        logger.warning(f"[L3] L2 建议的 solver ({preferred_solver}) 与场景 ({scene_category}) 不匹配，但仍使用建议的 solver")
-                        return preferred_solver
+                    return preferred_solver
                 else:
-                    logger.warning(f"[L3] L2 建议的 preferred_solver ({preferred_solver}) 不是有效的 solver，使用规则校验")
-
-        # 规则3：列车数量少（<=3）且完整 -> MIP
-        if train_count <= 3 and is_complete:
-            logger.info("[L3] 规则3：列车数<=3，使用 mip")
+                    logger.warning(f"[L3] L2建议的solver无效: {preferred_solver}，使用默认MIP")
+                    return "mip"
+            else:
+                logger.warning("[L3] L2未提供preferred_solver，使用默认MIP")
+                return "mip"
+        else:
+            logger.warning("[L3] L2未提供planner_decision，使用默认MIP")
             return "mip"
 
-        # 规则4：列车数量多 -> FCFS
-        if train_count > 10:
-            logger.info("[L3] 规则4：列车数>10，使用 fcfs")
-            return "fcfs"
-
         # 规则5：默认 -> MIP
-        logger.info("[L3] 规则5：默认使用 mip")
+        logger.debug("[L3] 规则5：默认使用 mip")
         return "mip"
 
     def _get_solver(self, solver_name: str):
@@ -278,7 +264,7 @@ class Layer3Solver:
         location_code = accident_card.location_code if accident_card.location_code else "SJP"
         # 默认延误时间从配置读取（10分钟）
         from config import DispatchEnvConfig
-        default_delay = DispatchEnvConfig.get("constraints.default_min_section_time", 600)
+        default_delay = DispatchEnvConfig.default_delay_seconds()
         delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else default_delay
 
         injected_delays = []

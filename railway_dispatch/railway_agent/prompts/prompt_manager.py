@@ -41,7 +41,7 @@ class PromptManager:
             template: Prompt模板对象
         """
         self._templates[template.template_id] = template
-        logger.info(f"注册Prompt模板: {template.template_id} - {template.template_name}")
+        logger.debug(f"注册Prompt模板: {template.template_id} - {template.template_name}")
 
     def get_template(self, template_id: str) -> Optional[PromptTemplate]:
         """
@@ -378,107 +378,51 @@ class PromptManager:
         )
         self.register_template(l0_template)
 
-        # L1数据建模模板（增强版，带RAG知识指导）
+        # L1数据建模模板（优化版，减少token使用）
         l1_template = PromptTemplate(
             template_id="l1_data_modeling",
             template_type=PromptTemplateType.L1_DATA_MODELING,
             template_name="L1数据建模",
             description="从调度员描述中生成事故卡片和网络快照",
-            system_prompt="你是一个专业的铁路调度数据建模助手，负责将自然语言描述转换为结构化的调度数据。必须只输出JSON格式，不要添加任何解释文字或markdown标记。",
-            user_prompt_template="""根据铁路故障/调整描述，生成事故卡片。只输出纯JSON，不要添加markdown代码块标记(```)。
+            system_prompt="你是铁路调度数据建模助手。只输出JSON，不要解释。",
+            user_prompt_template="""描述：{user_input}
 
-故障描述：{user_input}
+规则：
+1. 场景：限速/天气→临时限速，故障→突发故障，封锁→区间封锁
+2. 车站：石家庄→SJP,北京西→BJX,保定东→BDD,徐水东→XSD,高邑西→GYX,邢台东→XTD,邯郸东→HDD,安阳东→AYD
+3. 区间格式："XSD-BDD"，车站格式："SJP-SJP"
+4. 提取列车号(如G1563)、延误分钟数、事件类型
+5. fault_type未知则设"未知"，is_complete：列车号+位置+事件类型齐全才为true
 
-【领域知识参考】
-{rag_knowledge}
-
-【场景类型判断指南】
-1. 临时限速场景：包含"限速"、天气原因（大风、暴雨、冰雪）、自然灾害
-2. 突发故障场景：包含"故障"、设备问题、列车问题、信号问题
-3. 区间封锁场景：包含"封锁"、"中断"、线路无法通行
-
-【车站代码映射】
-- 石家庄 -> SJP, 北京西 -> BJX, 保定东 -> BDD, 定州东 -> DZD
-- 徐水东 -> XSD, 涿州东 -> ZBD, 高碑店东 -> GBD, 正定机场 -> ZDJ
-- 高邑西 -> GYX, 邢台东 -> XTD, 邯郸东 -> HDD, 安阳东 -> AYD
-
-【提取规则】
-1. 从描述中提取列车号（如G1563、D1234）放入affected_train_ids数组
-2. **位置识别（重要）**：
-   a) 区间识别：如果描述中包含"区间"、"段"、"到"、"至"、"-"等词，或明确提到两个车站之间的范围，则为区间
-      - 例如："徐水东到保定东"、"XSD-BDD"、"徐水东-保定东区间"、"保定东至定州东"
-      - 提取两个站名并转换为站码，格式为"XSD-BDD"（按地理位置从前向后）
-      - 设置 location_type 为 "section"
-      - 设置 location_code 为区间代码（如"XSD-BDD"）
-      - 设置 location_name 为区间名称（如"徐水东-保定东"）
-      - 设置 affected_section 为区间代码（如"XSD-BDD"）
-
-   b) 车站识别：如果描述中只提到单个车站，则为车站
-      - 例如："石家庄站"、"石家庄"
-      - 提取车站名转换为站码（如"石家庄"->"SJP"）
-      - 设置 location_type 为 "station"
-      - 设置 location_code 为站码（如"SJP"）
-      - 设置 location_name 为车站名（如"石家庄"）
-      - 设置 affected_section 为"站码-站码"（如"SJP-SJP"）
-
-3. 如果有"延误"或"晚点"，提取分钟数放入expected_duration（数字，不带单位），注意：延误时间是可选字段
-4. 从描述中提取事件类型（如大风、暴雨、设备故障等）放入fault_type
-5. **重要：如果描述中没有明确提到事件类型，fault_type必须设为"未知"，不要猜测或编造**
-6. **判断is_complete**：只有当有列车号+位置（车站或区间）+事件类型（fault_type不是"未知"）时，才设为true，否则设为false
-   - 注意：延误时间（expected_duration）是可选字段，不影响完整性判定
-7. **如果is_complete为false，在missing_fields中列出缺失的字段**（如"列车号"、"位置"、"事件类型"）
-
-【输出示例】（仅作为格式参考，不要照搬内容）：
-- 车站示例：{{"accident_card": {{"scene_category": "临时限速", "fault_type": "大风", "expected_duration": 10, "affected_section": "SJP-SJP", "location_type": "station", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": true, "missing_fields": []}}}}
-- 区间示例：{{"accident_card": {{"scene_category": "区间封锁", "fault_type": "设备故障", "expected_duration": 30, "affected_section": "XSD-BDD", "location_type": "section", "location_code": "XSD-BDD", "location_name": "徐水东-保定东", "affected_train_ids": ["G1234"], "is_complete": true, "missing_fields": []}}}}
-- 不完整信息示例：{{"accident_card": {{"scene_category": "突发故障", "fault_type": "未知", "expected_duration": null, "affected_section": "SJP-SJP", "location_type": "station", "location_code": "SJP", "location_name": "石家庄", "affected_train_ids": ["G1563"], "is_complete": false, "missing_fields": ["事件类型", "延误时间"]}}}}
-
-必须严格按照JSON格式输出，不要添加任何额外文字或markdown标记。""",
+输出JSON：{{"accident_card":{{"scene_category":"临时限速","fault_type":"大风","expected_duration":30,"affected_section":"SJP-SJP","location_type":"station","location_code":"SJP","location_name":"石家庄","affected_train_ids":["G1563"],"is_complete":true,"missing_fields":[]}}}}""",
             required_output_fields=["accident_card"],
-            temperature=0.1,
-            max_tokens=512,
+            temperature=0.0,
+            max_tokens=256,
             tags=["data_modeling", "accident_card"],
-            version="1.1"
+            version="1.2"
         )
         self.register_template(l1_template)
 
-        # L2 Planner模板
+        # L2 Planner模板（优化版）
         l2_template = PromptTemplate(
             template_id="l2_planner",
             template_type=PromptTemplateType.L2_PLANNER,
             template_name="L2规划器",
             description="根据事故卡片判断问题类型和处理意图",
-            system_prompt="你是一个专业的铁路调度规划助手，负责分析故障场景并制定处理策略。必须只输出JSON格式，不要添加任何解释文字或markdown标记。",
-            user_prompt_template="""根据事故卡片判断问题类型和处理意图。只输出纯JSON，不要添加markdown代码块标记(```)。
+            system_prompt="你是铁路调度规划助手。只输出JSON，不要解释。",
+            user_prompt_template="""事故：{accident_card}
 
-事故卡片：{accident_card}
+规则：
+- 临时限速→recalculate_corridor_schedule
+- 突发故障→recover_from_disruption  
+- 区间封锁→handle_section_block
 
-{rag_knowledge}
-
-【场景类型映射规则】
-- 临时限速场景 -> planning_intent: "recalculate_corridor_schedule"
-- 突发故障场景 -> planning_intent: "recover_from_disruption"
-- 区间封锁场景 -> planning_intent: "handle_section_block"
-
-【求解器选择参考】
-- 临时限速：使用mip_scheduler（优化调整）
-- 突发故障：使用fcfs_scheduler（快速响应）
-- 区间封锁：使用noop_scheduler（不调度）
-
-必须严格按照以下JSON格式输出，不要添加任何额外文字：
-{{"planning_intent": "recover_from_disruption", "问题描述": "大风导致列车延误", "建议窗口": "SJP"}}
-
-planning_intent可选值：
-- recalculate_corridor_schedule：重新计算走廊时刻表（临时限速）
-- recover_from_disruption：从干扰中恢复（突发故障）
-- handle_section_block：处理区间封锁
-
-只输出JSON对象，不要其他内容。""",
+输出JSON：{{"planning_intent":"recalculate_corridor_schedule","问题描述":"大风导致延误","建议窗口":"SJP"}}""",
             required_output_fields=["planning_intent"],
-            temperature=0.1,
-            max_tokens=256,
+            temperature=0.0,
+            max_tokens=128,
             tags=["planner", "intent"],
-            version="1.1"
+            version="1.2"
         )
         self.register_template(l2_template)
 
@@ -517,36 +461,23 @@ solver可选: mip, fcfs, max_delay_first, noop
         )
         self.register_template(l3_template)
 
-        # L4评估模板
+        # L4评估模板（优化版）
         l4_template = PromptTemplate(
             template_id="l4_evaluation",
             template_type=PromptTemplateType.L4_EVALUATION,
             template_name="L4评估",
             description="评估调度方案，生成解释和风险提示",
-            system_prompt="你是一个专业的铁路调度方案评估助手，负责评估调度方案的可行性和风险。必须只输出JSON格式，不要添加任何解释文字或markdown标记。",
-            user_prompt_template="""评估调度方案，生成解释和风险提示。只输出纯JSON，不要添加markdown代码块标记(```)。
+            system_prompt="你是铁路调度方案评估助手。只输出JSON，不要解释。",
+            user_prompt_template="""结果：{execution_result}
 
-求解结果：{execution_result}
+评估延误和风险，给出0-1评分。
 
-{rag_knowledge}
-
-评估要求：
-1. 分析求解结果中的延误情况（total_delay_minutes, max_delay_minutes）
-2. 识别潜在风险（延误传播、约束违反等）
-3. 根据延误处理策略知识，评估方案合理性
-4. 给出可行性评分（0.0-1.0）
-
-必须严格按照以下JSON格式输出，不要添加任何额外文字：
-{{"llm_summary": "方案可行，总延误10分钟", "risk_warnings": [], "feasibility_score": 0.9, "constraint_check": {{"时间约束": true, "空间约束": true}}}}
-
-feasibility_score范围0.0-1.0，表示方案可行性评分。
-
-只输出JSON对象，不要其他内容。""",
+输出JSON：{{"llm_summary":"方案可行，总延误10分钟","risk_warnings":[],"feasibility_score":0.9,"constraint_check":{{"时间约束":true,"空间约束":true}}}}""",
             required_output_fields=["llm_summary", "feasibility_score"],
-            temperature=0.1,
-            max_tokens=512,
+            temperature=0.0,
+            max_tokens=256,
             tags=["evaluation", "risk_analysis"],
-            version="1.0"
+            version="1.1"
         )
         self.register_template(l4_template)
 
@@ -587,55 +518,33 @@ solver可选: mip, fcfs, max_delay_first, noop
         # 如需使用，请通过 register_template 手动注册
         # self.register_template(l3_solver_template)
 
-        # L4自然语言调度方案生成模板
+        # L4自然语言调度方案生成模板（折中版）
         l4_natural_language_template = PromptTemplate(
             template_id="l4_natural_language_plan",
             template_type=PromptTemplateType.L4_EVALUATION,
             template_name="L4自然语言调度方案",
             description="生成人类可读的自然语言调度方案",
-            system_prompt="你是一个专业的铁路调度方案解释助手，负责将数值化的调度结果转换为调度员易于理解的自然语言调度指令。",
-            user_prompt_template="""根据调度结果，生成自然语言调度方案。
+            system_prompt="你是铁路调度方案解释助手，负责将调度结果转换为清晰的调度指令。",
+            user_prompt_template="""根据调度结果生成方案。
 
-原始时刻表和调度结果：{execution_result}
+场景：{scene_type}
+位置：{delay_location}  
+列车：{affected_trains}
+评估：{evaluation_summary}
 
-调度场景信息：
-- 事故类型：{scene_type}
-- 受影响列车：{affected_trains}
-- 延误位置：{delay_location}
+调度结果：{execution_result}
 
-请生成详细的自然语言调度方案，包括：
-1. 总体调度策略概述
-2. 每列受影响列车的具体调整（按车站逐个说明）
-3. 发车顺序调整建议（如有）
-4. 关键时间节点提醒
+生成包含以下内容的方案：
+1. 调整概述（原因+影响范围）
+2. 具体调整（列车+站点+时间变化）
+3. 注意事项（关键节点+安全要求）
 
-输出格式要求：
-- 使用专业但易懂的铁路调度术语
-- 明确说明每列车的到发时间调整
-- 如有列车顺序调整，说明原因
-- 指出需要特别注意的约束点
-
-示例输出格式：
-【调度方案概述】
-因{delay_location}发生{scene_type}，对{affected_trains}等列车进行如下调整：
-
-【具体调整】
-1. G1563次列车：
-   - 石家庄站：原计划10:00发车，调整为10:05发车（延误5分钟）
-   - 高邑西站：通过不停车，以压缩后续延误
-   
-2. G1567次列车：
-   - 发车顺序调整：从第3顺位调整为第2顺位
-   - 石家庄站：提前2分钟发车，为G1563让行
-
-【注意事项】
-- 请确保石家庄站追踪间隔不小于3分钟
-- G1563在保定东站需要压缩停站时间至2分钟""",
+输出JSON：{{"natural_language_plan":"【调整概述】因石家庄站大风，G1563延误30分钟。\n\n【具体调整】\nG1563次列车：\n- 石家庄站：原计划19:05发车，调整为19:35发车\n- 高邑西站：原计划19:17通过，调整为19:47通过\n\n【注意事项】\n- 确保石家庄站追踪间隔不小于3分钟\n- 后续站点同步更新到发时间"}}""",
             required_output_fields=["natural_language_plan"],
-            temperature=0.3,
-            max_tokens=1024,
+            temperature=0.2,
+            max_tokens=512,
             tags=["natural_language", "dispatch_plan"],
-            version="1.0"
+            version="1.2"
         )
         self.register_template(l4_natural_language_template)
 
