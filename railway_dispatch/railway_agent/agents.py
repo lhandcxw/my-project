@@ -437,7 +437,9 @@ class LLMAgent:
             )
 
             # 注册多个调度器进行比较
-            available_schedulers = ["mip", "fcfs", "fsfs", "max_delay_first", "noop"]
+            available_schedulers = [
+                "mip", "fcfs", "fsfs", "max_delay_first", "noop"
+            ]
             logger.debug(f"[Agent] 开始注册调度器: {available_schedulers}")
             for sched_name in available_schedulers:
                 try:
@@ -538,36 +540,22 @@ class LLMAgent:
 
             # 打印调度方案摘要
             if result.dispatch_result and result.dispatch_result.delay_statistics:
-                logger.info("=" * 50)
-                logger.info("调度方案摘要:")
                 stats = result.dispatch_result.delay_statistics
-                logger.info(f"  - 总延误: {stats.get('total_delay_minutes', 0)}分钟")
-                logger.info(f"  - 最大延误: {stats.get('max_delay_minutes', 0)}分钟")
-                logger.info(f"  - 平均延误: {stats.get('avg_delay_minutes', 0):.2f}分钟")
-                logger.info(f"  - 推荐调度器: {stats.get('winner_scheduler', '未知')}")
-                logger.info(f"  - 计算时间: {computation_time:.2f}秒")
-                logger.info("=" * 50)
+                logger.info(f"[Agent] 调度完成: 总延误{stats.get('total_delay_minutes', 0)}分钟, "
+                           f"最大延误{stats.get('max_delay_minutes', 0)}分钟, "
+                           f"推荐调度器: {stats.get('winner_scheduler', '未知')}, "
+                           f"耗时: {computation_time:.2f}秒")
 
-            # 打印自然语言调度方案
+            # 获取自然语言调度方案
             if result.natural_language_plan:
-                logger.info("=" * 50)
-                logger.info("自然语言调度方案:")
-                logger.info(result.natural_language_plan)
-                logger.info("=" * 50)
+                pass  # 已有方案
             elif hasattr(result, '_workflow_result'):
                 workflow_result = result._workflow_result
                 if hasattr(workflow_result, 'debug_trace'):
                     result.natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
-                    if result.natural_language_plan:
-                        logger.info("=" * 50)
-                        logger.info("自然语言调度方案:")
-                        logger.info(result.natural_language_plan)
-                        logger.info("=" * 50)
                     # 同样处理 operations_guide
                     if not result.operations_guide:
                         result.operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
-                        if result.operations_guide:
-                            logger.info(f"[Agent] 从工作流结果获取调度员操作指南: {result.operations_guide.get('scene_name', '未知')}")
 
             # 确保 operations_guide 和 natural_language_plan 被正确传递
             # 从工作流结果中提取（如果还没有的话）
@@ -576,12 +564,8 @@ class LLMAgent:
                 if hasattr(workflow_result, 'debug_trace') and workflow_result.debug_trace:
                     if not result.natural_language_plan:
                         result.natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
-                        if result.natural_language_plan:
-                            logger.info(f"[Agent] 从工作流提取自然语言方案，长度: {len(result.natural_language_plan)}")
                     if not result.operations_guide:
                         result.operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
-                        if result.operations_guide:
-                            logger.info(f"[Agent] 从工作流提取操作指南: {result.operations_guide.get('scene_name', '未知')}")
 
             return result
 

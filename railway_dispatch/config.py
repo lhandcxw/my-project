@@ -22,6 +22,30 @@ class LLMConfig:
     # LLM提供方式: "dashscope" | "local"
     PROVIDER = "dashscope"
 
+    # ========== L1 数据建模层配置 ==========
+    # L1 实体提取方式: "prompt" | "finetuned"
+    # - prompt: 使用 Prompt 模板调用 LLM 提取（默认）
+    # - finetuned: 使用微调后的模型提取
+    L1_EXTRACTION_MODE = "prompt"
+
+    # 微调模型配置（当 L1_EXTRACTION_MODE = "finetuned" 时使用）
+    L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
+    L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称或路径
+
+    # ========== L1 数据建模层配置 ==========
+    # L1 提取方式: "prompt" | "finetuned"
+    # - prompt: 使用 Prompt 模板调用 LLM 提取（默认，当前使用）
+    # - finetuned: 使用微调后的模型直接提取（训练完成后切换）
+    L1_EXTRACTION_MODE = "prompt"
+
+    # 微调模型配置（当 L1_EXTRACTION_MODE = "finetuned" 时使用）
+    L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
+    L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称
+    L1_FINETUNED_MODEL_PATH = ""  # 本地模型路径（transformers 模式使用）
+    L1_FINETUNED_API_URL = "http://localhost:11434"  # Ollama/vLLM API 地址
+    L1_FINETUNED_TEMPERATURE = 0.0  # 微调模型温度（提取任务需要确定性）
+    L1_FINETUNED_MAX_TOKENS = 512  # 微调模型最大输出长度
+
     # ========== 方式1：阿里云 DashScope API ==========
     # 注意：当前开发阶段使用直接配置，项目结束后将改为环境变量
     DASHSCOPE_API_KEY = "sk-bcf1668108cd4708b2f113d5073e42d4"  # 请在此填写您的DashScope API Key，例如："sk-xxx..."
@@ -107,6 +131,30 @@ class SolverConfig:
     # MIP 求解器配置
     MIP_TIME_LIMIT = int(os.getenv("MIP_TIME_LIMIT", "300"))  # 秒
     MIP_GAP = float(os.getenv("MIP_GAP", "0.01"))  # 1% gap
+
+
+class L1Config:
+    """L1 数据建模层配置"""
+    # L1 提取方式: "prompt" | "finetuned"
+    # - prompt: 使用 Prompt 模板调用 LLM 提取（默认）
+    # - finetuned: 使用微调后的模型直接提取
+    USE_FINETUNED_MODEL = False  # 等价于 LLMConfig.L1_EXTRACTION_MODE == "finetuned"
+    EXTRACTION_MODE = "prompt"
+
+    # 微调模型配置
+    FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
+    FINETUNED_MODEL_NAME = "qwen2.5:1.5b"
+    FINETUNED_MODEL_BASE_URL = "http://localhost:11434"
+    FINETUNED_TEMPERATURE = 0.0
+    FINETUNED_MAX_TOKENS = 512
+
+    # 失败回退配置
+    FALLBACK_TO_PROMPT_ON_ERROR = True
+
+    @classmethod
+    def get_extraction_mode(cls) -> str:
+        """获取当前提取模式"""
+        return "finetuned" if cls.USE_FINETUNED_MODEL else "prompt"
 
 
 class DispatchEnvConfig:
@@ -436,12 +484,25 @@ def get_config_summary() -> str:
   - vLLM模型: {LLMConfig.VLLM_MODEL} ({vllm_status})
   - Transformers路径: {LLMConfig.TRANSFORMERS_MODEL_PATH or '未配置'} ({transformers_status})"""
 
+    # L1 层配置信息
+    l1_mode = "微调模型" if L1Config.USE_FINETUNED_MODEL else "Prompt"
+    l1_info = f"""
+L1数据建模层配置:
+  - 实现方式: {l1_mode}"""
+    if L1Config.USE_FINETUNED_MODEL:
+        l1_info += f"""
+  - 模型提供商: {L1Config.FINETUNED_MODEL_PROVIDER}
+  - 模型名称: {L1Config.FINETUNED_MODEL_NAME}
+  - 基础URL: {L1Config.FINETUNED_MODEL_BASE_URL}
+  - 失败回退: {'是' if L1Config.FALLBACK_TO_PROMPT_ON_ERROR else '否'}"""
+
     return f"""
 ========================================
         系统配置摘要
 ========================================
 LLM配置:{llm_info}
   - 强制LLM模式: {'是' if LLMConfig.FORCE_LLM_MODE else '否'}
+{l1_info}
 
 应用配置:
   - Agent模式: {AppConfig.AGENT_MODE}
@@ -454,6 +515,7 @@ LLM配置:{llm_info}
 架构说明：
   - 移除RuleAgent，统一使用LLM驱动
   - 支持阿里云API和本地微调模型
+  - L1层支持Prompt和微调模型切换
   - 完整L1-L4工作流
 ========================================
 """

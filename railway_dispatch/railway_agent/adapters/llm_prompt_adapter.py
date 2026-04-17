@@ -219,6 +219,49 @@ class LLMPromptAdapter:
 
         return response
 
+    def execute_raw_prompt(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.1,
+        max_tokens: int = 512
+    ) -> Optional[Dict[str, Any]]:
+        """
+        执行原始Prompt（不使用模板管理器）
+
+        Args:
+            system_prompt: 系统提示
+            user_prompt: 用户提示
+            temperature: 温度参数
+            max_tokens: 最大token数
+
+        Returns:
+            Optional[Dict]: 解析后的LLM响应，失败返回None
+        """
+        try:
+            # 构建完整prompt
+            full_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+            # 调用LLM
+            llm = self._get_llm_caller()
+            raw_response, response_type = llm.call(full_prompt, max_tokens=max_tokens, temperature=temperature)
+
+            logger.debug(f"[LLM原始响应] 长度={len(raw_response)}, 模型={response_type}")
+
+            # 解析响应
+            parsed_output = self._parse_json_response(raw_response)
+
+            if parsed_output:
+                logger.debug(f"[LLM原始响应解析成功] 包含字段={list(parsed_output.keys())}")
+                return parsed_output
+            else:
+                logger.warning(f"[LLM原始响应解析失败] 原始响应={raw_response[:300]}")
+                return None
+
+        except Exception as e:
+            logger.error(f"[LLM原始Prompt执行失败] {e}")
+            return None
+
     def execute_with_fallback(
         self,
         template_id: str,
@@ -576,12 +619,16 @@ class LLMPromptAdapter:
         # 根据模板ID添加特定查询
         if template_id == "l1_data_modeling":
             # L1: 场景识别和实体提取
-            if "限速" in user_input or "大风" in user_input or "暴雨" in user_input:
-                queries.append("临时限速场景定义 暴雨大风天气")
+            # 场景类型只有三种：临时限速、突发故障、区间中断
+            if "封锁" in user_input or "中断" in user_input:
+                queries.append("区间中断场景定义")
             elif "故障" in user_input:
                 queries.append("突发故障场景定义 设备故障信号故障")
-            elif "封锁" in user_input:
-                queries.append("区间封锁场景定义")
+            elif "限速" in user_input:
+                queries.append("临时限速场景定义")
+            else:
+                # 默认天气相关归为临时限速
+                queries.append("临时限速场景定义 大风天气 暴雨天气")
             queries.append("京广高铁车站代码 SJP BDD")
 
         elif template_id == "l2_planner":
@@ -631,12 +678,13 @@ class LLMPromptAdapter:
 
         # L1数据建模 - 生成事故卡片
         if template_id == "l1_data_modeling":
-            # 推断场景类型
+            # 场景类型只有三种：临时限速、突发故障、区间中断
+            # 具体天气/故障作为fault_type
             scene_category = "突发故障"
-            if any(kw in user_input for kw in ["限速", "大风", "暴雨", "降雪", "天气"]):
+            if "封锁" in user_input or "中断" in user_input:
+                scene_category = "区间中断"
+            elif any(kw in user_input for kw in ["限速", "大风", "风", "暴雨", "雨", "雪", "冰雪", "结冰", "天气"]):
                 scene_category = "临时限速"
-            elif any(kw in user_input for kw in ["封锁", "中断"]):
-                scene_category = "区间封锁"
 
             # 推断故障类型
             fault_type = "未知"

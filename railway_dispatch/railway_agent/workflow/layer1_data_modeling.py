@@ -27,9 +27,22 @@ from models.preprocess_models import CanonicalDispatchRequest, LocationInfo, Com
 from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
 from models.data_loader import validate_train_at_station
-from config import LLMConfig
+from config import LLMConfig, L1Config
 
 logger = logging.getLogger(__name__)
+
+# L1 微调模型系统提示词
+L1_FINETUNED_SYSTEM_PROMPT = """你是铁路调度数据建模助手。负责从调度员描述中提取关键信息并生成事故卡片。只输出JSON，不要解释。
+
+规则：
+1. 场景：限速/天气→临时限速，故障→突发故障，封锁→区间封锁
+2. 车站：石家庄→SJP,北京西→BJX,保定东→BDD,徐水东→XSD,高邑西→GYX,邢台东→XTD,邯郸东→HDD,安阳东→AYD,高碑店东→GBD,定州东→DZD,正定机场→ZDJ,杜家坎线路所→DJK,涿州东→ZBD
+3. 区间格式：location_type=section, location_code="DJK-ZBD", affected_section="DJK-ZBD"
+4. 车站格式：location_type=station, location_code="SJP", affected_section="SJP-SJP"
+5. 提取列车号(如G1563)、延误分钟数、事件类型
+6. fault_type未知则设"未知"，is_complete：列车号+位置+事件类型+延误时间齐全才为true
+
+输出字段：scene_category, fault_type, expected_duration, affected_section, location_type, location_code, location_name, affected_train_ids, is_complete, missing_fields"""
 
 # 调度员操作指南检索器（关键词匹配版）
 class DispatcherOperationGuideRetriever:
@@ -128,16 +141,18 @@ class DispatcherOperationGuideRetriever:
     def retrieve_operations(self, scene_category: str, fault_type: str, user_input: str) -> Optional[Dict[str, Any]]:
         """
         检索调度员操作指南
+        优先按故障类型(fault_type)检索，其次按场景类型
 
         Args:
-            scene_category: 场景类型
-            fault_type: 故障类型
+            scene_category: 场景类型（临时限速/突发故障/区间中断）
+            fault_type: 故障类型（大风/暴雨/设备故障等）
             user_input: 用户原始输入
 
         Returns:
             操作指南字典，包含operations列表
         """
-        query = f"{scene_category} {fault_type} {user_input}".lower()
+        # 优先使用fault_type检索
+        query = f"{fault_type} {user_input}".lower()
 
         best_match = None
         best_score = 0
@@ -147,11 +162,11 @@ class DispatcherOperationGuideRetriever:
             # 关键词匹配
             for keyword in knowledge["keywords"]:
                 if keyword in query:
-                    score += 2  # 关键词匹配得2分
+                    score += 3  # fault_type匹配得3分
 
-            # 场景名称匹配
-            if scene_name.lower() in query:
-                score += 3  # 场景名称匹配得3分
+            # 故障类型名称匹配
+            if fault_type and fault_type.lower() in scene_name.lower():
+                score += 5  # 精确匹配得5分
 
             if score > best_score:
                 best_score = score
@@ -161,6 +176,26 @@ class DispatcherOperationGuideRetriever:
                     "source": knowledge["source"],
                     "match_score": score
                 }
+
+        # 如果没有匹配到，尝试使用scene_category
+        if best_score == 0 and scene_category:
+            query = f"{scene_category} {user_input}".lower()
+            for scene_name, knowledge in self.knowledge_base.items():
+                score = 0
+                for keyword in knowledge["keywords"]:
+                    if keyword in query:
+                        score += 2
+                if scene_category.lower() in scene_name.lower():
+                    score += 3
+
+                if score > best_score:
+                    best_score = score
+                    best_match = {
+                        "scene_name": scene_name,
+                        "operations": knowledge["operations"],
+                        "source": knowledge["source"],
+                        "match_score": score
+                    }
 
         return best_match if best_score > 0 else None
 
@@ -198,6 +233,48 @@ class Layer1DataModeling:
         """初始化第一层"""
         self.prompt_adapter = get_llm_prompt_adapter()
         self.operations_retriever = DispatcherOperationGuideRetriever()
+        self.finetuned_model = None
+
+        # 如果启用了微调模型，初始化模型
+        if L1Config.USE_FINETUNED_MODEL:
+            self._init_finetuned_model()
+
+    def _init_finetuned_model(self):
+        """初始化微调模型"""
+        try:
+            if L1Config.FINETUNED_MODEL_PROVIDER == "ollama":
+                import openai
+                self.finetuned_model = openai.OpenAI(
+                    base_url=L1Config.FINETUNED_MODEL_BASE_URL,
+                    api_key="ollama"  # Ollama 不需要真实 API key
+                )
+                logger.info(f"[L1] 微调模型初始化成功 (Ollama): {L1Config.FINETUNED_MODEL_NAME}")
+            elif L1Config.FINETUNED_MODEL_PROVIDER == "vllm":
+                import openai
+                self.finetuned_model = openai.OpenAI(
+                    base_url=L1Config.FINETUNED_MODEL_BASE_URL,
+                    api_key="vllm"  # vLLM 不需要真实 API key
+                )
+                logger.info(f"[L1] 微调模型初始化成功 (vLLM): {L1Config.FINETUNED_MODEL_NAME}")
+            elif L1Config.FINETUNED_MODEL_PROVIDER == "transformers":
+                # 使用 Transformers 原生加载
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                self.finetuned_tokenizer = AutoTokenizer.from_pretrained(
+                    L1Config.FINETUNED_MODEL_PATH
+                )
+                self.finetuned_model = AutoModelForCausalLM.from_pretrained(
+                    L1Config.FINETUNED_MODEL_PATH,
+                    device_map=L1Config.FINETUNED_MODEL_DEVICE
+                )
+                logger.info(f"[L1] 微调模型初始化成功 (Transformers): {L1Config.FINETUNED_MODEL_PATH}")
+            else:
+                logger.warning(f"[L1] 未知的微调模型提供商: {L1Config.FINETUNED_MODEL_PROVIDER}")
+        except Exception as e:
+            logger.error(f"[L1] 微调模型初始化失败: {e}")
+            if L1Config.FALLBACK_TO_PROMPT_ON_ERROR:
+                logger.warning("[L1] 将回退到 prompt 模式")
+            else:
+                raise
 
     @classmethod
     def _check_completeness(cls, accident_card_data: Dict[str, Any]) -> tuple:
@@ -255,48 +332,31 @@ class Layer1DataModeling:
         if canonical_request and canonical_request.scene_type_code:
             return self._use_preprocessed_result(canonical_request)
 
-        # 构建Prompt上下文
-        context = PromptContext(
-            request_id="",  # 由外部提供
-            user_input=user_input,
-            source_type="natural_language"
-        )
-
-        # 调用LLM提取事故卡片
-        response = self.prompt_adapter.execute_prompt(
-            template_id="l1_data_modeling",
-            context=context,
-            enable_rag=enable_rag
-        )
-
-        # 处理响应
-        if response.is_valid and response.parsed_output:
-            acc_card_data = response.parsed_output.get("accident_card", {})
-            accident_card = self._build_accident_card(acc_card_data, user_input)
-            # 检查响应来源并记录日志
-            response_source = response.parsed_output.get("_response_source", "")
-            response_note = response.parsed_output.get("_response_note", "")
-            if response_source.startswith("rule_based"):
-                logger.debug(f"[L1] 使用模拟响应: {response_note}")
-            elif response_source.startswith("llm_"):
-                logger.debug(f"[L1] 使用LLM真实响应: {response_note}")
+        # 根据配置选择提取方式：微调模型 或 Prompt
+        if L1Config.USE_FINETUNED_MODEL and self.finetuned_model is not None:
+            logger.info("[L1] 使用微调模型进行实体提取")
+            accident_card, response = self._extract_with_finetuned_model(user_input)
         else:
-            # LLM失败，根据配置决定是否使用回退逻辑
-            from config import LLMConfig
-            if LLMConfig.FORCE_LLM_MODE:
-                # 强制LLM模式：直接报错，不使用规则回退
-                error_msg = f"[L1] LLM提取失败，FORCE_LLM_MODE=true，中止处理。错误: {response.error}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
-            else:
-                # 调试模式：使用规则回退
-                logger.warning("[L1] LLM提取失败，使用回退逻辑（规则提取）- 调试模式")
-                accident_card = self._fallback_extraction(user_input)
+            logger.info("[L1] 使用Prompt进行实体提取")
+            accident_card, response = self._extract_with_prompt(user_input, enable_rag)
 
         # 如果有之前的事故卡片，合并信息
         if previous_accident_card:
             accident_card = self._merge_accident_cards(previous_accident_card, accident_card)
             logger.debug(f"[L1] 合并之前的事故卡片信息")
+
+        # 处理提取失败的情况
+        if accident_card is None:
+            logger.error("[L1] 实体提取失败")
+            return {
+                "accident_card": None,
+                "llm_response": response.raw_response if response else "",
+                "llm_response_type": response.model_used if response else "",
+                "response_source": "llm",
+                "needs_more_info": True,
+                "missing_questions": ["请重新提供事故信息"],
+                "error": "实体提取失败"
+            }
 
         # 检查信息完整性
         if not accident_card.is_complete:
@@ -326,23 +386,12 @@ class Layer1DataModeling:
         )
         if operations_guide:
             result["dispatcher_operations"] = operations_guide
-            # 记录日志
-            logger.info("=" * 50)
-            logger.info("【调度员操作指南】")
-            logger.info(f"  场景: {operations_guide['scene_name']}")
-            logger.info(f"  匹配度: {operations_guide['match_score']}")
-            logger.info(f"  来源: {operations_guide['source']}")
-            logger.info("=" * 50)
+            # 记录日志（精简为单行）
+            logger.info(f"[L1] 调度指南: {operations_guide['scene_name']} (匹配度{operations_guide['match_score']})")
 
-        logger.info("=" * 50)
-        logger.info("【事故卡片】")
-        logger.info(f"  场景类型: {accident_card.scene_category}")
-        logger.info(f"  故障类型: {accident_card.fault_type}")
-        logger.info(f"  位置: {accident_card.location_name} ({accident_card.location_code})")
-        logger.info(f"  延误时间: {accident_card.expected_duration}分钟" if accident_card.expected_duration else "  延误时间: 未知")
-        logger.info(f"  受影响列车: {accident_card.affected_train_ids}")
-        logger.info(f"  信息完整性: {'完整' if accident_card.is_complete else '不完整'}")
-        logger.info("=" * 50)
+        # 精简事故卡片日志
+        logger.info(f"[L1] 事故卡片: {accident_card.scene_category}/{accident_card.fault_type} @ {accident_card.location_name}, "
+                   f"延误{accident_card.expected_duration}分钟, 影响{len(accident_card.affected_train_ids or [])}列车")
 
         return result
 
@@ -370,7 +419,7 @@ class Layer1DataModeling:
                 location_code = location.station_code or ""
                 location_name = location.station_name or ""
                 affected_section = f"{location_code}-{location_code}" if location_code else ""
-                logger.info(f"[L0] 构建车站事故卡片: station_code={location_code}, name={location_name}")
+                logger.debug(f"[L0] 构建车站事故卡片: station_code={location_code}, name={location_name}")
         else:
             # 没有位置信息
             location_type = "station"
@@ -392,7 +441,7 @@ class Layer1DataModeling:
             missing_fields=canonical_request.completeness.missing_fields if canonical_request.completeness else []
         )
 
-        logger.info(f"第一层完成(L0): scene_category={accident_card.scene_category}, location_type={accident_card.location_type}, location_code={accident_card.location_code}")
+        logger.debug(f"第一层完成(L0): scene_category={accident_card.scene_category}, location_type={accident_card.location_type}, location_code={accident_card.location_code}")
 
         # 检索调度员操作指南
         operations_guide = self.operations_retriever.retrieve_operations(
@@ -409,12 +458,12 @@ class Layer1DataModeling:
 
         # 记录操作指南
         if operations_guide:
-            logger.info("=" * 50)
-            logger.info("【调度员操作指南】")
-            logger.info(f"  场景: {operations_guide['scene_name']}")
-            logger.info(f"  匹配度: {operations_guide['match_score']}")
-            logger.info(f"  来源: {operations_guide['source']}")
-            logger.info("=" * 50)
+            logger.debug("=" * 50)
+            logger.debug("【调度员操作指南】")
+            logger.debug(f"  场景: {operations_guide['scene_name']}")
+            logger.debug(f"  匹配度: {operations_guide['match_score']}")
+            logger.debug(f"  来源: {operations_guide['source']}")
+            logger.debug("=" * 50)
 
         return result
 
@@ -447,12 +496,15 @@ class Layer1DataModeling:
             elif "延误" in user_input or "晚点" in user_input:
                 acc_card_data["fault_type"] = "预计晚点"
 
-        # 推断场景类别
+        # 推断场景类别（修改优先级：先判断天气相关）
         if not acc_card_data.get("scene_category"):
-            if "限速" in user_input:
+            # 场景类型只有三种：临时限速、突发故障、区间中断
+            # 具体天气/故障作为fault_type
+            if "封锁" in user_input:
+                acc_card_data["scene_category"] = "区间中断"
+            elif "风" in user_input or "大风" in user_input or "雨" in user_input or "暴雨" in user_input or "雪" in user_input or "冰雪" in user_input or "限速" in user_input:
+                # 所有天气相关和限速都归为临时限速场景
                 acc_card_data["scene_category"] = "临时限速"
-            elif "封锁" in user_input:
-                acc_card_data["scene_category"] = "区间封锁"
             else:
                 acc_card_data["scene_category"] = "突发故障"
 
@@ -574,15 +626,14 @@ class Layer1DataModeling:
         affected_train_ids = []
         expected_duration = None
 
-        # 推断场景类型（增强：更多关键词匹配）
-        # 优先级：区间封锁 > 临时限速 > 突发故障
+        # 推断场景类型（只有三种：临时限速、突发故障、区间中断）
+        # 天气/具体故障类型作为fault_type
         if any(kw in user_input for kw in ["封锁", "区间中断", "线路中断", "完全中断", "无法通行"]):
-            scene_category = "区间封锁"
+            scene_category = "区间中断"
         elif any(kw in user_input for kw in ["限速", "大风", "暴雨", "降雪", "冰雪", "雨量", "风速",
-                                           "天气", "自然灾害", "泥石流", "塌方", "水害", "台风"]):
+                                           "天气", "自然灾害", "泥石流", "塌方", "水害", "台风", "风", "雨", "雪"]):
             scene_category = "临时限速"
-        elif any(kw in user_input for kw in ["故障", "中断", "设备故障", "降弓", "线路故障",
-                                              "设备", "停电", "信号故障", "道岔故障", "车辆故障"]):
+        else:
             scene_category = "突发故障"
 
         # 推断故障类型（增强：更多关键词）
@@ -673,7 +724,7 @@ class Layer1DataModeling:
                     location_code = f"{code1}-{code2}"
                     location_name = f"{name1}-{name2}"
                     affected_section = f"{code1}-{code2}"
-                    logger.info(f"[_fallback_extraction] 提取到区间: {name1}-{name2} ({code1}-{code2})")
+                    logger.debug(f"[_fallback_extraction] 提取到区间: {name1}-{name2} ({code1}-{code2})")
                     break
 
         # 如果没有提取到区间，则提取单个车站
@@ -725,6 +776,159 @@ class Layer1DataModeling:
             start_time=datetime.now()
         )
 
+    def _extract_with_finetuned_model(self, user_input: str):
+        """
+        使用微调模型提取事故信息
+
+        Args:
+            user_input: 用户输入
+
+        Returns:
+            tuple: (AccidentCard, response) 提取的事故卡片和响应对象，如果失败返回(None, None)
+        """
+        try:
+            logger.debug("[L1] 使用微调模型提取事故信息")
+
+            output_text = None
+
+            if L1Config.FINETUNED_MODEL_PROVIDER in ["ollama", "vllm"]:
+                # 使用 OpenAI 兼容接口调用 Ollama/vLLM
+                response = self.finetuned_model.chat.completions.create(
+                    model=L1Config.FINETUNED_MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": L1_FINETUNED_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=L1Config.FINETUNED_MODEL_TEMPERATURE,
+                    max_tokens=L1Config.FINETUNED_MODEL_MAX_TOKENS
+                )
+                output_text = response.choices[0].message.content
+                # 创建简化的响应对象
+                llm_response = type('obj', (object,), {
+                    'raw_response': output_text,
+                    'model_used': L1Config.FINETUNED_MODEL_NAME,
+                    'is_valid': True,
+                    'parsed_output': {}
+                })()
+            elif L1Config.FINETUNED_MODEL_PROVIDER == "transformers":
+                # 使用 Transformers 原生加载
+                messages = [
+                    {"role": "system", "content": L1_FINETUNED_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_input}
+                ]
+                input_text = self.finetuned_tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+                inputs = self.finetuned_tokenizer(input_text, return_tensors="pt")
+                if L1Config.FINETUNED_MODEL_DEVICE == "cuda":
+                    inputs = {k: v.cuda() for k, v in inputs.items()}
+
+                outputs = self.finetuned_model.generate(
+                    **inputs,
+                    max_new_tokens=L1Config.FINETUNED_MODEL_MAX_TOKENS,
+                    temperature=L1Config.FINETUNED_MODEL_TEMPERATURE
+                )
+                output_text = self.finetuned_tokenizer.decode(
+                    outputs[0][inputs['input_ids'].shape[1]:],
+                    skip_special_tokens=True
+                )
+                # 创建简化的响应对象
+                llm_response = type('obj', (object,), {
+                    'raw_response': output_text,
+                    'model_used': L1Config.FINETUNED_MODEL_NAME,
+                    'is_valid': True,
+                    'parsed_output': {}
+                })()
+            else:
+                logger.error(f"[L1] 未知的微调模型提供商: {L1Config.FINETUNED_MODEL_PROVIDER}")
+                return None, None
+
+            # 解析输出
+            accident_card = self._parse_finetuned_output(output_text, user_input)
+            return accident_card, llm_response
+
+        except Exception as e:
+            logger.error(f"[L1] 微调模型提取异常: {str(e)}")
+            return None, None
+
+    def _parse_finetuned_output(self, output_text: str, user_input: str) -> Optional[AccidentCard]:
+        """
+        解析微调模型的输出
+
+        Args:
+            output_text: 模型输出的文本
+            user_input: 原始用户输入
+
+        Returns:
+            AccidentCard: 解析后的事故卡片，如果失败返回None
+        """
+        try:
+            # 清理输出文本，提取 JSON 部分
+            output_text = output_text.strip()
+            if output_text.startswith("```json"):
+                output_text = output_text[7:]
+            if output_text.startswith("```"):
+                output_text = output_text[3:]
+            if output_text.endswith("```"):
+                output_text = output_text[:-3]
+            output_text = output_text.strip()
+
+            # 解析 JSON
+            import json
+            data = json.loads(output_text)
+
+            # 构建 AccidentCard
+            return self._build_accident_card(data, user_input)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[L1] 微调模型输出 JSON 解析失败: {e}, 输出: {output_text[:200]}")
+            return None
+        except Exception as e:
+            logger.error(f"[L1] 解析微调模型输出异常: {str(e)}")
+            return None
+
+    def _extract_with_prompt(self, user_input: str, enable_rag: bool = True):
+        """
+        使用 Prompt 方式提取事故信息（原有实现）
+
+        Args:
+            user_input: 用户输入
+            enable_rag: 是否启用RAG
+
+        Returns:
+            tuple: (AccidentCard, response) 提取的事故卡片和响应对象，如果失败返回(None, None)
+        """
+        try:
+            logger.debug("[L1] 使用 Prompt 方式提取事故信息")
+
+            # 构建Prompt上下文
+            context = PromptContext(
+                request_id="",
+                user_input=user_input,
+                source_type="natural_language"
+            )
+
+            # 调用LLM提取事故卡片
+            response = self.prompt_adapter.execute_prompt(
+                template_id="l1_data_modeling",
+                context=context,
+                enable_rag=enable_rag
+            )
+
+            # 处理响应
+            if response.is_valid and response.parsed_output:
+                acc_card_data = response.parsed_output.get("accident_card", {})
+                return self._build_accident_card(acc_card_data, user_input), response
+            else:
+                logger.warning(f"[L1] Prompt 提取失败: {response.error}")
+                return None, response
+
+        except Exception as e:
+            logger.error(f"[L1] Prompt 提取异常: {str(e)}")
+            return None, None
+
     def _generate_missing_questions(self, missing_fields: list) -> list:
         """
         根据缺失字段生成询问用户的问题
@@ -771,7 +975,7 @@ class Layer1DataModeling:
             AccidentCard: 提取的事故卡片，如果失败返回None
         """
         try:
-            logger.info("[L0] 使用LLM提取事故信息")
+            logger.debug("[L0] 使用LLM提取事故信息")
 
             # 构建Prompt上下文
             context = PromptContext(
@@ -789,7 +993,7 @@ class Layer1DataModeling:
 
             if response.is_valid and response.parsed_output:
                 llm_result = response.parsed_output
-                logger.info(f"[L0] LLM提取成功: {llm_result}")
+                logger.debug(f"[L0] LLM提取成功: {llm_result}")
 
                 # 解析LLM结果
                 scene_type_mapping = {
@@ -832,7 +1036,7 @@ class Layer1DataModeling:
                 # 检索调度员操作指南
                 dispatcher_guide = self._retrieve_dispatcher_guide(scene_category, fault_type)
                 if dispatcher_guide:
-                    logger.info(f"[L1] 检索到调度员操作指南: {len(dispatcher_guide)} 条")
+                    logger.debug(f"[L1] 检索到调度员操作指南: {len(dispatcher_guide)} 条")
 
                 return AccidentCard(
                     fault_type=fault_type,
@@ -889,7 +1093,7 @@ class Layer1DataModeling:
             # 强制LLM模式：直接调用LLM
             accident_card = self._llm_extraction(user_input)
             if accident_card and accident_card.is_complete:
-                logger.info("[L0] LLM提取成功，使用LLM结果")
+                logger.debug("[L0] LLM提取成功，使用LLM结果")
             elif accident_card:
                 logger.warning("[L0] LLM提取结果不完整，尝试规则补充")
                 # LLM结果不完整，用规则补充
@@ -903,7 +1107,7 @@ class Layer1DataModeling:
             # 非强制模式：优先尝试LLM，失败则回退到规则
             accident_card = self._llm_extraction(user_input)
             if not accident_card or not accident_card.is_complete:
-                logger.info("[L0] LLM提取失败或结果不完整，使用规则回退")
+                logger.debug("[L0] LLM提取失败或结果不完整，使用规则回退")
                 fallback_card = self._fallback_extraction(user_input)
                 if accident_card:
                     # 合并结果
@@ -948,12 +1152,12 @@ class Layer1DataModeling:
             # 区间场景
             location_info.section_id = accident_card.location_code
             location_info.station_name = accident_card.location_name
-            logger.info(f"[L0+L1] 构建区间位置: section_id={accident_card.location_code}, name={accident_card.location_name}")
+            logger.debug(f"[L0+L1] 构建区间位置: section_id={accident_card.location_code}, name={accident_card.location_name}")
         else:
             # 车站场景（默认）
             location_info.station_code = accident_card.location_code
             location_info.station_name = accident_card.location_name
-            logger.info(f"[L0+L1] 构建车站位置: station_code={accident_card.location_code}, name={accident_card.location_name}")
+            logger.debug(f"[L0+L1] 构建车站位置: station_code={accident_card.location_code}, name={accident_card.location_name}")
 
         canonical_request = CanonicalDispatchRequest(
             source_type=RequestSourceType.NATURAL_LANGUAGE,
@@ -971,7 +1175,7 @@ class Layer1DataModeling:
             )
         )
         
-        logger.info(f"[L0+L1] 构建 CanonicalDispatchRequest: scene={accident_card.scene_category}, "
+        logger.debug(f"[L0+L1] 构建 CanonicalDispatchRequest: scene={accident_card.scene_category}, "
                    f"trains={accident_card.affected_train_ids}, complete={accident_card.is_complete}")
         
         return canonical_request

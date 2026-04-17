@@ -1,38 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-第三层：求解技能层
-根据L2的planning_intent选择并执行求解器
+第三层：求解技能层（简化版）
+根据L2的智能决策选择并执行求解器，将L2推荐的参数传递给求解器
 """
 
 import logging
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 from models.workflow_models import AccidentCard
-from models.common_enums import SolverTypeCode
 from solver.solver_registry import get_default_registry
 from solver.base_solver import SolverRequest
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
 
 class Layer3Solver:
     """
-    第三层：求解技能层 (L3 Solver Layer)
-    
+    第三层：求解技能层 (L3 Solver Layer) - 简化版
+
     职责：
-    1. 根据L2输出的planning_intent和事故卡片选择最合适的求解器
-    2. 构建求解请求（使用整个时刻表作为基准，而非仅网络快照中的列车）
+    1. 接收L2的智能决策（preferred_solver, solver_config）
+    2. 将solver_config中的参数传递给求解器（time_limit等）
     3. 执行求解并返回结果
-    4. 处理求解过程中的异常和错误
-    
-    注意：
-    - L3不使用LLM，完全基于规则选择求解器
-    - 求解时使用全部列车数据（整个时刻表），确保考虑所有列车的相互影响
-    - 网络快照仅用于参考，不限制求解范围
     """
 
     def __init__(self):
-        """初始化第三层"""
         self.registry = None
 
     def execute(
@@ -44,23 +38,15 @@ class Layer3Solver:
         planner_decision: Optional[Dict[str, Any]] = None,
         network_snapshot: Optional[Any] = None
     ) -> Dict[str, Any]:
-        """
-        执行第三层求解
-
-        Args:
-            planning_intent: 第二层输出的技能意图
-            accident_card: 事故卡片
-            trains: 列车数据（可选，默认使用完整时刻表）
-            stations: 车站数据（可选，默认使用完整时刻表）
-            planner_decision: Planner决策（可选，包含 solver_candidates, preferred_solver 等）
-            network_snapshot: 网络快照（可选）
-
-        Returns:
-            Dict: 包含求解结果的字典
-        """
+        """执行第三层求解"""
         logger.debug("[L3] 求解技能层")
 
-        # 选择求解器（优先使用 L2 的 preferred_solver，再经过规则校验）
+        # 从L2决策中提取solver配置
+        solver_config = {}
+        if planner_decision and isinstance(planner_decision, dict):
+            solver_config = planner_decision.get("solver_config", {})
+
+        # 选择求解器（优先L2推荐）
         main_skill = self.select_solver(
             planning_intent=planning_intent,
             scene_category=accident_card.scene_category,
@@ -69,23 +55,24 @@ class Layer3Solver:
             planner_decision=planner_decision
         )
 
-        logger.debug(f"[L3] 主技能: {main_skill}")
+        logger.debug(f"[L3] 执行求解器: {main_skill}, 参数: {solver_config}")
 
-        # 获取求解器实例（所有场景统一处理）
+        # 获取求解器实例
         solver = self._get_solver(main_skill)
         if solver is None:
             return self._build_error_result(main_skill, f"无法获取求解器: {main_skill}")
 
-        # 构建求解请求
-        solver_request = self._build_solver_request(accident_card, trains, stations)
+        # 构建求解请求（传入L2的solver_config）
+        solver_request = self._build_solver_request(accident_card, trains, stations, solver_config)
 
         # 执行求解
         try:
             solver_response = solver.solve(solver_request)
 
-            logger.info(f"[L3] 求解完成: 状态={solver_response.status}, 成功={solver_response.success}, 耗时={solver_response.solving_time_seconds:.2f}秒")
+            logger.info(f"[L3] 求解完成: solver={main_skill}, 状态={solver_response.status}, "
+                       f"成功={solver_response.success}, 耗时={solver_response.solving_time_seconds:.2f}秒")
 
-            # 提取指标（先定义变量）
+            # 提取指标
             metrics = solver_response.metrics or {}
             total_delay_seconds = metrics.get("total_delay_seconds", 0)
             max_delay_seconds = metrics.get("max_delay_seconds", 0)
@@ -94,17 +81,17 @@ class Layer3Solver:
             avg_delay = metrics.get("avg_delay_seconds", 0) / 60 if metrics.get("avg_delay_seconds") else 0
             affected_trains = len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0
 
-            # 打印求解结果摘要
             if solver_response.success:
                 logger.info("=" * 50)
                 logger.info("【L3求解结果】")
+                logger.info(f"  求解器: {main_skill}")
                 logger.info(f"  总延误: {total_delay}分钟")
                 logger.info(f"  最大延误: {max_delay}分钟")
                 logger.info(f"  平均延误: {avg_delay:.2f}分钟")
                 logger.info(f"  影响列车数: {affected_trains}列")
                 logger.info("=" * 50)
 
-            # 构建solver_response字典，包含优化后的时刻表
+            # 构建solver_response字典
             solver_response_dict = solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
                 "success": solver_response.success,
                 "status": solver_response.status,
@@ -113,30 +100,16 @@ class Layer3Solver:
                 "message": solver_response.message,
                 "optimized_schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {}
             }
-            
-            # 获取原始时刻表用于基线对比
-            original_schedule = {}
-            if trains:
-                try:
-                    for t in trains:
-                        if hasattr(t, 'train_id'):
-                            original_schedule[t.train_id] = t.model_dump() if hasattr(t, 'model_dump') else t
-                        elif isinstance(t, dict):
-                            train_id = t.get('train_id', t.get('id', 'unknown'))
-                            original_schedule[train_id] = t
-                except Exception as e:
-                    logger.warning(f"构建原始时刻表时出错: {e}")
-            
-            # 从accident_card提取位置信息
-            location_code = accident_card.location_code if accident_card.location_code else ""
-            location_name = accident_card.location_name if accident_card.location_name else ""
-            location_type = accident_card.location_type if accident_card.location_type else "station"
-            
-            # 构建延误注入信息用于基线对比
-            # 从accident_card获取延误时间（分钟转秒）
+
+            # 提取位置信息
+            location_code = accident_card.location_code or ""
+            location_name = accident_card.location_name or ""
+            location_type = accident_card.location_type or "station"
+
+            # 构建延误注入信息
             delay_minutes = accident_card.expected_duration if accident_card.expected_duration else 10
             delay_seconds = delay_minutes * 60
-            
+
             delay_injection_info = {
                 "injected_delays": [
                     {
@@ -147,7 +120,9 @@ class Layer3Solver:
                     for train_id in (accident_card.affected_train_ids if accident_card.affected_train_ids else [])
                 ]
             }
-            
+
+            response_note = f"求解器: {main_skill}, 参数: {solver_config}"
+
             return {
                 "skill_execution_result": {
                     "skill_name": main_skill,
@@ -160,17 +135,15 @@ class Layer3Solver:
                     "location_code": location_code,
                     "location_type": location_type,
                     "scenario_type": self._map_scene_to_scenario_type(accident_card.scene_category),
-                    "affected_trains": accident_card.affected_train_ids if accident_card.affected_train_ids else [],
-                    "affected_trains_count": len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,  # 添加受影响列车数量
-                    "original_schedule": original_schedule,  # 添加原始时刻表用于基线对比
-                    "delay_injection": delay_injection_info,  # 添加延误注入信息
-                    "_response_source": "rule_based_solver",
-                    "_response_note": "【规则执行】L3层使用规则选择并执行求解器，不涉及LLM"
+                    "affected_trains": accident_card.affected_train_ids or [],
+                    "affected_trains_count": affected_trains,
+                    "delay_injection": delay_injection_info,
+                    "solver_config_used": solver_config,
+                    "_response_note": response_note
                 },
                 "solver_response": solver_response_dict,
-                "schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {},
-                "metrics": solver_response.metrics if hasattr(solver_response, 'metrics') else {},
-                "llm_response": f"【规则执行】执行{main_skill}求解器，状态: {solver_response.status} (L3层不使用LLM)"
+                "metrics": metrics,
+                "llm_response": response_note
             }
 
         except Exception as e:
@@ -186,42 +159,41 @@ class Layer3Solver:
         planner_decision: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        选择求解器（优先考虑 L2 的 preferred_solver，再经过规则校验）
-
-        Args:
-            planning_intent: 技能意图
-            scene_category: 场景类型
-            train_count: 列车数量
-            is_complete: 信息是否完整
-            planner_decision: L2 输出的 PlannerDecision 结构化信息
-
-        Returns:
-            str: 求解器名称
+        选择求解器
+        优先使用L2的preferred_solver（LLM智能决策），规则仅做安全兜底
         """
         logger.debug("[L3] 选择求解器")
 
-        # 强制使用 L2 的 preferred_solver（来自LLM建议）
+        # 区间封锁：强制FCFS（安全约束，不可覆盖）
+        if scene_category == "区间封锁" or planning_intent == "handle_section_block":
+            logger.debug("[L3] 区间封锁场景，强制使用fcfs")
+            return "fcfs"
+
+        # 信息不完整：强制FCFS（无法精确优化）
+        if not is_complete:
+            logger.debug("[L3] 信息不完整，强制使用fcfs")
+            return "fcfs"
+
+        # 使用L2智能决策的preferred_solver
         if planner_decision and isinstance(planner_decision, dict):
             preferred_solver = planner_decision.get("preferred_solver")
-            solver_candidates = planner_decision.get("solver_candidates", [])
-
             if preferred_solver:
-                logger.debug(f"[L3] 使用L2 LLM建议的 preferred_solver: {preferred_solver}")
                 valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
                 if preferred_solver in valid_solvers:
+                    logger.debug(f"[L3] 使用L2推荐的solver: {preferred_solver}")
                     return preferred_solver
                 else:
-                    logger.warning(f"[L3] L2建议的solver无效: {preferred_solver}，使用默认MIP")
-                    return "mip"
-            else:
-                logger.warning("[L3] L2未提供preferred_solver，使用默认MIP")
-                return "mip"
-        else:
-            logger.warning("[L3] L2未提供planner_decision，使用默认MIP")
-            return "mip"
+                    logger.warning(f"[L3] L2推荐的solver无效: {preferred_solver}，回退到默认")
 
-        # 规则5：默认 -> MIP
-        logger.debug("[L3] 规则5：默认使用 mip")
+        # 规则兜底
+        if train_count <= 3 and is_complete:
+            logger.debug("[L3] 规则兜底: 列车数≤3，使用mip")
+            return "mip"
+        if train_count > 10:
+            logger.debug("[L3] 规则兜底: 列车数>10，使用fcfs")
+            return "fcfs"
+
+        logger.debug("[L3] 规则兜底: 默认使用mip")
         return "mip"
 
     def _get_solver(self, solver_name: str):
@@ -233,7 +205,6 @@ class Layer3Solver:
         if solver is not None:
             return solver
 
-        # 尝试直接导入
         try:
             if solver_name == "mip":
                 from solver.mip_adapter import MIPSolverAdapter
@@ -256,14 +227,15 @@ class Layer3Solver:
         self,
         accident_card: AccidentCard,
         trains: List[Any],
-        stations: List[Any]
+        stations: List[Any],
+        solver_config: Dict[str, Any] = None
     ) -> SolverRequest:
-        """构建求解请求"""
+        """构建求解请求，将L2的solver_config合并传入"""
+        solver_config = solver_config or {}
+
         # 构建延误注入
         affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1563"]
         location_code = accident_card.location_code if accident_card.location_code else "SJP"
-        # 默认延误时间从配置读取（10分钟）
-        from config import DispatchEnvConfig
         default_delay = DispatchEnvConfig.default_delay_seconds()
         delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else default_delay
 
@@ -273,16 +245,14 @@ class Layer3Solver:
                 "train_id": train_id,
                 "location": {"location_type": "station", "station_code": location_code},
                 "initial_delay_seconds": delay_seconds,
-                "timestamp": "2024-01-15T10:00:00"
+                "timestamp": datetime.now().isoformat()
             })
 
-        # 使用全部列车数据（整个时刻表）进行调度，而不是仅使用快照中的列车
-        # 这样可以确保求解器考虑所有列车的相互影响
+        # 使用全部列车数据
         from models.data_loader import load_trains, load_stations
         all_trains = load_trains()
         all_stations = load_stations()
 
-        # 将场景类别转换为scenario_type
         scenario_type = self._map_scene_to_scenario_type(accident_card.scene_category)
 
         return SolverRequest(
@@ -291,13 +261,11 @@ class Layer3Solver:
             trains=all_trains,
             stations=all_stations,
             injected_delays=injected_delays,
-            solver_config={},
+            solver_config=solver_config,
             metadata={
                 "accident_card": accident_card.model_dump(),
-                "original_trains_count": len(trains),
-                "all_trains_count": len(all_trains),
-                "note": "使用整个时刻表作为调度基准",
-                "scenario_type": scenario_type
+                "scenario_type": scenario_type,
+                "l2_solver_config": solver_config
             }
         )
 
@@ -325,8 +293,8 @@ class Layer3Solver:
                 "location_type": "station",
                 "scenario_type": "temporary_speed_limit",
                 "affected_trains": [],
-                "original_schedule": {},  # 添加空原始时刻表
-                "delay_injection": {"injected_delays": []}  # 添加空延误注入信息
+                "delay_injection": {"injected_delays": []},
+                "solver_config_used": {}
             },
             "solver_response": None,
             "llm_response": f"执行失败: {error_message}"

@@ -32,6 +32,8 @@ class SchedulerType(str, Enum):
     NOOP = "noop"  # 基线不做调整
     MAX_DELAY_FIRST = "max_delay_first"  # 最大延误优先
     EARLIEST_ARRIVAL = "earliest_arrival"  # 最早到站优先
+    SPT = "spt"  # 最短处理时间优先
+    SRPT = "srpt"  # 最短剩余处理时间优先
     CUSTOM = "custom"
 
 
@@ -847,6 +849,130 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
         return 0
 
 
+class SPTSchedulerAdapter(BaseScheduler):
+    """
+    SPT调度器适配器（Shortest Processing Time - 最短处理时间优先）
+    封装 solver/spt_scheduler.py 的实现
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = None,
+        min_stop_time: int = None,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="最短处理时间优先调度器(SPT)", **kwargs)
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载SPT调度器"""
+        if self._scheduler is None:
+            from solver.spt_scheduler import SPTScheduler
+            self._scheduler = SPTScheduler(
+                trains=self.trains,
+                stations=self.stations,
+                headway_time=self.headway_time,
+                min_stop_time=self.min_stop_time
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.SPT
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        start_time = time.time()
+
+        result = scheduler.solve(delay_injection, objective)
+
+        metrics = MetricsDefinition.calculate_metrics(
+            result.optimized_schedule,
+            self.get_original_schedule(),
+            result.computation_time
+        )
+
+        return SchedulerResult(
+            success=result.success,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=result.optimized_schedule,
+            metrics=metrics,
+            message=result.message
+        )
+
+
+class SRPTSchedulerAdapter(BaseScheduler):
+    """
+    SRPT调度器适配器（Shortest Remaining Processing Time - 最短剩余处理时间优先）
+    封装 solver/srpt_scheduler.py 的实现
+    """
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        headway_time: int = None,
+        min_stop_time: int = None,
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="最短剩余处理时间优先调度器(SRPT)", **kwargs)
+        from config import DispatchEnvConfig
+        self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
+        self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载SRPT调度器"""
+        if self._scheduler is None:
+            from solver.srpt_scheduler import SRPTScheduler
+            self._scheduler = SRPTScheduler(
+                trains=self.trains,
+                stations=self.stations,
+                headway_time=self.headway_time,
+                min_stop_time=self.min_stop_time
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.SRPT
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        start_time = time.time()
+
+        result = scheduler.solve(delay_injection, objective)
+
+        metrics = MetricsDefinition.calculate_metrics(
+            result.optimized_schedule,
+            self.get_original_schedule(),
+            result.computation_time
+        )
+
+        return SchedulerResult(
+            success=result.success,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=result.optimized_schedule,
+            metrics=metrics,
+            message=result.message
+        )
+
+
 # 注册内置调度器
 SchedulerRegistry.register("fcfs", FCFSSchedulerAdapter)
 SchedulerRegistry.register("mip", MIPSchedulerAdapter)
@@ -861,6 +987,8 @@ SchedulerRegistry.register("fsfs", FSFSSchedulerAdapter)
 SchedulerRegistry.register("FSFS", FSFSSchedulerAdapter)
 SchedulerRegistry.register("eaf", EarliestArrivalFirstScheduler)
 SchedulerRegistry.register("earliest_arrival", EarliestArrivalFirstScheduler)
+SchedulerRegistry.register("spt", SPTSchedulerAdapter)
+SchedulerRegistry.register("srpt", SRPTSchedulerAdapter)
 
 
 # 测试代码

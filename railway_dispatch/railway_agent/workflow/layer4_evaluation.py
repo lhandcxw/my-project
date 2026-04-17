@@ -60,31 +60,7 @@ class Layer4Evaluation:
                 suggested_fixes=["检查求解器配置", "尝试其他求解器"]
             )
 
-            logger.info("第四层完成: 需要回退（求解失败），使用默认评估报告")
-
-            # 打印默认评估结果
-            logger.info("=" * 50)
-            logger.info("【L4评估结果】(默认)")
-            logger.info(f"  LLM摘要: {default_evaluation_report.llm_summary}")
-            logger.info(f"  可行性得分: {default_evaluation_report.feasibility_score:.2f}")
-            logger.info(f"  风险警告: {len(default_evaluation_report.risk_warnings)}项")
-            logger.info("  高铁专用指标:")
-            
-            # 安全获取高铁指标（避免属性错误）
-            on_time_rate = getattr(default_evaluation_report, 'on_time_rate', 1.0)
-            punctuality_strict = getattr(default_evaluation_report, 'punctuality_strict', 1.0)
-            delay_std_dev = getattr(default_evaluation_report, 'delay_std_dev', 0.0)
-            delay_propagation_depth = getattr(default_evaluation_report, 'delay_propagation_depth', 0)
-            delay_propagation_breadth = getattr(default_evaluation_report, 'delay_propagation_breadth', 0)
-            evaluation_grade = getattr(default_evaluation_report, 'evaluation_grade', 'A')
-            
-            logger.info(f"    准点率: {on_time_rate * 100:.1f}%")
-            logger.info(f"    严格准点率: {punctuality_strict * 100:.1f}%")
-            logger.info(f"    延误标准差: {delay_std_dev:.2f}秒")
-            logger.info(f"    传播深度: {delay_propagation_depth}站")
-            logger.info(f"    传播广度: {delay_propagation_breadth}列")
-            logger.info(f"    综合评级: {evaluation_grade}")
-            logger.info("=" * 50)
+            logger.debug("第四层完成: 需要回退（求解失败），使用默认评估报告")
 
             # 生成默认自然语言方案
             default_plan = self._generate_fallback_plan(skill_execution_result, solver_response)

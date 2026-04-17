@@ -291,7 +291,9 @@ class SchedulerComparator:
                     logger.warning(f"调度器 {name} 执行失败: {result.message}")
                     
             except Exception as e:
+                import traceback
                 logger.error(f"调度器 {name} 执行异常: {e}")
+                logger.error(f"详细堆栈: {traceback.format_exc()}")
         
         if not results:
             return MultiComparisonResult(
@@ -508,6 +510,8 @@ def create_comparator(
     include_rl: bool = False,
     include_noop: bool = True,
     include_max_delay_first: bool = True,
+    include_spt: bool = True,
+    include_srpt: bool = True,
     **kwargs
 ) -> SchedulerComparator:
     """
@@ -516,12 +520,14 @@ def create_comparator(
     Args:
         trains: 列车列表
         stations: 车站列表
-        include_fcfs: 是否包含FCFS调度器
+        include_fcfs: 是否包含FCFS调度器（先到先服务）
         include_fsfs: 是否包含FSFS调度器（先计划先服务）
-        include_mip: 是否包含MIP调度器
+        include_mip: 是否包含MIP调度器（混合整数规划）
         include_rl: 是否包含强化学习调度器
         include_noop: 是否包含基线调度器（不做调整）
         include_max_delay_first: 是否包含最大延误优先调度器
+        include_spt: 是否包含SPT调度器（最短处理时间优先）
+        include_srpt: 是否包含SRPT调度器（最短剩余处理时间优先）
         **kwargs: 其他参数
 
     Returns:
@@ -546,6 +552,12 @@ def create_comparator(
 
     if include_max_delay_first:
         comparator.register_scheduler_by_name("max_delay_first", **kwargs)
+
+    if include_spt:
+        comparator.register_scheduler_by_name("spt", **kwargs)
+
+    if include_srpt:
+        comparator.register_scheduler_by_name("srpt", **kwargs)
 
     return comparator
 

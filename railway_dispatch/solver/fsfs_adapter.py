@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-MIP 求解器适配器模块
-将 MIP 调度器包装为统一接口
+FSFS 求解器适配器模块
+将 FSFS（先计划先服务）调度器包装为统一接口
 """
 
 import logging
@@ -14,25 +14,31 @@ from models.data_models import Train, Station, DelayInjection, InjectedDelay, De
 logger = logging.getLogger(__name__)
 
 
-class MIPSolverAdapter(BaseSolver):
+class FSFSSolverAdapter(BaseSolver):
     """
-    MIP 求解器适配器
-    包装 MIPScheduler 为统一接口
+    FSFS 求解器适配器
+    包装 FSFSScheduler 为统一接口
+
+    FSFS (First-Scheduled-First-Served) 特点：
+    - 严格按原始运行图的计划发车顺序调度
+    - 保持原计划的相对优先级和越行关系不变
+    - 仅对受扰动列车做整体时间平移
+    - 不改变原计划的停站方案和区间运行时分
     """
 
     def __init__(self):
-        """初始化 MIP 适配器"""
+        """初始化 FSFS 适配器"""
         self._scheduler = None
 
     def _ensure_scheduler(self, trains: List, stations: List):
         """确保调度器已初始化"""
         if self._scheduler is None:
-            # 导入并创建 MIP 调度器
-            from solver.mip_scheduler import MIPScheduler
+            # 导入并创建 FSFS 调度器
+            from solver.fsfs_scheduler import FSFSScheduler
             # 转换数据
             train_objs = self._convert_trains(trains)
             station_objs = self._convert_stations(stations)
-            self._scheduler = MIPScheduler(train_objs, station_objs)
+            self._scheduler = FSFSScheduler(train_objs, station_objs)
 
     def _convert_trains(self, trains_data: List[Dict]) -> List[Train]:
         """将字典数据转换为 Train 对象"""
@@ -57,7 +63,7 @@ class MIPSolverAdapter(BaseSolver):
                 try:
                     stations.append(Station(**s))
                 except Exception as e:
-                    logger.warning(f"Failed to convert station: {s}")
+                    logger.warning(f"Failed to convert station: {e}")
         return stations
 
     def _convert_delay_injection(self, request: SolverRequest) -> DelayInjection:
@@ -85,7 +91,7 @@ class MIPSolverAdapter(BaseSolver):
 
     def solve(self, request: SolverRequest) -> SolverResponse:
         """
-        执行 MIP 求解
+        执行 FSFS 求解
 
         Args:
             request: 求解器请求
@@ -102,11 +108,8 @@ class MIPSolverAdapter(BaseSolver):
             # 转换延误注入
             delay_injection = self._convert_delay_injection(request)
 
-            # 获取solver_config（L2智能决策传递的参数）
-            solver_config = request.solver_config or {}
-
-            # 执行求解（传递solver_config）
-            result = self._scheduler.solve(delay_injection, solver_config=solver_config)
+            # 执行求解
+            result = self._scheduler.solve(delay_injection)
 
             # 转换结果
             if result.success:
@@ -116,7 +119,7 @@ class MIPSolverAdapter(BaseSolver):
                     schedule=result.optimized_schedule,
                     metrics=result.delay_statistics,
                     solving_time_seconds=result.computation_time,
-                    solver_type="mip",
+                    solver_type="fsfs",
                     message=result.message,
                     metadata={"original_result": "SolveResult"}
                 )
@@ -125,19 +128,19 @@ class MIPSolverAdapter(BaseSolver):
                     success=False,
                     status="solver_failed",
                     message=result.message,
-                    solver_type="mip",
+                    solver_type="fsfs",
                     metadata={"original_result": "SolveResult"}
                 )
 
         except Exception as e:
-            logger.exception(f"MIP solver error: {e}")
+            logger.exception(f"FSFS solver error: {e}")
             return SolverResponse(
                 success=False,
                 status="solver_failed",
-                message=f"MIP求解失败: {str(e)}",
-                solver_type="mip",
+                message=f"FSFS求解失败: {str(e)}",
+                solver_type="fsfs",
                 error=str(e)
             )
 
     def get_solver_type(self) -> str:
-        return "mip"
+        return "fsfs"

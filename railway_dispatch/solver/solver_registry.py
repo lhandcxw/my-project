@@ -135,7 +135,7 @@ class SolverRegistry:
 
 def get_default_registry() -> SolverRegistry:
     """
-    获取默认求解器注册器（已预注册 FCFS、MIP、MaxDelayFirst、NoOp）
+    获取默认求解器注册器（已预注册 FCFS、MIP、MaxDelayFirst、FSFS、SRPT、SPT、NoOp）
 
     Returns:
         SolverRegistry: 求解器注册器实例
@@ -145,12 +145,18 @@ def get_default_registry() -> SolverRegistry:
         from solver.fcfs_adapter import FCFSSolverAdapter
         from solver.mip_adapter import MIPSolverAdapter
         from solver.max_delay_first_adapter import MaxDelayFirstSolverAdapter
+        from solver.fsfs_adapter import FSFSSolverAdapter
+        from solver.srpt_adapter import SRPTSolverAdapter
+        from solver.spt_adapter import SPTSolverAdapter
         from solver.noop_adapter import NoOpSolverAdapter
 
-        # 注册求解器类（优先级从高到低：mip > max_delay_first > fcfs > noop）
+        # 注册求解器类
         SolverRegistry.register_class("fcfs", FCFSSolverAdapter)
         SolverRegistry.register_class("mip", MIPSolverAdapter)
         SolverRegistry.register_class("max_delay_first", MaxDelayFirstSolverAdapter)
+        SolverRegistry.register_class("fsfs", FSFSSolverAdapter)
+        SolverRegistry.register_class("srpt", SRPTSolverAdapter)
+        SolverRegistry.register_class("spt", SPTSolverAdapter)
         SolverRegistry.register_class("noop", NoOpSolverAdapter)
 
     return SolverRegistry

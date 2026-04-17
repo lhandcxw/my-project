@@ -108,7 +108,8 @@ class PromptManager:
         # 确保所有模板变量都有默认值
         all_vars = ["user_input", "request_id", "scene_type", "scene_category", "source_type",
                    "canonical_request", "accident_card", "network_snapshot", "dispatch_context",
-                   "solver_result", "execution_result", "rag_knowledge", "rag_documents"]
+                   "solver_result", "execution_result", "rag_knowledge", "rag_documents",
+                   "scenario_features"]
         for var in all_vars:
             if var not in context_dict:
                 context_dict[var] = ""
@@ -388,10 +389,13 @@ class PromptManager:
             user_prompt_template="""描述：{user_input}
 
 规则：
-1. 场景：限速/天气→临时限速，故障→突发故障，封锁→区间封锁
+1. 场景类型只有三种：临时限速、突发故障、区间中断（具体天气/故障作为fault_type）
+   - 大风/暴雨/降雪/限速/天气 → 临时限速
+   - 设备故障/信号故障/接触网故障 → 突发故障
+   - 封锁/线路中断 → 区间中断
 2. 车站：石家庄→SJP,北京西→BJX,保定东→BDD,徐水东→XSD,高邑西→GYX,邢台东→XTD,邯郸东→HDD,安阳东→AYD
 3. 区间格式："XSD-BDD"，车站格式："SJP-SJP"
-4. 提取列车号(如G1563)、延误分钟数、事件类型
+4. 提取列车号(如G1563)、延误分钟数、事件类型(fault_type)
 5. fault_type未知则设"未知"，is_complete：列车号+位置+事件类型齐全才为true
 
 输出JSON：{{"accident_card":{{"scene_category":"临时限速","fault_type":"大风","expected_duration":30,"affected_section":"SJP-SJP","location_type":"station","location_code":"SJP","location_name":"石家庄","affected_train_ids":["G1563"],"is_complete":true,"missing_fields":[]}}}}""",
@@ -403,26 +407,104 @@ class PromptManager:
         )
         self.register_template(l1_template)
 
-        # L2 Planner模板（优化版）
+        # L2 Planner模板（v5.0 - 基于真实高铁场景）
         l2_template = PromptTemplate(
             template_id="l2_planner",
             template_type=PromptTemplateType.L2_PLANNER,
             template_name="L2规划器",
-            description="根据事故卡片判断问题类型和处理意图",
-            system_prompt="你是铁路调度规划助手。只输出JSON，不要解释。",
-            user_prompt_template="""事故：{accident_card}
+            description="根据事故场景特征，LLM自主决策最优求解策略、参数配置和目标权重",
+            system_prompt="你是一名经验丰富的中国高铁调度专家。你需要仔细分析事故场景的各项特征（场景类型、受影响列车数、延误时长、位置、运营时段等），基于铁路运营实际做出最优决策。\n\n决策原则：\n1. 安全第一：优先确保列车运行安全\n2. 效率优先：在安全前提下最小化延误\n3. 快速响应：紧急场景优先使用秒级求解器\n4. 精准优化：非紧急场景使用MIP求全局最优\n\n输出要求：\n- 只输出JSON格式，不要任何解释文字\n- 所有字段必须有值，不能为null或空字符串\n- solver_candidates必须包含至少2个候选求解器\n- objective_weights的四项权重之和必须为1.0\n- 需要预测求解效果（延误范围、求解时间、决策置信度）",
+            user_prompt_template="""【事故场景特征】
+{scenario_features}
 
-规则：
-- 临时限速→recalculate_corridor_schedule
-- 突发故障→recover_from_disruption  
-- 区间封锁→handle_section_block
+【可选求解策略】
+1. mip（整数规划）：全局优化求解，可最小化总延误或最大延误，适合列车规模小（≤10列）、时间充裕的场景。求解时间较长（30-300秒）。
+2. fcfs（先到先服务）：模拟真实调度员按实际到达顺序发车，支持延误传播和冗余恢复，允许快车超越慢车，适合紧急响应（秒级）或大规模列车场景。
+3. fsfs（先计划先服务）：严格按原始运行图的计划发车顺序调度，保持原计划的相对优先级和越行关系不变，仅做整体时间平移，适合需要保持原计划顺序的场景。
+4. srpt（最短剩余时间优先）：优先调度剩余运行时间短的列车，快速释放系统容量，适合实时延误调整和局部中断场景。
+5. spt（最短处理时间优先）：优先调度停站少、运行距离短的列车，可以快速完成一些短途列车，适合局部延误场景。
+6. max_delay_first（最大延误优先）：优先压缩延误最大列车的恢复时间，适合多列车不同程度延误的场景。
+7. 多策略组合：可同时推荐多个求解器，由下游评估层选择最优方案。
 
-输出JSON：{{"planning_intent":"recalculate_corridor_schedule","问题描述":"大风导致延误","建议窗口":"SJP"}}""",
-            required_output_fields=["planning_intent"],
-            temperature=0.0,
-            max_tokens=128,
-            tags=["planner", "intent"],
-            version="1.2"
+【求解参数说明】
+- time_limit：MIP求解时间上限（秒），范围30-600
+  * 紧急场景（延误≤30分、下午运营14-18点）：60-120秒
+  * 非紧急场景：120-300秒
+  * 大规模场景（列车>15列）：可适当延长至300-600秒
+- optimality_gap：MIP最优性间隙，范围0.01-0.1
+  * 要求高精度：0.01-0.03（但求解时间长）
+  * 平衡模式：0.05（推荐）
+  * 要求快速：0.08-0.1
+
+【优化目标权重说明】（四项权重之和应为1.0）
+- max_delay_weight：最大单列延误的权重，铁路运营中防止个别列车严重延误最重要
+- avg_delay_weight：平均延误的权重，体现整体服务质量
+- affected_trains_weight：受影响列车数的权重，关注波及范围
+- runtime_weight：求解时间的权重，紧急场景下响应速度重要
+
+【决策任务】
+你是一位高铁调度专家，需要根据上述场景特征，自主决策以下内容：
+
+1. **规划意图（planning_intent）**：从以下选项中选择
+   - recalculate_corridor_schedule（重新计算走廊时刻表）：适用于限速、需要重新排班
+   - recover_from_disruption（从中断恢复）：适用于故障、需要快速恢复
+   - handle_section_block（处理区间封锁）：适用于区间封锁、需要绕行
+
+2. **最优求解器（solver_suggestion）**：从以下选项中选择
+   - mip：适合小规模（≤10列）、时间充裕、需要全局优化的场景
+   - fcfs：适合紧急响应、大规模列车（>10列）、需要快速处理的场景
+   - fsfs：适合需要严格保持原计划顺序和越行关系的场景
+   - srpt：适合实时延误调整和局部中断场景，快速释放系统容量
+   - spt：适合局部延误场景，优先短途列车
+   - max_delay_first：适合多列车不同程度延误的场景
+
+3. **候选求解器列表（solver_candidates）**：推荐至少2个求解器供下游评估
+   - 例如：["mip", "fcfs"] 或 ["srpt", "spt"]
+
+4. **求解参数配置（solver_config）**：
+   - time_limit：MIP求解时间上限（秒），范围30-600
+     * 紧急场景（延误≤30分、下午运营14-18点）：60-120秒
+     * 非紧急场景：120-300秒
+     * 大规模场景（列车>15列）：可适当延长至300-600秒
+   - optimality_gap：MIP最优性间隙，范围0.01-0.1
+     * 要求高精度：0.01-0.03（但求解时间长）
+     * 平衡模式：0.05（推荐）
+     * 要求快速：0.08-0.1
+   - optimization_objective：优化目标，从以下选择
+     * min_max_delay：最小化最大延误（防止个别列车严重延误）
+     * min_total_delay：最小化总延误（提升整体效率）
+     * min_avg_delay：最小化平均延误
+
+5. **目标权重（objective_weights）**：四项权重之和必须为1.0
+   - max_delay_weight：最大单列延误权重（铁路运营中最重要）
+   - avg_delay_weight：平均延误权重
+   - affected_trains_weight：受影响列车数权重
+   - runtime_weight：求解时间权重（紧急场景下重要）
+   
+   权重建议：
+   * 轻微延误（≤10分）：max=0.5, avg=0.3, affected=0.1, runtime=0.1
+   * 一般延误（10-30分）：max=0.4, avg=0.3, affected=0.2, runtime=0.1
+   * 较大延误（30-60分）：max=0.3, avg=0.4, affected=0.2, runtime=0.1
+   * 严重延误（>60分）：max=0.2, avg=0.3, affected=0.3, runtime=0.2
+
+6. **预期求解效果（predicted_outcomes）**：预测求解后的效果
+   - expected_total_delay：预期总延误范围（分钟），格式："80-120"
+   - expected_max_delay：预期最大延误范围（分钟），格式："20-30"
+   - expected_solve_time：预期求解时间（秒），整数
+   - decision_confidence：决策置信度（0-1），0.85表示85%的信心
+
+7. **决策理由（reasoning）**：简要说明选择理由（30-60字）
+
+8. **不选其他solver的理由（rejected_solvers_reasoning）**：简要说明不选其他候选求解器的理由
+   - 字典格式，例如：{{"fcfs":"FCFS虽然快但无法优化延误","spt":"本场景不是短途列车优先场景"}}
+
+【输出格式】（必须严格遵守）
+{{"planning_intent":"recalculate_corridor_schedule","问题描述":"场景的简要描述","solver_suggestion":"mip","solver_candidates":["mip","fcfs"],"solver_config":{{"time_limit":120,"optimality_gap":0.05,"optimization_objective":"min_max_delay"}},"objective_weights":{{"max_delay_weight":0.5,"avg_delay_weight":0.3,"affected_trains_weight":0.1,"runtime_weight":0.1}},"predicted_outcomes":{{"expected_total_delay":"80-120","expected_max_delay":"20-30","expected_solve_time":90,"decision_confidence":0.85}},"reasoning":"选择mip求解器，因为列车规模小（5列）、时间充裕，可以求全局最优解","rejected_solvers_reasoning":{{"fcfs":"FCFS虽然快但无法优化延误"}}}}""",
+            required_output_fields=["planning_intent", "solver_suggestion", "solver_config", "objective_weights", "predicted_outcomes"],
+            temperature=0.2,
+            max_tokens=1024,
+            tags=["planner", "intent", "solver_selection", "llm_decision", "finetuning"],
+            version="5.0"
         )
         self.register_template(l2_template)
 
