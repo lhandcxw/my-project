@@ -184,7 +184,7 @@ class FCFSScheduler:
         min_time = self._get_min_section_time(from_station, to_station)
         return original_time - min_time
 
-    def solve(self, delay_injection: DelayInjection, objective: str = "min_max_delay") -> SolveResult:
+    def solve(self, delay_injection: DelayInjection, objective: str = "min_total_delay") -> SolveResult:
         """
         使用FCFS策略求解调度问题（真实延误传播版）
 
@@ -264,11 +264,12 @@ class FCFSScheduler:
                 if station_code in self._get_stations_for_train(train):
                     for stop in train.schedule.stops:
                         if stop.station_code == station_code:
-                            # 使用原始发车时间排序（FCFS按计划顺序）
+                            # 【专家修复】记录原始索引用于股道分配
                             trains_at_station.append({
                                 'train_id': train.train_id,
                                 'original_departure': self._time_to_seconds(stop.departure_time),
-                                'current_departure': schedule[(train.train_id, station_code)][1]
+                                'current_departure': schedule[(train.train_id, station_code)][1],
+                                'original_idx': len(trains_at_station)  # 记录原始索引
                             })
                             break
 
@@ -282,7 +283,7 @@ class FCFSScheduler:
                 train_id = train_info['train_id']
                 train = next((t for t in self.trains if t.train_id == train_id), None)
 
-                # 按原始发车时间分配股道（遵循原始计划顺序）
+                # 按排序后的索引分配股道（与MaxDelayFirst一致，确保相邻列车分配到不同股道）
                 best_track = idx % track_count
 
                 # 获取当前列车的当前调度时间
@@ -290,22 +291,14 @@ class FCFSScheduler:
 
                 # Step 3.1: 检查停站时间约束
                 original_duration = self._get_original_stop_duration(train, station_code)
-                min_stop_duration = max(self.min_stop_time, original_duration // 2) if original_duration > 0 else 0
+                # 【修复】最小停站时间使用绝对最小值，与MaxDelayFirst/MIP一致
+                min_stop_duration = self.min_stop_time if original_duration > 0 else 0
                 required_arr = current_dep - min_stop_duration
 
-                # 如果到达时间需要调整以满足最小停站时间
-                if current_arr > required_arr:
-                    # 到达已满足最小停站时间
-                    pass
-                else:
-                    # 需要推迟到达时间（但这里我们不主动推迟，保持到达时间）
-                    pass
-
                 # Step 3.2: 检查追踪间隔约束
-                # 关键：后车需要等待前车发车时间 + 追踪间隔
-                # 使用所有股道中的最早可用时间（更合理的多股道处理）
-                earliest_available = min(last_departures) if last_departures else 0
-                required_dep = max(current_dep, earliest_available + self.headway_time)
+                # 只检查同一股道的追踪间隔（多股道车站）
+                track_available = last_departures[best_track]
+                required_dep = max(current_dep, track_available + self.headway_time)
                 delay_needed = required_dep - current_dep
 
                 if delay_needed > 0:
@@ -327,6 +320,121 @@ class FCFSScheduler:
                     schedule[(train_id, station_code)][1]
                 )
 
+        # Step 3.5: 【短期优化】顺序重调优化 - 尝试调整列车发车顺序
+        # 对每个车站，使用局部搜索优化列车发车顺序
+        # 在满足追踪间隔的前提下，减少总延误
+        for station in self.stations:
+            station_code = station.station_code
+            track_count = self.station_track_count.get(station_code, 1)
+
+            # 跳过线路所
+            if track_count == 0:
+                continue
+
+            # 收集该站的所有列车
+            trains_at_station = []
+            for train in self.trains:
+                if station_code in self._get_stations_for_train(train):
+                    for stop in train.schedule.stops:
+                        if stop.station_code == station_code:
+                            trains_at_station.append({
+                                'train_id': train.train_id,
+                                'original_departure': self._time_to_seconds(stop.departure_time),
+                                'current_departure': schedule[(train.train_id, station_code)][1]
+                            })
+                            break
+
+            if len(trains_at_station) < 3:
+                continue  # 列车太少，无需优化
+
+            # 【优化】使用局部搜索优化顺序（交换相邻列车对）
+            # 贪心策略：如果交换两列车能减少总延误，则执行交换
+            max_iterations = min(10, len(trains_at_station))
+            improved = True
+            iteration = 0
+
+            while improved and iteration < max_iterations:
+                improved = False
+                iteration += 1
+
+                # 尝试交换相邻列车对
+                for i in range(len(trains_at_station) - 1):
+                    # 计算交换前的总延误
+                    before_delay = 0
+                    for j in range(max(0, i - 1), min(len(trains_at_station), i + 3)):
+                        train_id = trains_at_station[j]['train_id']
+                        _, dep = schedule[(train_id, station_code)]
+                        original_dep = trains_at_station[j]['original_departure']
+                        before_delay += max(0, dep - original_dep)
+
+                    # 交换两列车
+                    trains_at_station[i], trains_at_station[i + 1] = \
+                        trains_at_station[i + 1], trains_at_station[i]
+
+                    # 重新计算发车时间（满足追踪间隔）
+                    last_departures_temp = [0] * track_count
+                    new_schedule = schedule.copy()
+
+                    for idx, train_info in enumerate(trains_at_station):
+                        train_id = train_info['train_id']
+                        train = next((t for t in self.trains if t.train_id == train_id), None)
+
+                        if train is None:
+                            continue
+
+                        # 按顺序分配股道
+                        best_track = idx % track_count
+
+                        # 获取当前列车的当前调度时间
+                        current_arr, current_dep = new_schedule[(train_id, station_code)]
+
+                        # 计算最小发车时间（满足追踪间隔）
+                        earliest_available = min(last_departures_temp) if last_departures_temp else 0
+                        required_dep = max(current_dep, earliest_available + self.headway_time)
+
+                        if required_dep > current_dep:
+                            # 需要推迟
+                            delay_needed = required_dep - current_dep
+                            train = next((t for t in self.trains if t.train_id == train_id), None)
+                            if train:
+                                stations_for_train = self._get_stations_for_train(train)
+                                try:
+                                    idx_train = stations_for_train.index(station_code)
+                                    for sc in stations_for_train[idx_train:]:
+                                        arr, dep = new_schedule[(train_id, sc)]
+                                        new_schedule[(train_id, sc)] = [arr + delay_needed, dep + delay_needed]
+                                except ValueError:
+                                    pass
+
+                        # 更新该股道的最后发车时间
+                        last_departures_temp[best_track] = max(
+                            last_departures_temp[best_track],
+                            new_schedule[(train_id, station_code)][1]
+                        )
+
+                    # 计算交换后的总延误
+                    after_delay = 0
+                    for j in range(max(0, i - 1), min(len(trains_at_station), i + 3)):
+                        train_id = trains_at_station[j]['train_id']
+                        _, dep = new_schedule[(train_id, station_code)]
+                        original_dep = trains_at_station[j]['original_departure']
+                        after_delay += max(0, dep - original_dep)
+
+                    # 如果交换后延误减少，则保留交换
+                    if after_delay < before_delay:
+                        improved = True
+                        schedule = new_schedule
+                        logger.debug(f"[FCFS] 车站 {station_code} 优化：交换列车对 {i} 和 {i+1}，"
+                                    f"延误从 {before_delay/60:.2f}分钟 降至 {after_delay/60:.2f}分钟")
+                        break
+                    else:
+                        # 否则，撤销交换
+                        trains_at_station[i], trains_at_station[i + 1] = \
+                            trains_at_station[i + 1], trains_at_station[i]
+
+                if not improved:
+                    break
+
         # Step 4: 利用冗余时间进行恢复（停站冗余 + 区间运行冗余）
         # 对所有受影响的列车，尝试利用冗余减少延误
         for train_id in affected_trains:
@@ -334,14 +442,18 @@ class FCFSScheduler:
             if train is None:
                 continue
 
-            # 计算该列车的总延误量（用于恢复）
+# 计算该列车的总延误量（用于恢复）
+            # 注意：这里应该使用初始延误量，而不是各站延误之和
+            # 因为延误传播是连带关系，只需要恢复初始延误即可
             total_train_delay = 0
             for sc in self._get_stations_for_train(train):
                 _, dep = schedule[(train_id, sc)]
                 original_dep = self._time_to_seconds(
                     next(s.departure_time for s in train.schedule.stops if s.station_code == sc)
                 )
-                total_train_delay += max(0, dep - original_dep)
+                delay_at_station = max(0, dep - original_dep)
+                # 取所有站点中的最大延误作为总延误（因为延误是传播的）
+                total_train_delay = max(total_train_delay, delay_at_station)
 
             # 如果有延误，尝试恢复
             if total_train_delay > 0:
@@ -360,54 +472,90 @@ class FCFSScheduler:
                 # 应用恢复：压缩后续停站和区间运行时间
                 if actual_recovery > 0:
                     remaining_recovery = actual_recovery
-                    for sc in self._get_stations_for_train(train)[:-1]:
+                    train_stations = self._get_stations_for_train(train)
+
+                    # 【修复】找到该列车最早的延误注入站，只从该站开始恢复
+                    injection_stations = [scode for tid, scode in initial_delays.keys() if tid == train_id]
+                    earliest_injection_idx = 0
+                    if injection_stations:
+                        earliest_injection = min(injection_stations, key=lambda sc: train_stations.index(sc) if sc in train_stations else 9999)
+                        earliest_injection_idx = train_stations.index(earliest_injection) if earliest_injection in train_stations else 0
+
+                    for sc in train_stations[:-1]:
                         if remaining_recovery <= 0:
                             break
-                        # 压缩停站
-                        original_duration = self._get_original_stop_duration(train, sc)
-                        if original_duration > 0:
-                            redundancy = self._get_stop_time_redundancy(train, sc)
+                        sc_idx = train_stations.index(sc)
+                        if sc_idx < earliest_injection_idx:
+                            continue
+                        # 压缩停站（基于当前状态）
+                        arr, dep = schedule[(train_id, sc)]
+                        current_stop_duration = dep - arr
+                        if current_stop_duration > self.min_stop_time:
+                            redundancy = current_stop_duration - self.min_stop_time
                             compress = min(int(redundancy * self.stop_time_redundancy_ratio), remaining_recovery)
                             if compress > 0:
-                                arr, dep = schedule[(train_id, sc)]
-                                schedule[(train_id, sc)][1] = dep - compress  # 压缩发车时间
-                                remaining_recovery -= compress
+                                new_dep = dep - compress
+                                # 保证发车不早于到达，不早于原始计划
+                                original_dep = self._time_to_seconds(
+                                    next(s.departure_time for s in train.schedule.stops if s.station_code == sc)
+                                )
+                                new_dep = max(new_dep, arr, original_dep)
+                                actual_compress = dep - new_dep
+                                if actual_compress > 0:
+                                    schedule[(train_id, sc)][1] = new_dep
+                                    remaining_recovery -= actual_compress
 
-                                # 后续站点同步提前
-                                for sc_next in self._get_stations_for_train(train):
-                                    if sc == sc_next:
-                                        continue
-                                    arr_next, dep_next = schedule[(train_id, sc_next)]
-                                    schedule[(train_id, sc_next)] = [arr_next - compress, dep_next - compress]
+                                    # 后续站点同步提前（不能早于原始计划）
+                                    try:
+                                        sc_idx = train_stations.index(sc)
+                                        for sc_next in train_stations[sc_idx:]:
+                                            if sc_next == sc:
+                                                continue
+                                            arr_next, dep_next = schedule[(train_id, sc_next)]
+                                            original_arr_next = self._time_to_seconds(
+                                                next(s.arrival_time for s in train.schedule.stops if s.station_code == sc_next)
+                                            )
+                                            original_dep_next = self._time_to_seconds(
+                                                next(s.departure_time for s in train.schedule.stops if s.station_code == sc_next)
+                                            )
+                                            new_arr_next = max(arr_next - actual_compress, original_arr_next)
+                                            new_dep_next = max(dep_next - actual_compress, original_dep_next, new_arr_next)
+                                            schedule[(train_id, sc_next)] = [new_arr_next, new_dep_next]
+                                    except ValueError:
+                                        pass
 
                     # 压缩区间运行时间（带安全约束检查）
-                    for i, sc in enumerate(self._get_stations_for_train(train)[:-1]):
+                    for i, sc in enumerate(train_stations[:-1]):
                         if remaining_recovery <= 0:
                             break
-                        sc_next = self._get_stations_for_train(train)[i + 1]
-                        original_running = self._get_original_section_time(sc, sc_next)
+                        if i < earliest_injection_idx:
+                            continue
+                        sc_next = train_stations[i + 1]
+                        dep_current = schedule[(train_id, sc)][1]
+                        arr_next, dep_next = schedule[(train_id, sc_next)]
+                        current_running = arr_next - dep_current
                         min_running = self._get_min_section_time(sc, sc_next)
-                        section_redundancy = original_running - min_running
 
-                        if section_redundancy > 0:
-                            compress = min(int(section_redundancy * self.running_time_redundancy_ratio), remaining_recovery)
+                        if current_running > min_running:
+                            redundancy = current_running - min_running
+                            compress = min(int(redundancy * self.running_time_redundancy_ratio), remaining_recovery)
                             if compress > 0:
-                                arr_next, dep_next = schedule[(train_id, sc_next)]
-                                # 安全约束检查：确保区间运行时间不小于最小值
-                                dep_current = schedule[(train_id, sc)][1]  # 当前站发车时间
                                 new_arr_next = arr_next - compress
-                                actual_running = new_arr_next - dep_current
-                                if actual_running >= min_running:
-                                    # 满足安全约束，应用压缩
-                                    schedule[(train_id, sc_next)] = [new_arr_next, dep_next - compress]
-                                    remaining_recovery -= compress
-                                else:
-                                    # 不满足安全约束，只压缩到最小运行时间
-                                    safe_arr = dep_current + min_running
-                                    safe_compress = arr_next - safe_arr
-                                    if safe_compress > 0:
-                                        schedule[(train_id, sc_next)] = [safe_arr, dep_next - safe_compress]
-                                        remaining_recovery -= safe_compress
+                                # 保证区间运行时间不小于最小值，不早于原始计划
+                                new_arr_next = max(new_arr_next, dep_current + min_running)
+                                original_arr_next = self._time_to_seconds(
+                                    next(s.arrival_time for s in train.schedule.stops if s.station_code == sc_next)
+                                )
+                                new_arr_next = max(new_arr_next, original_arr_next)
+                                actual_compress = arr_next - new_arr_next
+                                if actual_compress > 0:
+                                    new_dep_next = dep_next - actual_compress
+                                    original_dep_next = self._time_to_seconds(
+                                        next(s.departure_time for s in train.schedule.stops if s.station_code == sc_next)
+                                    )
+                                    new_dep_next = max(new_dep_next, original_dep_next, new_arr_next)
+                                    schedule[(train_id, sc_next)] = [new_arr_next, new_dep_next]
+                                    remaining_recovery -= actual_compress
 
         # Step 5: 构建最终结果
         optimized_schedule = {}
@@ -450,7 +598,8 @@ class FCFSScheduler:
 
         # 计算统计数据
         max_delay_val = max(all_delays) if all_delays else 0
-        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+        # 【修复】avg_delay 使用受影响列车数作为分母，与高铁调度行业标准一致
+        avg_delay = sum(all_delays) / len(final_affected_trains) if final_affected_trains else 0
 
         return SolveResult(
             success=True,

@@ -128,7 +128,7 @@ class MIPScheduler:
                 return dep - arr
         return 180  # 默认3分钟停站时间
 
-    def solve(self, delay_injection: DelayInjection, objective: str = "min_max_delay", solver_config: Dict = None) -> SolveResult:
+    def solve(self, delay_injection: DelayInjection, objective: str = "min_total_delay", solver_config: Dict = None) -> SolveResult:
         """
         求解调度优化问题
 
@@ -162,8 +162,19 @@ class MIPScheduler:
             lowBound=0, cat='Integer'
         )
 
-        delay = LpVariable.dicts(
-            "delay",
+        # 【专家修复】区分到达延误和发车延误
+        # 高铁调度中，到达延误和发车延误可能不同，需要分别计算
+        delay_arrival = LpVariable.dicts(
+            "delay_arrival",
+            [(t.train_id, s.station_code)
+             for t in self.trains
+             for s in self.stations
+             if s.station_code in self._get_stations_for_train(t)],
+            lowBound=0, cat='Integer'
+        )
+
+        delay_departure = LpVariable.dicts(
+            "delay_departure",
             [(t.train_id, s.station_code)
              for t in self.trains
              for s in self.stations
@@ -178,11 +189,14 @@ class MIPScheduler:
         optimization_objective = solver_config.get("optimization_objective", objective)
 
         # 目标函数（使用L2推荐的优化目标）
+        # 【专家修复】使用到达延误和发车延误的最大值作为优化目标
         if optimization_objective == "min_max_delay":
             prob += max_delay
         elif optimization_objective == "min_total_delay":
+            # 【专家修复】总延误 = 到达延误总和 + 发车延误总和
             prob += lpSum([
-                delay[t.train_id, s.station_code]
+                delay_arrival[t.train_id, s.station_code] +
+                delay_departure[t.train_id, s.station_code]
                 for t in self.trains
                 for s in self.stations
                 if s.station_code in self._get_stations_for_train(t)
@@ -190,7 +204,8 @@ class MIPScheduler:
         elif optimization_objective == "min_avg_delay":
             # 平均延误 = 总延误 / 列车数，最小化平均延误等价于最小化总延误
             prob += lpSum([
-                delay[t.train_id, s.station_code]
+                delay_arrival[t.train_id, s.station_code] +
+                delay_departure[t.train_id, s.station_code]
                 for t in self.trains
                 for s in self.stations
                 if s.station_code in self._get_stations_for_train(t)
@@ -208,7 +223,10 @@ class MIPScheduler:
         injected_stations = {}  # {(train_id, station_code): initial_delay}
         invalid_train_ids = []  # 记录无效的列车ID
 
-        # 1. 初始延误约束（修正：只约束发车时间）
+        # 1. 初始延误约束（修正：约束到达时间，允许MIP压缩停站/区间时间恢复）
+        # 原理：初始延误是"列车晚到"，到达时间必须晚于计划+初始延误。
+        # 但发车时间 = 到达 + 停站时间，MIP可通过压缩停站时间和区间运行时间
+        # 来减少发车延误，与FCFS/MaxDelayFirst的冗余恢复机制对齐。
         for injected in delay_injection.injected_delays:
             train_id = injected.train_id
             station_code = injected.location.station_code or "BJX"
@@ -228,21 +246,18 @@ class MIPScheduler:
                 found_station = False
                 for stop in train.schedule.stops:
                     if stop.station_code == station_code:
-                        scheduled_dep = self._time_to_seconds(stop.departure_time)
-                        # 约束: 发车时间 >= 计划 + 初始延误（至少延误这么多）
-                        # 恶劣天气下的延误是不可避免的，优化器不应该通过压缩其他时间来"消除"这个延误
-                        prob += departure[train_id, station_code] >= scheduled_dep + initial_delay
+                        scheduled_arr = self._time_to_seconds(stop.arrival_time)
+                        # 【关键修复】约束到达时间 >= 计划到达 + 初始延误
+                        # 这样发车时间由到达+停站决定，MIP可压缩停站时间恢复部分延误
+                        prob += arrival[train_id, station_code] >= scheduled_arr + initial_delay
                         found_station = True
-                        logger.debug(f"[MIP] 添加初始延误约束: {train_id} 在 {station_code} 延误 {initial_delay}秒")
+                        logger.debug(f"[MIP] 添加初始到达延误约束: {train_id} 在 {station_code} 到达延误 {initial_delay}秒")
                         break
 
                 if not found_station:
                     # 列车不经过该车站，记录警告但不跳过
-                    # 这种情况下，我们不对该列车添加延误约束
                     logger.warning(f"[MIP] 列车 {train_id} 不经过车站 {station_code}，跳过延误约束")
-                    # 从affected_trains中移除该列车，避免后续处理出现问题
                     affected_trains.discard(train_id)
-                    # 从injected_stations中移除该记录
                     if (train_id, station_code) in injected_stations:
                         del injected_stations[(train_id, station_code)]
 
@@ -261,23 +276,25 @@ class MIPScheduler:
                 message=error_msg
             )
 
-        # 2. 区间运行时间约束（修正：允许压缩，但要有下限）
+# 2. 区间运行时间约束（修正：允许压缩，但要有下限）
         # 高铁可以在区间内适当提速或压缩运行时间，但不能低于最小安全运行时间
+        station_codes_set = set(self.station_codes)  # MIP窗口内的车站
         for t in self.trains:
             train_stations = self._get_stations_for_train(t)
             for i in range(len(train_stations) - 1):
                 from_station = train_stations[i]
                 to_station = train_stations[i + 1]
 
-                # 检查是否为线路所（track_count=0表示线路所，不停站）
+                # 【关键修复】只处理窗口内的站点对
+                if from_station not in station_codes_set or to_station not in station_codes_set:
+                    continue
+                
+                # 如果下一站是线路所，跳过
                 to_track_count = self.station_track_count.get(to_station, 1)
-
-                # 如果下一站是线路所，跳过区间运行时间约束（线路所不停站）
                 if to_track_count == 0:
                     continue
 
                 min_time = self._get_min_section_time(from_station, to_station)
-                # 允许压缩到最小时间的80%（提速），但不能低于安全下限
                 min_safe_time = int(min_time * 0.8)
                 prob += arrival[t.train_id, to_station] - departure[t.train_id, from_station] >= min_safe_time
 
@@ -307,8 +324,10 @@ class MIPScheduler:
                         break
             trains_with_time.sort(key=lambda x: x[1])
 
-            # 对所有列车按顺序建立追踪间隔约束
-            # 多股道时：使用更宽松的约束（允许并行），但仍需满足基本间隔
+            # 建立追踪间隔约束
+            # 核心修复：只对同一股道的列车添加追踪间隔约束
+            # 原因：多股道大站（如11-track SJP）不同股道的列车可并行作业，
+            # 硬性的全局追踪间隔会导致不必要的延误传播
             for i in range(len(trains_with_time) - 1):
                 t1, _ = trains_with_time[i]
                 t2, _ = trains_with_time[i + 1]
@@ -317,18 +336,16 @@ class MIPScheduler:
                     # 单股道：严格追踪间隔
                     prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
                 else:
-                    # 多股道：按原始发车顺序分配股道，同一股道需满足追踪间隔
-                    # 简化处理：原始相邻的列车可能分配到不同股道，但仍需考虑咽喉区限制
+                    # 【关键修复】只对同一股道的列车添加追踪间隔约束
+                    # 按原始发车顺序静态分配股道，与FCFS保持一致
                     track_i = i % track_count
                     track_j = (i + 1) % track_count
 
                     if track_i == track_j:
-                        # 同一股道，需满足追踪间隔
+                        # 同一股道，需满足追踪间隔（180秒）
                         prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + self.headway_time
-                    else:
-                        # 不同股道，需考虑咽喉区能力限制
-                        min_interval = DispatchEnvConfig.get("constraints.min_departure_interval", 60)
-                        prob += departure[t2.train_id, station_code] >= departure[t1.train_id, station_code] + min_interval
+                    # 不同股道：不添加硬性追踪间隔约束
+                    # 大型车站不同股道的列车可在咽喉区并行作业
 
         # 5. 第一站到达时间约束（修正：允许受影响列车在注入站延误）
         for t in self.trains:
@@ -353,10 +370,18 @@ class MIPScheduler:
                 # 列车受影响，允许在第一站延误
                 logger.debug(f"[MIP] {t.train_id} 受影响，允许在第一站 {first_station} 延误")
 
-        # 6. 停站时间约束（修正：通过站允许0停站时间）
+# 6. 停站时间约束（专家修复版：更合理的最小停站时间计算）
+        station_codes_set = set(self.station_codes)  # MIP窗口内的车站
         for t in self.trains:
+            if not t.schedule or not t.schedule.stops:
+                continue
             for stop in t.schedule.stops:
                 station_code = stop.station_code
+
+                # 【关键修复】只处理窗口内的车站
+                if station_code not in station_codes_set:
+                    continue
+
                 original_duration = self._get_original_stop_duration(t, station_code)
 
                 # 通过站（原计划停站时间为0）允许0停站时间
@@ -364,47 +389,82 @@ class MIPScheduler:
                     # 通过站：到达时间等于发车时间（允许0停站）
                     prob += departure[t.train_id, station_code] >= arrival[t.train_id, station_code]
                 else:
-                    # 停车站：最小停站时间为原计划的50%或1分钟
-                    min_stop = max(self.min_stop_time, original_duration // 2)
+                    # 【修复】最小停站时间统一使用绝对最小值，与FCFS/MaxDelayFirst一致
+                    # 原因：MIP需要与启发式算法在同一起跑线对比，不应额外收紧约束
+                    min_stop = self.min_stop_time
                     prob += departure[t.train_id, station_code] - arrival[t.train_id, station_code] >= min_stop
 
-        # 7. 发车时间约束（修正：允许小幅提前以解决冲突，但优先保持原计划）
-        # 注意：高铁实际运营中不允许提前，但优化模型需要放宽以确保可行性
-        # 通过目标函数惩罚提前，而不是硬约束禁止
+# 7. 发车时间约束（专家修复：禁止提前发车）
+        # 【专家修复】高铁实际运营中不允许提前发车
+        # 原因：提前发车可能引发安全风险，且不符合运营规范
+        station_codes_set = set(self.station_codes)  # MIP窗口内的车站
         for t in self.trains:
+            if not t.schedule or not t.schedule.stops:
+                continue
             for stop in t.schedule.stops:
                 station_code = stop.station_code
+
+                # 【关键修复】只处理窗口内的车站
+                if station_code not in station_codes_set:
+                    continue
+
                 scheduled_dep = self._time_to_seconds(stop.departure_time)
-                # 软约束：允许最多提前5分钟（300秒），以解决追踪间隔冲突
-                # 实际调度中可以通过调整停站时间来避免提前发车
-                prob += departure[t.train_id, station_code] >= scheduled_dep - 300
+                # 【修复】不允许提前发车
+                prob += departure[t.train_id, station_code] >= scheduled_dep
 
-        # 8. 到达时间约束（修正：同样允许小幅提前）
+        # 8. 到达时间约束（专家修复：禁止提前到站）
+        # 【专家修复】同样不允许提前到站
         for t in self.trains:
+            if not t.schedule or not t.schedule.stops:
+                continue
             for stop in t.schedule.stops:
                 station_code = stop.station_code
-                scheduled_arr = self._time_to_seconds(stop.arrival_time)
-                # 允许最多提前5分钟
-                prob += arrival[t.train_id, station_code] >= scheduled_arr - 300
 
-        # 9. 延误计算约束（修正：允许延误传播）
+                # 【关键修复】只处理窗口内的车站
+                if station_code not in station_codes_set:
+                    continue
+
+                scheduled_arr = self._time_to_seconds(stop.arrival_time)
+                # 【修复】不允许提前到站
+                prob += arrival[t.train_id, station_code] >= scheduled_arr
+
+# 9. 延误计算约束（专家修复：区分到达延误和发车延误）
+        station_codes_set = set(self.station_codes)  # MIP窗口内的车站
         for t in self.trains:
+            if not t.schedule or not t.schedule.stops:
+                continue
+
             train_id = t.train_id
             is_affected = train_id in affected_trains
+            train_stations = self._get_stations_for_train(t)
 
             for stop in t.schedule.stops:
                 station_code = stop.station_code
+
+                # 【关键修复】只处理窗口内的车站
+                if station_code not in station_codes_set:
+                    continue
+
+                scheduled_arr = self._time_to_seconds(stop.arrival_time)
                 scheduled_dep = self._time_to_seconds(stop.departure_time)
 
-                prob += delay[train_id, station_code] >= departure[train_id, station_code] - scheduled_dep
-                prob += delay[train_id, station_code] >= 0
-                prob += max_delay >= delay[train_id, station_code]
+                # 【专家修复】到达延误 = 实际到达 - 计划到达
+                prob += delay_arrival[train_id, station_code] >= arrival[train_id, station_code] - scheduled_arr
+                prob += delay_arrival[train_id, station_code] >= 0
+                prob += max_delay >= delay_arrival[train_id, station_code]
 
-                # 修正：只对非受影响列车的第一站约束延误为0
-                if not is_affected:
-                    train_stations = self._get_stations_for_train(t)
-                    if train_stations and station_code == train_stations[0]:
-                        prob += delay[train_id, station_code] <= 0
+                # 【专家修复】发车延误 = 实际发车 - 计划发车
+                prob += delay_departure[train_id, station_code] >= departure[train_id, station_code] - scheduled_dep
+                prob += delay_departure[train_id, station_code] >= 0
+                prob += max_delay >= delay_departure[train_id, station_code]
+
+                # 【修复】不再强制约束非受影响列车的第一站延误为0
+                # 原因：在多列车高密度场景下，headway约束可能迫使非受影响列车
+                # 在第一站就产生传播延误。强制延误为0会导致约束冲突（Infeasible）。
+                # if not is_affected:
+                #     if train_stations and station_code == train_stations[0]:
+                #         prob += delay_arrival[train_id, station_code] <= 0
+                #         prob += delay_departure[train_id, station_code] <= 0
 
         # 求解（优先使用L2智能决策的参数，否则使用配置文件默认值）
         from pulp import PULP_CBC_CMD
@@ -464,7 +524,7 @@ class MIPScheduler:
                     optimized_schedule={},
                     delay_statistics={},
                     computation_time=time.time() - start_time,
-                    message=f"求解失败: {status}（约束冲突，建议使用其他调度器）"
+message=f"求解失败: {status}（约束冲突，建议使用其他调度器）"
                 )
             else:
                 logger.debug(f"[MIP] 求解状态: {status}，尝试解析结果")
@@ -473,9 +533,11 @@ class MIPScheduler:
                     # 解析结果
                     optimized_schedule = {}
                     all_delays = []
+                    final_affected_trains = set()
 
                     for t in self.trains:
                         train_schedule = []
+                        train_has_delay = False
                         if not t.schedule or not t.schedule.stops or not isinstance(t.schedule.stops, (list, tuple)):
                             continue
 
@@ -485,9 +547,17 @@ class MIPScheduler:
                             scheduled_dep = self._time_to_seconds(stop.departure_time)
 
                             try:
-                                opt_arr = int(value(arrival[t.train_id, station_code]))
-                                opt_dep = int(value(departure[t.train_id, station_code]))
-                                delay_sec = opt_arr - scheduled_arr
+                                # 检查变量是否存在
+                                arr_key = (t.train_id, station_code)
+                                dep_key = (t.train_id, station_code)
+                                if arr_key not in arrival or dep_key not in departure:
+                                    # 变量不存在（车站不在列车时刻表中），跳过
+                                    continue
+
+                                opt_arr = int(value(arrival[arr_key]))
+                                opt_dep = int(value(departure[dep_key]))
+                                # 【修复】统一使用发车延误，与FCFS/MaxDelayFirst口径一致
+                                delay_sec = max(0, opt_dep - scheduled_dep)
 
                                 train_schedule.append({
                                     "station_code": station_code,
@@ -496,21 +566,25 @@ class MIPScheduler:
                                     "departure_time": self._seconds_to_time(opt_dep),
                                     "original_arrival": stop.arrival_time,
                                     "original_departure": stop.departure_time,
-                                    "delay_seconds": max(0, delay_sec)
+                                    "delay_seconds": int(delay_sec)
                                 })
 
+                                all_delays.append(delay_sec)
                                 if delay_sec > 0:
-                                    all_delays.append(delay_sec)
+                                    train_has_delay = True
                             except Exception as e:
                                 logger.warning(f"解析变量失败: {e}")
                                 continue
 
                         if train_schedule:
                             optimized_schedule[t.train_id] = train_schedule
+                        if train_has_delay:
+                            final_affected_trains.add(t.train_id)
 
                     # 计算延误统计
                     max_delay_val = max(all_delays) if all_delays else 0
-                    avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+                    # 【修复】avg_delay 使用受影响列车数作为分母，与高铁调度行业标准一致
+                    avg_delay = sum(all_delays) / len(final_affected_trains) if final_affected_trains else 0
 
                     logger.debug(f"[MIP] 部分解析成功: {len(optimized_schedule)}列车, 最大延误: {max_delay_val}秒")
                     return SolveResult(
@@ -520,7 +594,7 @@ class MIPScheduler:
                             "max_delay_seconds": int(max_delay_val),
                             "avg_delay_seconds": float(avg_delay),
                             "total_delay_seconds": int(sum(all_delays)),
-                            "affected_trains_count": len(affected_trains)
+                            "affected_trains_count": len(final_affected_trains)
                         },
                         computation_time=time.time() - start_time,
                         message=f"求解状态: {status}（非最优解，但可作为参考）"
@@ -538,29 +612,49 @@ class MIPScheduler:
         # 解析结果
         optimized_schedule = {}
         all_delays = []
+        final_affected_trains = set()
 
         for t in self.trains:
             train_schedule = []
+            train_has_delay = False
             if not t.schedule or not t.schedule.stops or not isinstance(t.schedule.stops, (list, tuple)):
                 continue
             for stop in t.schedule.stops:
                 station_code = stop.station_code
                 arr_key = (t.train_id, station_code)
                 dep_key = (t.train_id, station_code)
-                del_key = (t.train_id, station_code)
+                delay_arr_key = (t.train_id, station_code)
+                delay_dep_key = (t.train_id, station_code)
 
-                arr_time = value(arrival.get(arr_key))
-                dep_time = value(departure.get(dep_key))
-                delay_val = value(delay.get(del_key))
+                # 【关键修复】添加None检查，防止'NoneType' object has no attribute 'value'错误
+                arr_var = arrival.get(arr_key)
+                dep_var = departure.get(dep_key)
+                delay_arr_var = delay_arrival.get(delay_arr_key)
+                delay_dep_var = delay_departure.get(delay_dep_key)
+
+                if arr_var is not None:
+                    arr_time = value(arr_var)
+                else:
+                    arr_time = None
+
+                if dep_var is not None:
+                    dep_time = value(dep_var)
+                else:
+                    dep_time = None
+
+                if delay_dep_var is not None:
+                    delay_val = value(delay_dep_var)
+                else:
+                    delay_val = 0
 
                 if arr_time is None:
                     arr_time = self._time_to_seconds(stop.arrival_time)
                 if dep_time is None:
                     dep_time = self._time_to_seconds(stop.departure_time)
-                if delay_val is None:
-                    delay_val = 0
 
                 all_delays.append(delay_val)
+                if delay_val > 0:
+                    train_has_delay = True
 
                 train_schedule.append({
                     "station_code": station_code,
@@ -569,13 +663,16 @@ class MIPScheduler:
                     "departure_time": self._seconds_to_time(int(dep_time)),
                     "original_arrival": stop.arrival_time,
                     "original_departure": stop.departure_time,
-                    "delay_seconds": int(delay_val)
+                    "delay_seconds": int(delay_val)  # 使用发车延误
                 })
 
             optimized_schedule[t.train_id] = train_schedule
+            if train_has_delay:
+                final_affected_trains.add(t.train_id)
 
         max_delay_val = max(all_delays) if all_delays else 0
-        avg_delay = sum(all_delays) / len(all_delays) if all_delays else 0
+        # 【修复】avg_delay 使用受影响列车数作为分母，与高铁调度行业标准一致
+        avg_delay = sum(all_delays) / len(final_affected_trains) if final_affected_trains else 0
 
         return SolveResult(
             success=True,
@@ -584,7 +681,7 @@ class MIPScheduler:
                 "max_delay_seconds": int(max_delay_val),
                 "avg_delay_seconds": float(avg_delay),
                 "total_delay_seconds": int(sum(all_delays)),
-                "affected_trains_count": len(affected_trains)
+                "affected_trains_count": len(final_affected_trains)
             },
             computation_time=time.time() - start_time,
             message="求解成功"

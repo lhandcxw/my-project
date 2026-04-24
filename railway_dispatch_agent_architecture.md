@@ -1,10 +1,18 @@
-# 铁路调度Agent系统架构设计文档（v7.0）
+# 铁路调度Agent系统架构设计文档（v8.0）
 
 ## 文档概述
 
-基于大模型和整数规划的智能铁路调度Agent系统（v7.0 - L2/L3智能增强规划版）。
+基于大模型和整数规划的智能铁路调度Agent系统（v8.0 - 架构优化与Bug修复版）。
 
-**v7.0更新（当前版本）**：
+**v8.0更新（当前版本）**：
+- **关键Bug修复**：修正 `avg_delay` 计算逻辑（改为各列车最大延误的平均值）
+- **代码清理**：移除重复配置定义、修复枚举引用错误、删除废弃adapter文件
+- **Web统一**：合并双入口为统一单页应用
+- **模型更新**：切换至 `glm-5.1`
+- **YAML配置**：新增 `config/dispatch_env.yaml` 环境参数管理
+- **新增调度器**：EAF（最早到达优先）
+
+**v7.0更新**：
 - **SFT规划**：详细规划L2/L3智能增强路径，目标是大模型自主选择求解器组合和参数
 - **代码审查完成**：全面审查所有Python代码，确认语法、逻辑正确
 - **调度算法确认**：MIP、FCFS调度器实现合理，约束模型准确
@@ -26,8 +34,8 @@
 
 **设计约束**：
 - 部署规模：13站，147列列车（京广高铁北京西→安阳东）
-- 建模方法：整数规划（MIP）+ 先到先服务（FCFS）+ 最大延误优先
-- Web框架：Flask
+- 建模方法：整数规划（MIP）+ 先到先服务（FCFS）+ 最大延误优先 + 最早到达优先（EAF）
+- Web框架：Flask + 原生JS单页应用
 - **大模型架构：统一LLM驱动，移除RuleAgent**
 - **LLM调用方式**：
   1. API调用阿里云模型（DashScope）
@@ -48,7 +56,7 @@
 
 **v6.3更新**：
 - **修复调度器接口**：修正`scheduler_interface.py`中`EarliestArrivalFirstScheduler`类名错误（原错误命名为`ReinforcementLearningSchedulerAdapter`）
-- **新增调度器类型**：添加`EARLIEST_ARRIVAL_FIRST`到`SchedulerType`枚举
+- **新增调度器类型**：添加`EARLIEST_ARRIVAL`到`SchedulerType`枚举
 - **更新FORCE_LLM_MODE注释**：修正注释说明，明确`True=强制使用LLM，False=允许规则回退`
 - **代码审查完成**：修复重复类定义问题
 
@@ -160,7 +168,7 @@
 │         LLM调用层 (railway_agent/adapters/llm_adapter.py)              │
 │  ┌──────────────────────────────────────────────────────────────────┐ │
 │  │  方式1：阿里云API                                             │ │
-│  │  - DashScope API (qwen3.6-plus)                               │ │
+│  │  - DashScope API (glm-5.1)                               │ │
 │  │  - OpenAI兼容模式                                              │ │
 │  │  - 配置：PROVIDER="dashscope"                                  │ │
 │  └──────────────────────────────────────────────────────────────────┘ │
@@ -249,7 +257,7 @@
    # 配置
    PROVIDER = "dashscope"
    DASHSCOPE_API_KEY = "your-api-key"
-   DASHSCOPE_MODEL = "qwen3.6-plus"
+   DASHSCOPE_MODEL = "glm-5.1"
    ```
 
 2. **Ollama本地推理**：
@@ -291,7 +299,7 @@ class LLMConfig:
 
     # ========== 方式1：阿里云 DashScope API ==========
     DASHSCOPE_API_KEY = ""  # 请填写您的DashScope API Key
-    DASHSCOPE_MODEL = "qwen3.6-plus"
+    DASHSCOPE_MODEL = "glm-5.1"
     DASHSCOPE_ENABLE_THINKING = False
 
     # ========== 方式2：本地微调模型 ==========
@@ -325,8 +333,8 @@ class AppConfig:
 
 | 模型 | 是否支持思考模式 | 调用方式 | 说明 |
 |------|-----------------|----------|------|
+| glm-5.1 | ❌ 不支持 | API | 当前主力模型 |
 | qwen-max | ✅ 支持 | API | 推荐，效果最佳 |
-| qwen3.6-plus | ❌ 不支持 | API/本地 | 当前主力模型 |
 | qwen-finetuned | ⚠️ 取决于基座 | 本地 | 微调后模型，需本地部署 |
 
 ---
@@ -388,7 +396,7 @@ data/
 ## 6. 技术栈
 
 - **大模型架构**：统一LLM驱动，支持API和本地模型
-- **阿里云API**：DashScope (qwen3.6-plus) - 云端API
+- **阿里云API**：DashScope (glm-5.1) - 云端API
 - **本地模型**：Ollama/vLLM/Transformers - 微调模型
 - **求解器**：PuLP + CBC (整数规划)、FCFS（先到先服务）、MaxDelayFirst（最大延误优先）、EarliestArrivalFirst（最早到站优先）
 - **Web**：Flask + Pydantic
@@ -531,7 +539,7 @@ data/
 DASHSCOPE_API_KEY = "your-actual-api-key"
 
 # 选择模型
-DASHSCOPE_MODEL = "qwen3.6-plus"
+DASHSCOPE_MODEL = "glm-5.1"
 ```
 
 #### 方式2：使用本地微调模型
@@ -590,7 +598,7 @@ print(f"消息: {result.message}")
 5. **不使用NetworkSnapshot**：使用完整时刻表进行调度，简化架构
 6. **调度器比较**：analyze_with_comparison方法支持MIP/FCFS/最大延误优先/基线对比
 7. **FORCE_LLM_MODE=True**：强制使用LLM，失败时报错（不启用规则回退）
-8. **思考模式支持**：仅qwen3系列和qwen-max支持enable_thinking
+8. **思考模式支持**：glm-5.1 不支持 enable_thinking；qwen-max 支持
 9. **本地模型部署**：需要配置模型路径，使用Ollama/vLLM/Transformers部署
 
 ---
@@ -920,7 +928,7 @@ print(f"消息: {result.message}")
 | 指标 | 计算方式 | 目标 |
 |------|---------|------|
 | max_delay | max(各站延误) | 越小越好 |
-| avg_delay | avg(各站延误) | 越小越好 |
+| avg_delay | avg(各列车最大延误) | 越小越好 |
 | total_delay | sum(各站延误) | 越小越好 |
 | affected_trains | 延误>0的列车数 | 越小越好 |
 | solving_time | 求解耗时 | 越快越好 |
@@ -958,7 +966,7 @@ print(f"消息: {result.message}")
 └── 生成SFT训练数据集
 
 阶段2（2-3月）：模型微调
-├── 基础模型：qwen3.6-plus
+├── 基础模型：glm-5.1
 ├── 训练任务：场景→solver选择+参数配置
 ├── 验证集评估
 └── 部署微调模型

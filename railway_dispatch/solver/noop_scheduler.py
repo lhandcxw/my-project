@@ -49,7 +49,7 @@ class NoOpScheduler:
     def solve(
         self,
         delay_injection: DelayInjection,
-        objective: str = "min_max_delay"
+        objective: str = "min_total_delay"
     ) -> SolveResult:
         """
         执行调度优化（NoOp不做任何优化）
@@ -94,16 +94,24 @@ class NoOpScheduler:
                         # 注入站之前的站点无延误
                         all_delays.append(0)
 
-        # 计算延误统计（修正：只统计有延误的站点）
-        affected_delays = [d for d in all_delays if d > 0]
-        max_delay_val = max(affected_delays) if affected_delays else 0
-        avg_delay = sum(affected_delays) / len(affected_delays) if affected_delays else 0
+        # 统计实际有延误的列车数（与FCFS/MaxDelayFirst口径一致）
+        final_affected_trains = set()
+        for train_id, train_stops in schedule.items():
+            for stop in train_stops:
+                if stop.get("delay_seconds", 0) > 0:
+                    final_affected_trains.add(train_id)
+                    break
+
+        # 计算延误统计
+        max_delay_val = max(all_delays) if all_delays else 0
+        # 【修复】avg_delay 使用受影响列车数作为分母，与高铁调度行业标准一致
+        avg_delay = sum(all_delays) / len(final_affected_trains) if final_affected_trains else 0
 
         delay_statistics = {
             "max_delay_seconds": int(max_delay_val),
             "avg_delay_seconds": float(avg_delay),
             "total_delay_seconds": int(sum(all_delays)),
-            "affected_trains_count": len(set(i.train_id for i in delay_injection.injected_delays)),
+            "affected_trains_count": len(final_affected_trains),
             "on_time_rate": 1.0 if max_delay_val == 0 else (1.0 - max_delay_val / 3600)
         }
 

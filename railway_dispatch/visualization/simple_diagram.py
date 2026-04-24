@@ -205,12 +205,21 @@ def create_train_diagram(trains: List[Dict], output_path: str = None, return_bas
 
 
 def create_comparison_diagram(original_trains: List[Dict], optimized_trains: List[Dict],
-                               title: str = "Railway Train Diagram") -> str:
+                               title: str = "Railway Train Diagram",
+                               highlight_train_ids: List[str] = None) -> str:
     """
     生成对比运行图（原始 vs 优化后，优化的版本支持100+列车）
     改为上下两行布局，更加美观
     返回base64编码的图片
+
+    Args:
+        highlight_train_ids: 重点高亮显示的列车ID列表（只绘制这些列车可大幅提升性能）
     """
+    # 如果指定了高亮列车，过滤数据以加速渲染
+    if highlight_train_ids:
+        original_trains = [t for t in original_trains if t.get('train_id') in highlight_train_ids]
+        optimized_trains = [t for t in optimized_trains if t.get('train_id') in highlight_train_ids]
+
     num_trains = max(len(original_trains), len(optimized_trains))
 
     # 动态调整图形尺寸（两行布局，宽度可以更宽）

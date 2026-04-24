@@ -115,7 +115,7 @@ class CanonicalDispatchRequest(BaseModel):
 
 class PlannerDecision(BaseModel):
     """
-    Planner 决策输出（增强版）
+    Planner 决策输出（简化版）
     L2 层根据 AccidentCard 输出的结构化决策
     """
     # 核心字段
@@ -124,22 +124,11 @@ class PlannerDecision(BaseModel):
 
     # 求解器建议
     solver_candidates: List[str] = Field(default_factory=list, description="候选求解器列表（带排序）")
-    preferred_solver: Optional[str] = Field(default=None, description="首选求解器（经过规则校验后可能不采纳）")
-
-    # 目标权重（用于优化）
-    objective_weights: Dict[str, float] = Field(
-        default_factory=dict,
-        description="优化目标权重：max_delay_weight, avg_delay_weight, affected_trains_weight, runtime_weight"
-    )
-
-    # 建议参数
-    suggested_window_minutes: Optional[int] = Field(default=None, description="建议求解窗口（分钟）")
-    affected_corridor_hint: Optional[str] = Field(default=None, description="建议关注的走廊")
+    preferred_solver: Optional[str] = Field(default=None, description="首选求解器")
 
     # 状态字段
     need_user_clarification: bool = Field(default=False, description="是否需要用户补充信息")
     confidence: float = Field(default=1.0, description="决策置信度")
-    alternatives: List[str] = Field(default_factory=list, description="备选intent列表")
 
     # 说明
     reasoning: Optional[str] = None

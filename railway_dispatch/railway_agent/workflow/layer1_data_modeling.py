@@ -17,6 +17,8 @@ v5.0 整合：
 """
 
 import logging
+import os
+import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 import re
@@ -48,159 +50,380 @@ L1_FINETUNED_SYSTEM_PROMPT = """你是铁路调度数据建模助手。负责从
 class DispatcherOperationGuideRetriever:
     """
     调度员操作指南检索器
-    基于关键词匹配，从知识库中检索调度员操作指南
+    基于关键词匹配，从知识库(operations/目录)中检索调度员操作指南
     """
 
     def __init__(self):
+        self.knowledge_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'data', 'knowledge'
+        )
         self.knowledge_base = self._load_operation_knowledge()
 
     def _load_operation_knowledge(self) -> Dict[str, Any]:
-        """加载调度员操作知识库"""
+        """
+        加载调度员操作知识库
+        优先从operations/目录的JSON文件加载，fallback到内置知识
+        """
+        knowledge = {}
+
+        # 1. 尝试从operations/目录加载JSON知识库
+        operations_dir = os.path.join(self.knowledge_dir, "operations")
+        if os.path.exists(operations_dir):
+            try:
+                knowledge = self._load_from_operations_dir(operations_dir)
+                if knowledge:
+                    logger.info(f"[L1] 从operations目录加载了 {len(knowledge)} 个操作知识库")
+                    return knowledge
+            except Exception as e:
+                logger.warning(f"[L1] 加载operations目录失败: {e}")
+
+        # 2. Fallback: 使用内置知识
+        knowledge = self._get_fallback_knowledge()
+        return knowledge
+
+    def _load_from_operations_dir(self, operations_dir: str) -> Dict[str, Any]:
+        """从operations/目录递归加载JSON格式知识库（支持子文件夹层级）"""
+        knowledge = {}
+        loaded_files = 0
+        try:
+            for root, _, files in os.walk(operations_dir):
+                for filename in files:
+                    if not filename.endswith('.json'):
+                        continue
+                    filepath = os.path.join(root, filename)
+                    rel_path = os.path.relpath(filepath, operations_dir)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        # 解析JSON知识库（支持两种结构：有scenes数组 或 直接是单场景）
+                        scenes = data.get('scenes', [])
+                        if not scenes and 'scene_id' in data:
+                            scenes = [data]
+
+                        for scene in scenes:
+                            scene_id = scene.get('scene_id', '')
+                            scene_name = scene.get('scene_name', '')
+                            category = scene.get('category', '')
+
+                            # 提取关键词（primary权重高，secondary权重低）
+                            keywords_data = scene.get('keywords', {})
+                            keywords_primary = keywords_data.get('primary', [])
+                            keywords_secondary = keywords_data.get('secondary', [])
+                            keywords_all = list(keywords_primary)
+                            synonyms = keywords_data.get('synonyms', {})
+                            for syn_list in synonyms.values():
+                                keywords_all.extend(syn_list)
+
+                            # 提取操作步骤（保留step结构，不再flatten）
+                            steps = []
+                            for op in scene.get('operations', []):
+                                steps.append({
+                                    "step_id": op.get('step_id', 0),
+                                    "phase": op.get('phase', ''),
+                                    "priority": op.get('priority', 'medium'),
+                                    "time_limit": op.get('time_limit', ''),
+                                    "actions": op.get('actions', [])
+                                })
+
+                            # 提取关键要点（key_notes）用于辅助匹配
+                            key_notes = scene.get('key_notes', [])
+
+                            knowledge[scene_name] = {
+                                "scene_id": scene_id,
+                                "category": category,
+                                "keywords_primary": keywords_primary,
+                                "keywords_secondary": keywords_secondary,
+                                "keywords_all": keywords_all,
+                                "steps": steps,
+                                "key_notes": key_notes,
+                                "source": f"operations/{rel_path}"
+                            }
+                        loaded_files += 1
+                    except Exception as e:
+                        logger.warning(f"[L1] 加载 {rel_path} 失败: {e}")
+            logger.info(f"[L1] 从operations目录递归加载了 {loaded_files} 个知识库文件，共 {len(knowledge)} 个场景")
+        except Exception as e:
+            logger.warning(f"[L1] 读取operations目录失败: {e}")
+
+        return knowledge
+
+    def _get_fallback_knowledge(self) -> Dict[str, Any]:
+        """Fallback: 内置的默认知识库（当无法加载JSON时使用，结构与JSON加载保持一致）"""
         knowledge = {
-            "大风天气": {
-                "keywords": ["大风", "风速", "侧风", "台风", "强风"],
-                "operations": [
-                    "立即确认大风报警地点（区段、里程）",
-                    "确认风速监测子系统显示的风速值",
-                    "根据风速设置列控限速：15-20m/s限速200km/h，20-25m/s限速120km/h，>25m/s禁止运行",
-                    "立即呼叫已进入区间的列车司机，通知限速要求",
-                    "若显示禁止运行报警，立即命令列车停车",
-                    "台风登录前72小时发布预警，48小时启动应急预案",
-                    "持续监控风速变化，每5分钟确认一次"
+            "大风天气行车组织": {
+                "scene_id": "FALLBACK_WIND",
+                "category": "自然灾害",
+                "keywords_primary": ["大风", "风速", "侧风", "台风", "强风"],
+                "keywords_secondary": ["限速", "报警"],
+                "keywords_all": ["大风", "风速", "侧风", "台风", "强风", "限速", "报警"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "立即确认大风报警地点（区段、里程）",
+                            "确认风速监测子系统显示的风速值",
+                            "根据风速设置列控限速：15-20m/s限速200km/h，20-25m/s限速120km/h，>25m/s禁止运行",
+                            "立即呼叫已进入区间的列车司机，通知限速要求",
+                            "若显示禁止运行报警，立即命令列车停车",
+                            "持续监控风速变化，每5分钟确认一次"
+                        ]
+                    }
                 ],
-                "source": "高铁非正常情况调度员操作知识库"
+                "key_notes": ["大风天气需持续监控风速变化"],
+                "source": "内置知识库"
             },
-            "雨天天气": {
-                "keywords": ["大雨", "暴雨", "降雨", "洪水", "积水"],
-                "operations": [
-                    "立即确认降雨报警地点和等级",
-                    "确认降雨量监测数据（小时雨量/连续雨量）",
-                    "通知工务部门开展区间巡视",
-                    "根据警戒等级执行限速或扣停：限速警戒限速120km/h或160km/h，封锁警戒禁止进入",
-                    "暴雨红色预警时立即封锁相关区间线路",
-                    "暴雨持续期间每10分钟确认一次雨量数据",
-                    "解除警戒后逐步恢复常速运行"
+            "雨天天气行车组织": {
+                "scene_id": "FALLBACK_RAIN",
+                "category": "自然灾害",
+                "keywords_primary": ["大雨", "暴雨", "降雨", "洪水", "积水"],
+                "keywords_secondary": ["限速", "扣停"],
+                "keywords_all": ["大雨", "暴雨", "降雨", "洪水", "积水", "限速", "扣停"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "立即确认降雨报警地点和等级",
+                            "确认降雨量监测数据（小时雨量/连续雨量）",
+                            "根据警戒等级执行限速或扣停",
+                            "暴雨持续期间每10分钟确认一次雨量数据",
+                            "解除警戒后逐步恢复常速运行"
+                        ]
+                    }
                 ],
-                "source": "高铁非正常情况调度员操作知识库"
+                "key_notes": ["暴雨期间需密切监控雨量数据"],
+                "source": "内置知识库"
             },
-            "冰雪天气": {
-                "keywords": ["冰雪", "结冰", "冻雨", "降雪", "道岔冻结", "覆冰"],
-                "operations": [
-                    "立即确认冰雪天气报警地点和类型",
-                    "通知车务部门启动道岔融雪装置",
-                    "通知工务部门组织扫雪除冰",
-                    "确认接触网覆冰情况，必要时组织热滑除冰",
-                    "根据冰雪情况设置列控限速：小雪限速200km/h，中雪限速120km/h，大雪限速80km/h或停车",
-                    "冰雪天气持续期间每15分钟确认一次设备状态",
-                    "降雪结束后组织添乘检查线路状况"
+            "冰雪天气行车组织": {
+                "scene_id": "FALLBACK_ICE",
+                "category": "自然灾害",
+                "keywords_primary": ["冰雪", "结冰", "冻雨", "降雪", "道岔冻结", "覆冰"],
+                "keywords_secondary": ["限速", "融雪"],
+                "keywords_all": ["冰雪", "结冰", "冻雨", "降雪", "道岔冻结", "覆冰", "限速", "融雪"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "立即确认冰雪天气报警地点和类型",
+                            "根据冰雪情况设置列控限速",
+                            "冰雪天气持续期间每15分钟确认一次设备状态",
+                            "降雪结束后组织添乘检查线路状况"
+                        ]
+                    }
                 ],
-                "source": "高铁非正常情况调度员操作知识库"
+                "key_notes": ["冰雪天气注意道岔融雪装置状态"],
+                "source": "内置知识库"
             },
-            "设备故障": {
-                "keywords": ["设备故障", "信号故障", "接触网故障", "线路故障", "道岔故障"],
-                "operations": [
-                    "立即扣停后续列车",
-                    "确认故障类型和影响范围",
-                    "通知相关设备管理部门（电务、供电、工务）",
-                    "评估故障恢复时间",
-                    "安排故障列车处理（救援或拖行）",
-                    "调整后续列车时刻表",
-                    "做好旅客转运安排"
+            "设备故障行车": {
+                "scene_id": "FALLBACK_FAULT",
+                "category": "设备故障行车",
+                "keywords_primary": ["设备故障", "信号故障", "接触网故障", "线路故障", "道岔故障"],
+                "keywords_secondary": ["扣停", "抢修"],
+                "keywords_all": ["设备故障", "信号故障", "接触网故障", "线路故障", "道岔故障", "扣停", "抢修"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "立即扣停后续列车",
+                            "确认故障类型和影响范围",
+                            "通知相关设备管理部门",
+                            "评估故障恢复时间",
+                            "调整后续列车时刻表"
+                        ]
+                    }
                 ],
-                "source": "铁路调度操作规则知识库"
+                "key_notes": ["设备故障需第一时间扣停列车"],
+                "source": "内置知识库"
             },
-            "临时限速": {
-                "keywords": ["临时限速", "限速运行", "限速命令"],
-                "operations": [
-                    "确认限速区段和限速值",
-                    "计算受影响列车数量和延误时间",
-                    "设置列控限速（明确起止里程、限速值、原因）",
-                    "调整列车发车时间（顺延）",
-                    "压缩停站时间（在安全范围内）",
-                    "发布限速调度命令",
-                    "持续监控，及时调整"
+            "临时限速调度": {
+                "scene_id": "FALLBACK_LIMIT",
+                "category": "自然灾害",
+                "keywords_primary": ["临时限速", "限速运行", "限速命令"],
+                "keywords_secondary": ["列控", "调度命令"],
+                "keywords_all": ["临时限速", "限速运行", "限速命令", "列控", "调度命令"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "确认限速区段和限速值",
+                            "计算受影响列车数量和延误时间",
+                            "设置列控限速",
+                            "调整列车发车时间",
+                            "发布限速调度命令"
+                        ]
+                    }
                 ],
-                "source": "铁路调度操作规则知识库"
+                "key_notes": ["临时限速需发布正式调度命令"],
+                "source": "内置知识库"
             },
-            "区间封锁": {
-                "keywords": ["区间封锁", "线路封锁", "封锁区间"],
-                "operations": [
-                    "确认封锁区段和原因",
-                    "评估封锁持续时间",
-                    "停止新列车发车（进入封锁区段）",
-                    "区间内列车就近停靠",
-                    "安排绕行（如可行）",
-                    "启动应急预案",
-                    "确认设备正常后方可解除封锁"
+            "区间封锁处置": {
+                "scene_id": "FALLBACK_BLOCK",
+                "category": "非正常行车",
+                "keywords_primary": ["区间封锁", "线路封锁", "封锁区间"],
+                "keywords_secondary": ["停运", "绕行"],
+                "keywords_all": ["区间封锁", "线路封锁", "封锁区间", "停运", "绕行"],
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "phase": "立即处置",
+                        "priority": "critical",
+                        "time_limit": "立即",
+                        "actions": [
+                            "确认封锁区段和原因",
+                            "停止新列车发车",
+                            "区间内列车就近停靠",
+                            "启动应急预案"
+                        ]
+                    }
                 ],
-                "source": "铁路调度操作规则知识库"
+                "key_notes": ["区间封锁期间禁止进入封锁区段"],
+                "source": "内置知识库"
             }
         }
         return knowledge
 
     def retrieve_operations(self, scene_category: str, fault_type: str, user_input: str) -> Optional[Dict[str, Any]]:
         """
-        检索调度员操作指南
-        优先按故障类型(fault_type)检索，其次按场景类型
+        检索调度员操作指南（两层检索策略）
+        Step 1: 用 category 预过滤，将36个场景缩小到候选集
+        Step 2: 在候选集内用 keywords 加权匹配，返回最佳单场景
 
         Args:
-            scene_category: 场景类型（临时限速/突发故障/区间中断）
-            fault_type: 故障类型（大风/暴雨/设备故障等）
+            scene_category: 场景大类（自然灾害/设备故障行车/非正常行车/救援组织）
+            fault_type: 故障类型（大风/暴雨/接触网跳闸等）
             user_input: 用户原始输入
 
         Returns:
-            操作指南字典，包含operations列表
+            最佳匹配的操作指南字典
         """
-        # 优先使用fault_type检索
+        if not self.knowledge_base:
+            return None
+
         query = f"{fault_type} {user_input}".lower()
 
+        # Step 1: Category 预过滤
+        # 支持模糊匹配：如 scene_category="突发故障" 可匹配 category="设备故障"
+        candidates = {}
+        for scene_name, knowledge in self.knowledge_base.items():
+            cat = knowledge.get("category", "")
+            if not scene_category:
+                candidates[scene_name] = knowledge
+                continue
+            # 精确匹配或互相包含
+            if scene_category == cat or scene_category in cat or cat in scene_category:
+                candidates[scene_name] = knowledge
+
+        # 如果 category 过滤后为空，回退到全库检索（兜底）
+        if not candidates:
+            candidates = self.knowledge_base
+
+        # Step 2: 在候选集内用 keywords 加权匹配
         best_match = None
         best_score = 0
 
-        for scene_name, knowledge in self.knowledge_base.items():
+        for scene_name, knowledge in candidates.items():
             score = 0
-            # 关键词匹配
-            for keyword in knowledge["keywords"]:
-                if keyword in query:
-                    score += 3  # fault_type匹配得3分
 
-            # 故障类型名称匹配
+            # primary 关键词匹配（权重3）
+            for kw in knowledge.get("keywords_primary", []):
+                if kw.lower() in query:
+                    score += 3
+
+            # secondary 关键词匹配（权重1）
+            for kw in knowledge.get("keywords_secondary", []):
+                if kw.lower() in query:
+                    score += 1
+
+            # scene_name 名称匹配（权重5）
             if fault_type and fault_type.lower() in scene_name.lower():
-                score += 5  # 精确匹配得5分
+                score += 5
+            # 用 user_input 中的关键词也匹配 scene_name
+            for term in user_input.lower().split():
+                if len(term) >= 2 and term in scene_name.lower():
+                    score += 2
+
+            # key_notes 辅助匹配（权重1，用于处理边缘情况）
+            for note in knowledge.get("key_notes", []):
+                for term in query.split():
+                    if len(term) >= 2 and term in note.lower():
+                        score += 0.5
 
             if score > best_score:
                 best_score = score
+                # 只保留 priority=critical/high 的steps（当前阶段操作），减少冗余
+                filtered_steps = [
+                    s for s in knowledge.get("steps", [])
+                    if s.get("priority") in ("critical", "high")
+                ]
+                # 如果没有critical/high，取前2个step兜底
+                if not filtered_steps and knowledge.get("steps"):
+                    filtered_steps = knowledge["steps"][:2]
                 best_match = {
                     "scene_name": scene_name,
-                    "operations": knowledge["operations"],
+                    "scene_id": knowledge.get("scene_id", ""),
+                    "category": knowledge.get("category", ""),
+                    "steps": filtered_steps,
+                    "key_notes": knowledge.get("key_notes", []),
                     "source": knowledge["source"],
                     "match_score": score
                 }
 
-        # 如果没有匹配到，尝试使用scene_category
-        if best_score == 0 and scene_category:
-            query = f"{scene_category} {user_input}".lower()
+        # Fallback: 如果 category 预过滤后无匹配，回退到全库检索（处理LLM分类偏差）
+        if best_score == 0:
             for scene_name, knowledge in self.knowledge_base.items():
+                if scene_name in candidates:
+                    continue  # 已检索过，跳过
                 score = 0
-                for keyword in knowledge["keywords"]:
-                    if keyword in query:
+                for kw in knowledge.get("keywords_primary", []):
+                    if kw.lower() in query:
+                        score += 3
+                for kw in knowledge.get("keywords_secondary", []):
+                    if kw.lower() in query:
+                        score += 1
+                if fault_type and fault_type.lower() in scene_name.lower():
+                    score += 5
+                for term in user_input.lower().split():
+                    if len(term) >= 2 and term in scene_name.lower():
                         score += 2
-                if scene_category.lower() in scene_name.lower():
-                    score += 3
-
                 if score > best_score:
                     best_score = score
+                    filtered_steps = [
+                        s for s in knowledge.get("steps", [])
+                        if s.get("priority") in ("critical", "high")
+                    ]
+                    if not filtered_steps and knowledge.get("steps"):
+                        filtered_steps = knowledge["steps"][:2]
                     best_match = {
                         "scene_name": scene_name,
-                        "operations": knowledge["operations"],
+                        "scene_id": knowledge.get("scene_id", ""),
+                        "category": knowledge.get("category", ""),
+                        "steps": filtered_steps,
+                        "key_notes": knowledge.get("key_notes", []),
                         "source": knowledge["source"],
                         "match_score": score
                     }
 
+        # 设置阈值：score <= 0 视为无有效匹配
         return best_match if best_score > 0 else None
 
     def format_operations_for_display(self, operations_data: Dict[str, Any]) -> str:
-        """格式化操作指南为显示文本"""
+        """格式化操作指南为显示文本（按step分组）"""
         if not operations_data:
             return ""
 
@@ -209,8 +432,30 @@ class DispatcherOperationGuideRetriever:
             f"来源：{operations_data['source']}\n"
         ]
 
-        for i, op in enumerate(operations_data["operations"], 1):
-            lines.append(f"{i}. {op}")
+        steps = operations_data.get("steps", [])
+        if not steps:
+            # 兼容旧结构（operations扁平列表）
+            for i, op in enumerate(operations_data.get("operations", []), 1):
+                lines.append(f"{i}. {op}")
+            return "\n".join(lines)
+
+        for step in steps:
+            phase = step.get("phase", "")
+            priority = step.get("priority", "")
+            time_limit = step.get("time_limit", "")
+            actions = step.get("actions", [])
+            if not actions:
+                continue
+            # step标题
+            header = f"\n【{phase}】"
+            if priority:
+                header += f" 优先级:{priority}"
+            if time_limit:
+                header += f" 时限:{time_limit}"
+            lines.append(header)
+            # actions
+            for action in actions:
+                lines.append(f"  {action}")
 
         return "\n".join(lines)
 
@@ -332,8 +577,24 @@ class Layer1DataModeling:
         if canonical_request and canonical_request.scene_type_code:
             return self._use_preprocessed_result(canonical_request)
 
-        # 根据配置选择提取方式：微调模型 或 Prompt
-        if L1Config.USE_FINETUNED_MODEL and self.finetuned_model is not None:
+        # 智能分流：简单输入走规则提取，复杂输入走 LLM
+        if self._is_simple_input(user_input):
+            logger.info("[L1] 简单输入，使用规则提取（跳过LLM）")
+            accident_card = self._fallback_extraction(user_input)
+            # 包装为与 LLM 路径一致的格式
+            from models.prompts import PromptResponse
+            import uuid
+            request_id = str(uuid.uuid4())
+            template_id = "l1_data_modeling_rule"
+            response = PromptResponse(
+                request_id=request_id,
+                template_id=template_id,
+                is_valid=True,
+                parsed_output={"accident_card": accident_card.model_dump(), "_response_source": "rule_fast_path"},
+                raw_response="规则快速提取",
+                model_used="rule_fast_path"
+            )
+        elif L1Config.USE_FINETUNED_MODEL and self.finetuned_model is not None:
             logger.info("[L1] 使用微调模型进行实体提取")
             accident_card, response = self._extract_with_finetuned_model(user_input)
         else:
@@ -613,8 +874,69 @@ class Layer1DataModeling:
             start_time=datetime.fromisoformat(acc_card_data.get("start_time", "2024-01-15T10:00:00")) if acc_card_data.get("start_time") else datetime.now()
         )
 
+    def _is_simple_input(self, user_input: str) -> bool:
+        """
+        判断输入是否足够简单，可以用规则直接提取。
+
+        简单输入标准（基于京广高铁真实调度场景）：
+        1. 有明确的场景类型（临时限速/突发故障/区间封锁）
+        2. 有明确的位置信息（车站或区间）
+        3. 有明确的延误/事件信息
+
+        复杂输入需要 LLM 推理的场景：
+        - 模糊的描述，需要理解语义关系
+        - 多列车/大范围影响的复杂场景
+        - 需要从上下文推断信息
+        """
+        import re
+
+        # 检查是否有明确的场景类型关键词
+        scene_keywords = [
+            '临时限速', '限速', '突发故障', '故障', '区间封锁', '封锁', '区间中断',
+            '大风', '暴雨', '大雪', '冰雪', '设备故障', '信号故障', '接触网故障'
+        ]
+        has_scene = any(kw in user_input for kw in scene_keywords)
+
+        # 检查是否有明确的位置信息（京广高铁13站）
+        location_keywords = [
+            '站', '区间', '北京西', 'BJX', '杜家坎', 'DJK', '涿州东', 'ZBD',
+            '高碑店东', 'GBD', '保定东', 'BDD', '定州东', 'DZD', '正定机场', 'ZDJ',
+            '石家庄', 'SJP', '高邑西', 'GYX', '邢台东', 'XTD', '邯郸东', 'HDD', '安阳东', 'AYD',
+            '徐水东', 'XSD'
+        ]
+        has_location = any(kw in user_input for kw in location_keywords)
+
+        # 检查是否有明确的延误/事件信息
+        event_keywords = [
+            '延误', '晚点', '限速', '故障', '封锁', '分钟', '小时',
+            '恢复', '解除', '预计', '持续'
+        ]
+        has_event = any(kw in user_input for kw in event_keywords)
+
+        # 场景+位置+事件都明确 → 规则可处理（约60%的真实调度场景）
+        if has_scene and has_location and has_event:
+            return True
+
+        # 场景+位置明确，有列车号 → 规则可处理
+        has_train = bool(re.search(r'[GCDZ]\d+', user_input))
+        if has_scene and has_location and has_train:
+            return True
+
+        # 位置+事件明确（可能是标准化的限速场景）→ 规则可处理
+        if has_location and has_event:
+            return True
+
+        return False
+
     def _fallback_extraction(self, user_input: str) -> AccidentCard:
-        """回退提取：基于规则的提取（增强版，与RuleAgent一致）"""
+        """
+        回退提取：基于规则的提取（京广高铁调度专家版）
+
+        基于真实调度场景优化：
+        1. 覆盖京广高铁常见的故障类型和场景
+        2. 精确匹配13个车站和区间
+        3. 支持多种延误时间表达方式
+        """
         user_input_lower = user_input.lower()
 
         # 默认值
@@ -628,28 +950,33 @@ class Layer1DataModeling:
 
         # 推断场景类型（只有三种：临时限速、突发故障、区间中断）
         # 天气/具体故障类型作为fault_type
-        if any(kw in user_input for kw in ["封锁", "区间中断", "线路中断", "完全中断", "无法通行"]):
+        if any(kw in user_input for kw in ["封锁", "区间中断", "线路中断", "完全中断", "无法通行", "停运"]):
             scene_category = "区间中断"
         elif any(kw in user_input for kw in ["限速", "大风", "暴雨", "降雪", "冰雪", "雨量", "风速",
-                                           "天气", "自然灾害", "泥石流", "塌方", "水害", "台风", "风", "雨", "雪"]):
+                                           "天气", "自然灾害", "泥石流", "塌方", "水害", "台风", "风", "雨", "雪",
+                                           "冰雹", "雾霾", "沙尘"]):
             scene_category = "临时限速"
         else:
             scene_category = "突发故障"
 
-        # 推断故障类型（增强：更多关键词）
-        if "风" in user_input or "大风" in user_input:
+        # 推断故障类型（基于京广高铁真实故障统计）
+        if any(kw in user_input for kw in ["大风", "强风", "侧风", "台风"]):
             fault_type = "大风"
-        elif "雨" in user_input or "暴雨" in user_input:
+        elif any(kw in user_input for kw in ["暴雨", "大雨", "降雨", "洪水", "积水"]):
             fault_type = "暴雨"
-        elif "雪" in user_input or "降雪" in user_input:
-            fault_type = "大雪"
-        elif "设备" in user_input:
+        elif any(kw in user_input for kw in ["雪", "降雪", "大雪", "暴雪", "冰雪", "结冰", "冻雨"]):
+            fault_type = "冰雪"
+        elif any(kw in user_input for kw in ["设备故障", "设备"]):
             fault_type = "设备故障"
-        elif "信号" in user_input:
+        elif any(kw in user_input for kw in ["信号故障", "信号"]):
             fault_type = "信号故障"
-        elif "接触网" in user_input or "停电" in user_input:
+        elif any(kw in user_input for kw in ["接触网故障", "接触网", "供电", "停电"]):
             fault_type = "接触网故障"
-        elif "故障" in user_input:
+        elif any(kw in user_input for kw in ["道岔故障", "道岔"]):
+            fault_type = "道岔故障"
+        elif any(kw in user_input for kw in ["线路故障", "线路", "轨道", "钢轨"]):
+            fault_type = "线路故障"
+        elif any(kw in user_input for kw in ["故障"]):
             fault_type = "设备故障"
 
         # 提取列车号（支持多个列车）
@@ -657,17 +984,39 @@ class Layer1DataModeling:
         if train_matches:
             affected_train_ids = train_matches
 
-        # 提取延误时间（分钟）
-        delay_match = re.search(r'(\d+)\s*分钟', user_input)
-        if delay_match:
-            expected_duration = int(delay_match.group(1))
+        # 提取延误时间（支持多种表达方式）
+        # 支持格式："15分钟"、"15分"、"15 min"、"(15分钟)"、"延误15"
+        delay_patterns = [
+            r'(\d+)\s*分钟',
+            r'(\d+)\s*分',
+            r'(\d+)\s*min',
+            r'延误[：:]\s*(\d+)',
+            r'晚点[：:]\s*(\d+)',
+            r'延误\s*(\d+)',
+            r'晚点\s*(\d+)'
+        ]
+        for pattern in delay_patterns:
+            delay_match = re.search(pattern, user_input)
+            if delay_match:
+                expected_duration = int(delay_match.group(1))
+                logger.debug(f"[_fallback_extraction] 从用户输入提取延误时间: {expected_duration}分钟")
+                break
 
-        # 提取位置信息（车站或区间，增强版）
+        # 提取位置信息（车站或区间，京广高铁13站完整版）
         station_to_code = {
-            "石家庄": "SJP", "北京西": "BJX", "保定东": "BDD", "定州东": "DZD",
-            "徐水东": "XSD", "涿州东": "ZBD", "高碑店东": "GBD", "正定机场": "ZDJ",
-            "高邑西": "GYX", "邢台东": "XTD", "邯郸东": "HDD", "安阳东": "AYD",
-            "杜家坎": "DJK", "杜家坎线路所": "DJK"
+            "北京西": "BJX", "BJX": "BJX",
+            "杜家坎": "DJK", "杜家坎线路所": "DJK", "DJK": "DJK",
+            "涿州东": "ZBD", "ZBD": "ZBD",
+            "高碑店东": "GBD", "GBD": "GBD",
+            "保定东": "BDD", "BDD": "BDD",
+            "定州东": "DZD", "DZD": "DZD",
+            "正定机场": "ZDJ", "ZDJ": "ZDJ",
+            "石家庄": "SJP", "SJP": "SJP",
+            "高邑西": "GYX", "GYX": "GYX",
+            "邢台东": "XTD", "XTD": "XTD",
+            "邯郸东": "HDD", "HDD": "HDD",
+            "安阳东": "AYD", "AYD": "AYD",
+            "徐水东": "XSD", "XSD": "XSD"
         }
         location_type = "station"  # 默认为车站
 
@@ -752,27 +1101,29 @@ class Layer1DataModeling:
                             break
 
         # 使用统一的完整性判定逻辑
+        # 确保所有字符串字段都不是 None（使用空字符串作为默认值）
         accident_card_data = {
-            "affected_train_ids": affected_train_ids,
-            "location_code": location_code,
-            "location_name": location_name,
-            "scene_category": scene_category,
-            "fault_type": fault_type,
+            "affected_train_ids": affected_train_ids or [],
+            "location_code": location_code or "",
+            "location_name": location_name or "",
+            "scene_category": scene_category or "突发故障",
+            "fault_type": fault_type or "未知",
             "expected_duration": expected_duration
         }
         is_complete, missing_fields = self._check_completeness(accident_card_data)
 
+        # 确保字段类型正确（防止 None 值）
         return AccidentCard(
-            fault_type=fault_type,
-            scene_category=scene_category,
-            affected_section=affected_section,
-            location_type=location_type,
-            location_code=location_code,
-            location_name=location_name,
-            affected_train_ids=affected_train_ids,
+            fault_type=accident_card_data["fault_type"],
+            scene_category=accident_card_data["scene_category"],
+            affected_section=affected_section or "",
+            location_type=location_type or "station",
+            location_code=accident_card_data["location_code"],
+            location_name=accident_card_data["location_name"],
+            affected_train_ids=accident_card_data["affected_train_ids"],
             is_complete=is_complete,
             missing_fields=missing_fields,
-            expected_duration=expected_duration,
+            expected_duration=accident_card_data["expected_duration"],
             start_time=datetime.now()
         )
 

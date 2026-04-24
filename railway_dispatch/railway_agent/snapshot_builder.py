@@ -355,12 +355,16 @@ class SnapshotBuilder:
             window_size
         )
 
-        # 简化处理：返回基本车站信息
+        # 【修复】使用真实车站容量数据，不再硬编码
+        from models.data_loader import load_stations
+        all_stations_data = {s["station_code"]: s for s in load_stations()}
+
         stations_info = []
         for station_code in station_codes_in_window:
+            station_data = all_stations_data.get(station_code, {})
             stations_info.append({
                 "station_code": station_code,
-                "track_count": 2,  # 简化处理
+                "track_count": station_data.get("track_count", 4),  # 使用真实数据
                 "current_occupancy": 0  # 简化处理
             })
 

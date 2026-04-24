@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-技能注册表（新架构）
-替代旧架构的 tool_registry.py，适配新的适配器模式
+技能注册表（Agent 框架版）
+
+管理可用的 Skills 工具，提供执行接口和 JSON Schema。
 """
 
 from typing import Dict, List, Any, Optional
@@ -18,10 +19,6 @@ from .skills import (
 logger = logging.getLogger(__name__)
 
 
-# ============================================
-# 工具调用数据类
-# ============================================
-
 @dataclass
 class ToolCall:
     """工具调用数据类"""
@@ -30,50 +27,53 @@ class ToolCall:
     reasoning: str = ""
 
 
-# ============================================
-# 技能注册表类
-# ============================================
-
 class SkillRegistry:
     """
-    技能注册表（新架构）
-    管理可用的Skills工具，提供执行接口
+    技能注册表（Agent 框架版）
 
-    替代旧架构的 ToolRegistry
+    管理所有可用 Skills，提供 JSON Schema 和执行接口。
     """
 
     def __init__(self, trains=None, stations=None):
-        """
-        初始化技能注册表
-
-        Args:
-            trains: 列车列表
-            stations: 车站列表
-        """
         self.trains = trains
         self.stations = stations
         self.skills: Dict[str, BaseDispatchSkill] = create_skills(trains, stations)
         logger.info(f"技能注册表初始化完成，共 {len(self.skills)} 个技能")
 
     def get_tools_schema(self) -> List[Dict[str, Any]]:
-        """
-        获取Tools JSON Schema（用于兼容旧接口）
-
-        Returns:
-            List[Dict]: Tools定义列表
-        """
+        """获取 Tools JSON Schema"""
         return [
+            # ---- 求解类技能 ----
             {
                 "type": "function",
                 "function": {
-                    "name": "temporary_speed_limit_skill",
-                    "description": "处理临时限速场景的列车调度",
+                    "name": "dispatch_solve_skill",
+                    "description": (
+                        "通用调度求解技能。支持参数化选择求解器（mip/fcfs/fsfs/max_delay_first/srpt/spt/noop）"
+                        "和配置参数（优化目标、时间限制、最优性间隙）。"
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "train_ids": {"type": "array", "items": {"type": "string"}},
-                            "station_codes": {"type": "array", "items": {"type": "string"}},
-                            "delay_injection": {"type": "object"}
+                            "train_ids": {"type": "array", "items": {"type": "string"}, "description": "受影响的列车ID列表"},
+                            "station_codes": {"type": "array", "items": {"type": "string"}, "description": "相关车站编码列表"},
+                            "delay_injection": {
+                                "type": "object",
+                                "description": "延误注入数据",
+                                "properties": {
+                                    "scenario_type": {"type": "string"},
+                                    "injected_delays": {"type": "array"},
+                                    "solver_config": {
+                                        "type": "object",
+                                        "properties": {
+                                            "solver": {"type": "string", "enum": ["mip", "fcfs", "fsfs", "max_delay_first", "srpt", "spt", "noop"]},
+                                            "optimization_objective": {"type": "string", "enum": ["min_max_delay", "min_total_delay", "min_avg_delay"]},
+                                            "time_limit": {"type": "integer"},
+                                            "optimality_gap": {"type": "number"}
+                                        }
+                                    }
+                                }
+                            }
                         },
                         "required": ["train_ids", "station_codes", "delay_injection"]
                     }
@@ -82,35 +82,53 @@ class SkillRegistry:
             {
                 "type": "function",
                 "function": {
-                    "name": "sudden_failure_skill",
-                    "description": "处理突发故障场景的列车调度",
+                    "name": "compare_strategies_skill",
+                    "description": "运行多个求解策略并对比结果，自动选出最优方案。适用于需要在速度和最优性之间权衡的场景。",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "train_ids": {"type": "array", "items": {"type": "string"}},
                             "station_codes": {"type": "array", "items": {"type": "string"}},
-                            "delay_injection": {"type": "object"}
+                            "delay_injection": {"type": "object"},
+                            "strategies": {"type": "array", "items": {"type": "string"}, "description": "要求对比的求解器列表，如 ['fcfs', 'mip']"},
+                            "time_budget": {"type": "integer", "description": "对比总时间预算（秒），默认300"}
                         },
                         "required": ["train_ids", "station_codes", "delay_injection"]
+                    }
+                }
+            },
+            # ---- 分析类技能 ----
+            {
+                "type": "function",
+                "function": {
+                    "name": "station_load_skill",
+                    "description": "分析车站在不同时段的列车密度和负荷状况，判断高峰/平峰时段。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "station_code": {"type": "string", "description": "车站编码，如 SJP、BDD"}
+                        },
+                        "required": ["station_code"]
                     }
                 }
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "section_interrupt_skill",
-                    "description": "处理区间中断场景的列车调度",
+                    "name": "delay_propagation_skill",
+                    "description": "预测延误沿线路的链式传播路径和影响范围，量化间接受影响的列车数和传播深度。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "train_ids": {"type": "array", "items": {"type": "string"}},
-                            "station_codes": {"type": "array", "items": {"type": "string"}},
-                            "delay_injection": {"type": "object"}
+                            "train_ids": {"type": "array", "items": {"type": "string"}, "description": "直接受影响的列车ID列表"},
+                            "location_code": {"type": "string", "description": "事故位置车站编码"},
+                            "delay_minutes": {"type": "integer", "description": "初始延误分钟数"}
                         },
-                        "required": ["train_ids", "station_codes", "delay_injection"]
+                        "required": ["train_ids", "location_code"]
                     }
                 }
             },
+            # ---- 查询类技能 ----
             {
                 "type": "function",
                 "function": {
@@ -142,58 +160,28 @@ class SkillRegistry:
         ]
 
     def get_tool_names(self) -> List[str]:
-        """
-        获取所有可用工具名称
-
-        Returns:
-            List[str]: 工具名称列表
-        """
         return list(self.skills.keys())
 
     def get_tool_description(self, tool_name: str) -> Optional[str]:
-        """
-        获取指定工具的描述
-
-        Args:
-            tool_name: 工具名称
-
-        Returns:
-            Optional[str]: 工具描述，不存在则返回None
-        """
         if tool_name in self.skills:
             return self.skills[tool_name].description
         return None
 
-    def execute(
-        self,
-        tool_name: str,
-        arguments: Dict[str, Any]
-    ) -> DispatchSkillOutput:
-        """
-        执行指定的工具
-
-        Args:
-            tool_name: 工具名称
-            arguments: 工具参数
-
-        Returns:
-            DispatchSkillOutput: 执行结果
-        """
-        # 提取标准参数
+    def execute(self, tool_name: str, arguments: Dict[str, Any]) -> DispatchSkillOutput:
+        """执行指定的工具"""
         train_ids = arguments.get("train_ids", [])
         station_codes = arguments.get("station_codes", [])
         delay_injection = arguments.get("delay_injection", {})
         optimization_objective = arguments.get("optimization_objective", "min_max_delay")
 
-        # 提取额外参数（用于查询类技能）
         extra_kwargs = {}
         for key in ["train_id", "station_code", "from_station", "to_station",
                     "delay_minutes", "propagation_depth", "timetable_type",
-                    "time_range", "include_position", "include_delay"]:
+                    "time_range", "include_position", "include_delay",
+                    "strategies", "time_budget", "location_code"]:
             if key in arguments:
                 extra_kwargs[key] = arguments[key]
 
-        # 执行Skill
         return execute_skill(
             skill_name=tool_name,
             skills=self.skills,
@@ -205,15 +193,6 @@ class SkillRegistry:
         )
 
     def has_tool(self, tool_name: str) -> bool:
-        """
-        检查工具是否存在
-
-        Args:
-            tool_name: 工具名称
-
-        Returns:
-            bool: 是否存在
-        """
         return tool_name in self.skills
 
 
@@ -225,16 +204,7 @@ _skill_registry: Optional[SkillRegistry] = None
 
 
 def get_skill_registry(trains=None, stations=None) -> SkillRegistry:
-    """
-    获取技能注册表实例（单例模式）
-
-    Args:
-        trains: 列车列表（仅第一次初始化时使用）
-        stations: 车站列表（仅第一次初始化时使用）
-
-    Returns:
-        SkillRegistry: 技能注册表实例
-    """
+    """获取技能注册表实例（单例模式）"""
     global _skill_registry
     if _skill_registry is None:
         _skill_registry = SkillRegistry(trains, stations)

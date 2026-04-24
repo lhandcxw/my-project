@@ -6,11 +6,12 @@
 import os
 os.environ["RULE_AGENT_USE_WORKFLOW"] = "1"
 
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, redirect, url_for
 from flask_cors import CORS
 import json
 import base64
 import logging
+from datetime import datetime
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.data_models import Train, Station, DelayInjection, ScenarioType, InjectedDelay, DelayLocation
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
 from solver.mip_scheduler import MIPScheduler
+from scheduler_comparison.comparator import ComparisonCriteria
 from railway_agent import create_skills, execute_skill
 from railway_agent.session_manager import get_session_manager, SessionManager
 from evaluation.evaluator import Evaluator
@@ -34,19 +36,6 @@ from railway_agent import LLMAgent, create_llm_agent, ToolRegistry
 
 # 导入比较模块蓝图并注册
 from scheduler_comparison.comparison_api import register_comparison_routes
-
-# Agent实例
-def get_llm_agent():
-    """
-    获取LLM驱动 Agent实例
-
-    统一LLM驱动架构：
-    - 移除RuleAgent
-    - 支持阿里云API和本地微调模型
-    - 使用完整L1-L4工作流
-    """
-    from railway_agent import create_llm_agent
-    return create_llm_agent(trains=trains, stations=stations)
 
 app = Flask(__name__)
 CORS(app)  # 启用跨域支持
@@ -132,6 +121,74 @@ def get_original_schedule():
     return schedule
 
 
+def compute_dispatcher_metrics(original_schedule, optimized_schedule):
+    """
+    计算调度员关心的现实场景指标
+    """
+    metrics = {}
+    total_trains = len(optimized_schedule) if optimized_schedule else 0
+
+    # 1. 终点站准点率：列车在终点站延误延误<5分钟的比例
+    terminal_on_time = 0
+    for train_id, stops in (optimized_schedule or {}).items():
+        if stops:
+            last_delay = stops[-1].get("delay_seconds", 0)
+            if last_delay < 300:
+                terminal_on_time += 1
+    metrics["terminal_on_time_rate"] = round(terminal_on_time / total_trains, 3) if total_trains > 0 else 1.0
+
+    # 2. 调整车次比例：有多少列车被调整了（存在任意延误>0）
+    adjusted_trains = 0
+    for train_id, stops in (optimized_schedule or {}).items():
+        if any(s.get("delay_seconds", 0) > 0 for s in stops):
+            adjusted_trains += 1
+    metrics["adjustment_ratio"] = round(adjusted_trains / total_trains, 3) if total_trains > 0 else 0.0
+
+    # 3. 车站最大压力：单一车站同时出现延误的列车数最大值
+    station_delays = {}
+    for train_id, stops in (optimized_schedule or {}).items():
+        for stop in stops:
+            if stop.get("delay_seconds", 0) > 0:
+                sc = stop.get("station_code", "UNKNOWN")
+                station_delays[sc] = station_delays.get(sc, 0) + 1
+    if station_delays:
+        max_pressure_station = max(station_delays, key=station_delays.get)
+        metrics["station_pressure_max"] = station_delays[max_pressure_station]
+        metrics["station_pressure_max_name"] = max_pressure_station
+    else:
+        metrics["station_pressure_max"] = 0
+        metrics["station_pressure_max_name"] = "-"
+
+    # 4. 延误恢复率：有多少受影响列车在运行过程中恢复了部分延误（终点延误 < 首次延误）
+    recovery_count = 0
+    affected_count = 0
+    for train_id, stops in (optimized_schedule or {}).items():
+        delays = [s.get("delay_seconds", 0) for s in stops]
+        if any(d > 0 for d in delays):
+            affected_count += 1
+            first_delay = next((d for d in delays if d > 0), 0)
+            last_delay = delays[-1] if delays else 0
+            if last_delay < first_delay:
+                recovery_count += 1
+    metrics["delay_recovery_rate"] = round(recovery_count / affected_count, 3) if affected_count > 0 else 1.0
+
+    # 5. 延误集中指数（延误标准差/平均延误）- 反映延误分布均衡性
+    train_max_delays = []
+    for train_id, stops in (optimized_schedule or {}).items():
+        max_d = max((s.get("delay_seconds", 0) for s in stops), default=0)
+        train_max_delays.append(max_d)
+    if train_max_delays:
+        avg_d = sum(train_max_delays) / len(train_max_delays)
+        if len(train_max_delays) > 1 and avg_d > 0:
+            variance = sum((d - avg_d) ** 2 for d in train_max_delays) / len(train_max_delays)
+            std_dev = variance ** 0.5
+            metrics["delay_concentration_index"] = round(std_dev / avg_d, 2)
+        else:
+            metrics["delay_concentration_index"] = 0.0
+    else:
+        metrics["delay_concentration_index"] = 0.0
+
+    return metrics
 
 
 @app.route('/')
@@ -142,6 +199,25 @@ def index():
         station_codes=station_codes,
         station_names=station_names
     )
+
+
+@app.route('/v2')
+def index_v2():
+    """【统一】v2界面已合并到主入口，重定向到 /"""
+    return redirect(url_for('index'))
+
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """健康检查端点，供前端检测后端服务状态"""
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'data_loaded': is_using_real_data(),
+        'trains_count': len(trains),
+        'stations_count': len(stations)
+    })
 
 
 @app.route('/api/dispatch', methods=['POST'])
@@ -210,13 +286,8 @@ def dispatch():
                 skill_result = result.dispatch_result
                 logger.info(f"Skill结果: message={skill_result.message}, optimized_schedule keys={list(skill_result.optimized_schedule.keys()) if skill_result.optimized_schedule else 'None'}")
 
-                # 映射场景类型到 skill
-                skill_mapping = {
-                    "temporary_speed_limit": "temporary_speed_limit_skill",
-                    "sudden_failure": "sudden_failure_skill",
-                    "section_interrupt": "section_interrupt_skill"
-                }
-                selected_skill = skill_mapping.get(result.recognized_scenario, "unknown")
+                # 所有场景统一使用通用求解技能
+                selected_skill = "dispatch_solve_skill"
 
                 return jsonify({
                     "success": True,
@@ -239,8 +310,8 @@ def dispatch():
             else:
                 logger.error(f"Agent调用失败: success={result.success}, error={result.error_message}")
 
-        # 兜底：直接执行Skill
-        skill_name = "temporary_speed_limit_skill" if scenario_type == "temporary_speed_limit" else "sudden_failure_skill"
+        # 兜底：直接执行通用求解Skill
+        skill_name = "dispatch_solve_skill"
         logger.info(f"使用兜底模式，执行skill: {skill_name}")
 
         skill_result = execute_skill(
@@ -286,18 +357,43 @@ def generate_diagram():
     """
     生成铁路运行图API
     使用 railway_diagram.py 的绘图方式：横轴时间，纵轴车站
+    【性能优化】只绘制有延误变化的列车，大幅提升渲染速度
     """
+    import time
     try:
         data = request.json
 
         original_schedule = data.get('original_schedule', {})
         optimized_schedule = data.get('optimized_schedule', {})
 
+        # 【性能优化】识别有变化的列车ID，只渲染这些列车
+        highlight_train_ids = data.get('highlight_train_ids', None)
+        if highlight_train_ids is None:
+            # 自动计算：找出优化后有时刻变化的列车
+            highlight_train_ids = []
+            for train_id, opt_stops in optimized_schedule.items():
+                orig_stops = original_schedule.get(train_id, [])
+                has_change = False
+                for i, opt in enumerate(opt_stops):
+                    orig = orig_stops[i] if i < len(orig_stops) else {}
+                    if (opt.get("arrival_time") != orig.get("arrival_time") or
+                        opt.get("departure_time") != orig.get("departure_time") or
+                        opt.get("delay_seconds", 0) > 0):
+                        has_change = True
+                        break
+                if has_change:
+                    highlight_train_ids.append(train_id)
+            # 如果变化列车太多，只取前30列（保证性能）
+            if len(highlight_train_ids) > 30:
+                highlight_train_ids = highlight_train_ids[:30]
+
         # 转换为 railway_diagram.py 需要的格式
-        def convert_schedule(schedule_dict):
-            """将时刻表转换为列车列表格式"""
+        def convert_schedule(schedule_dict, train_ids_filter=None):
+            """将时刻表转换为列车列表格式，支持过滤"""
             trains_list = []
             for train_id, stops in schedule_dict.items():
+                if train_ids_filter and train_id not in train_ids_filter:
+                    continue
                 trains_list.append({
                     "train_id": train_id,
                     "schedule": {
@@ -314,19 +410,25 @@ def generate_diagram():
                 })
             return trains_list
 
-        original_trains = convert_schedule(original_schedule)
-        optimized_trains = convert_schedule(optimized_schedule)
+        original_trains = convert_schedule(original_schedule, highlight_train_ids)
+        optimized_trains = convert_schedule(optimized_schedule, highlight_train_ids)
 
         # 生成对比图（横轴时间，纵轴车站）
+        t0 = time.time()
         img_base64 = create_comparison_diagram(
             original_trains,
             optimized_trains,
-            "Railway Train Diagram"
+            "Railway Train Diagram",
+            highlight_train_ids=highlight_train_ids
         )
+        render_time = time.time() - t0
+        logger.info(f"[运行图生成] 耗时: {render_time:.2f}秒, 绘制列车数: {len(highlight_train_ids)}")
 
         return jsonify({
             "success": True,
-            "diagram_image": img_base64
+            "diagram_image": img_base64,
+            "render_time": round(render_time, 2),
+            "trains_drawn": len(highlight_train_ids)
         })
 
     except Exception as e:
@@ -482,6 +584,277 @@ def general_chat():
         })
 
     except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        })
+
+
+@app.route('/api/agent_chat_stream', methods=['POST'])
+def agent_chat_stream():
+    """
+    流式Agent对话API - 支持实时反馈
+
+    返回Server-Sent Events (SSE)格式的流式响应
+    事件类型：
+    - start: 开始处理
+    - thinking: Agent思考过程
+    - progress: 工作流进度（L1-L4）
+    - result: 最终结果
+    - error: 错误信息
+    """
+    import time
+    from datetime import datetime
+
+    try:
+        data = request.json
+        prompt = data.get('prompt', '')
+
+        if not prompt:
+            def error_gen():
+                yield f"data: {json.dumps({'type': 'error', 'message': '请输入调度需求'}, ensure_ascii=False)}\n\n"
+            return Response(error_gen(), mimetype='text/event-stream')
+
+        logger.info(f"[流式API] 收到请求，prompt: {prompt[:50]}...")
+
+        def generate():
+            try:
+                # 发送开始信号
+                yield f"data: {json.dumps({'type': 'start', 'timestamp': datetime.now().isoformat()}, ensure_ascii=False)}\n\n"
+
+                # 获取LLM驱动Agent
+                agent = get_agent()
+                if agent is None:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Agent未初始化，请检查配置'}, ensure_ascii=False)}\n\n"
+                    return
+
+                # 总计时开始
+                total_start = time.time()
+                stage_times = {}
+
+                # L1: 数据建模
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '🤔 正在分析输入信息...'}, ensure_ascii=False)}\n\n"
+
+                from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+                workflow_engine = create_workflow_engine()
+
+                # 先执行L1层
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '📝 识别场景类型、位置、列车信息...'}, ensure_ascii=False)}\n\n"
+
+                t0 = time.time()
+                l1_result = workflow_engine.layer1.execute(
+                    user_input=prompt,
+                    enable_rag=True
+                )
+                stage_times['L1数据建模'] = time.time() - t0
+
+                accident_card = l1_result.get('accident_card')
+                if accident_card:
+                    scene_content = f'✅ 场景识别：{accident_card.scene_category} - {accident_card.fault_type}'
+                    location_content = f'📍 位置：{accident_card.location_name} ({accident_card.location_code})'
+                    train_count = len(accident_card.affected_train_ids or [])
+                    trains_content = f'🚂 受影响列车：{train_count}列'
+                    
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': scene_content}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': location_content}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': trains_content}, ensure_ascii=False)}\n\n"
+                    
+                    if accident_card.affected_train_ids:
+                        train_list = ', '.join(accident_card.affected_train_ids[:10])
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'   车次：{train_list}'}, ensure_ascii=False)}\n\n"
+
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 1, 'message': '数据建模完成'}, ensure_ascii=False)}\n\n"
+
+                # L2: Agent 规划
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '🎯 正在制定调度策略...'}, ensure_ascii=False)}\n\n"
+
+                t0 = time.time()
+                l2_result = workflow_engine.layer2.execute(
+                    accident_card=accident_card
+                )
+                stage_times['L2策略规划'] = time.time() - t0
+
+                preferred_solver = l2_result.get('planner_decision', {}).get('preferred_solver', 'fcfs')
+                solver_content = f'🎯 选择求解器：{preferred_solver}'
+                yield f"data: {json.dumps({'type': 'thinking', 'content': solver_content}, ensure_ascii=False)}\n\n"
+
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 2, 'message': '策略制定完成'}, ensure_ascii=False)}\n\n"
+
+                # L3: 求解执行
+                agent_executed_solve = l2_result.get('agent_executed_solve', False)
+                if agent_executed_solve and l2_result.get('skill_execution_result'):
+                    # L2 Agent 已完成求解（如 compare_strategies 执行了多个求解器），跳过 L3
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': '✅ L2 Agent 已完成求解，直接使用最优结果'}, ensure_ascii=False)}\n\n"
+                    l3_result = {
+                        'skill_execution_result': l2_result['skill_execution_result'],
+                        'solver_response': l2_result.get('solver_response')
+                    }
+                    stage_times['L3求解执行'] = 0.0
+                else:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': '⚙️ 正在执行调度算法...'}, ensure_ascii=False)}\n\n"
+
+                    t0 = time.time()
+                    l3_result = workflow_engine.layer3.execute(
+                        planning_intent=l2_result.get('planning_intent', ''),
+                        accident_card=accident_card,
+                        trains=workflow_engine.trains_pydantic,
+                        stations=workflow_engine.stations_pydantic,
+                        planner_decision=l2_result.get('planner_decision')
+                    )
+                    stage_times['L3求解执行'] = time.time() - t0
+
+                skill_result = l3_result.get('skill_execution_result', {})
+                if skill_result.get('success'):
+                    skill_name = skill_result.get('skill_name', '未知')
+                    total_delay = skill_result.get('total_delay_minutes', 0)
+                    max_delay = skill_result.get('max_delay_minutes', 0)
+                    solving_time = skill_result.get('solving_time', 0)
+                    
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'✓ 求解完成：{skill_name}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   总延误：{total_delay}分钟'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   最大延误：{max_delay}分钟'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   求解器耗时：{solving_time:.2f}秒'}, ensure_ascii=False)}\n\n"
+
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 3, 'message': '求解完成'}, ensure_ascii=False)}\n\n"
+
+                # L4: 评估与方案生成
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '📊 正在生成调度方案...'}, ensure_ascii=False)}\n\n"
+
+                t0 = time.time()
+                l4_result = workflow_engine.layer4.execute(
+                    skill_execution_result=skill_result,
+                    solver_response=l3_result.get('solver_response'),
+                    enable_rag=True
+                )
+                stage_times['L4评估方案'] = time.time() - t0
+
+                eval_report = l4_result.get('evaluation_report')
+                llm_summary = l4_result.get('llm_summary', '')
+                natural_plan = l4_result.get('natural_language_plan', '')
+
+                # evaluation_report 是 Pydantic 对象，使用属性访问
+                eval_grade = getattr(eval_report, 'evaluation_grade', 'N')
+                eval_content = f'📊 评估完成：综合评级 {eval_grade}'
+                yield f"data: {json.dumps({'type': 'thinking', 'content': eval_content}, ensure_ascii=False)}\n\n"
+
+                if llm_summary:
+                    summary_content = f'📝 评估摘要：{llm_summary}'
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': summary_content}, ensure_ascii=False)}\n\n"
+
+                # 检查是否需要反射重规划（自适应反射架构）
+                rollback = l4_result.get('rollback_feedback')
+                needs_rerun = False
+                if rollback:
+                    if hasattr(rollback, 'needs_rerun'):
+                        needs_rerun = rollback.needs_rerun
+                    elif isinstance(rollback, dict):
+                        needs_rerun = rollback.get('needs_rerun', False)
+                if needs_rerun:
+                    reason = getattr(rollback, 'rollback_reason', '') if hasattr(rollback, 'rollback_reason') else rollback.get('rollback_reason', '')
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'⚠️ 评估发现方案可优化：{reason}，建议在非流式模式下启用反射重规划以获取更优解'}, ensure_ascii=False)}\n\n"
+
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 4, 'message': '评估与方案生成完成'}, ensure_ascii=False)}\n\n"
+
+                # 【性能分析】输出各环节耗时
+                stage_times['总耗时'] = time.time() - total_start
+                timing_summary = " | ".join([f"{k}: {v:.1f}s" for k, v in stage_times.items()])
+                logger.info(f"[流式API性能] {timing_summary}")
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'⏱️ 各环节耗时：{timing_summary}'}, ensure_ascii=False)}\n\n"
+
+                # 构建 evaluation_report 字典（供前端使用）
+                eval_report_dict = None
+                if eval_report:
+                    try:
+                        # Pydantic 对象转字典
+                        eval_report_dict = eval_report.model_dump() if hasattr(eval_report, 'model_dump') else eval_report.dict()
+                    except:
+                        # 如果转字典失败，使用默认值
+                        eval_report_dict = {
+                            'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N'),
+                            'on_time_rate': getattr(eval_report, 'on_time_rate', 0.0),
+                            'punctuality_strict': getattr(eval_report, 'punctuality_strict', 0.0),
+                            'delay_std_dev': getattr(eval_report, 'delay_std_dev', 0.0),
+                            'delay_propagation_depth': getattr(eval_report, 'delay_propagation_depth', 0),
+                            'delay_propagation_breadth': getattr(eval_report, 'delay_propagation_breadth', 0),
+                            'risk_warnings': getattr(eval_report, 'risk_warnings', []),
+                            'constraint_check': getattr(eval_report, 'constraint_check', {})
+                        }
+
+                # 构建优化前后时刻表对比
+                opt_schedule = skill_result.get('optimized_schedule', {})
+                if not opt_schedule:
+                    opt_schedule = l3_result.get('solver_response', {}).get('optimized_schedule', {})
+
+                # 提取对比结果（如果L2做了多求解器对比）
+                comparison_results = None
+                planner_decision = l2_result.get('planner_decision', {})
+                if planner_decision and planner_decision.get('solver_results'):
+                    for sr in planner_decision['solver_results']:
+                        if sr.get('strategies_tested'):
+                            comparison_results = {
+                                'strategies_tested': sr.get('strategies_tested', 0),
+                                'best_solver': sr.get('best_solver', ''),
+                                'comparison_summary': sr.get('comparison_summary', ''),
+                                'results': sr.get('results', [])
+                            }
+                            break
+
+                # 计算调度员关心的现实场景指标
+                original_schedule = get_original_schedule()
+                dispatcher_metrics = compute_dispatcher_metrics(original_schedule, opt_schedule)
+
+                # 构建最终结果
+                final_result = {
+                    'success': True,
+                    'recognized_scenario': accident_card.scene_category if accident_card else 'unknown',
+                    'selected_skill': 'dispatch_solve_skill',
+                    'selected_solver': preferred_solver,
+                    'reasoning': f'使用{preferred_solver}求解器，完成{len(accident_card.affected_train_ids or [])}列列车的调度优化',
+                    'llm_summary': llm_summary,
+                    'natural_language_plan': natural_plan,
+                    'delay_statistics': {
+                        'max_delay_minutes': skill_result.get('max_delay_minutes', 0),
+                        'avg_delay_minutes': skill_result.get('avg_delay_minutes', 0),
+                        'total_delay_minutes': skill_result.get('total_delay_minutes', 0),
+                        'affected_trains_count': skill_result.get('affected_trains_count', 0),
+                        'affected_trains': skill_result.get('affected_trains', []),
+                        'computation_time': skill_result.get('solving_time', 0),
+                        'on_time_rate': getattr(eval_report, 'on_time_rate', 1.0) if eval_report else 1.0,
+                        'punctuality_strict': getattr(eval_report, 'punctuality_strict', 1.0) if eval_report else 1.0,
+                        'delay_std_dev': getattr(eval_report, 'delay_std_dev', 0.0) if eval_report else 0.0,
+                        'delay_propagation_depth': getattr(eval_report, 'delay_propagation_depth', 0) if eval_report else 0,
+                        'delay_propagation_breadth': getattr(eval_report, 'delay_propagation_breadth', 0) if eval_report else 0,
+                        'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N') if eval_report else 'N',
+                        'terminal_on_time_rate': dispatcher_metrics.get('terminal_on_time_rate', 1.0),
+                        'delay_recovery_rate': dispatcher_metrics.get('delay_recovery_rate', 1.0),
+                        'adjustment_ratio': dispatcher_metrics.get('adjustment_ratio', 0.0),
+                        'station_pressure_max': dispatcher_metrics.get('station_pressure_max', 0),
+                        'station_pressure_max_name': dispatcher_metrics.get('station_pressure_max_name', '-'),
+                        'delay_concentration_index': dispatcher_metrics.get('delay_concentration_index', 0.0)
+                    },
+                    'message': skill_result.get('message', ''),
+                    'computation_time': skill_result.get('solving_time', 0),
+                    'optimized_schedule': opt_schedule,
+                    'original_schedule': original_schedule,
+                    'evaluation_report': eval_report_dict,
+                    'operations_guide': l1_result.get('dispatcher_operations'),
+                    'comparison_results': comparison_results,
+                    'dispatcher_metrics': dispatcher_metrics
+                }
+
+                yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False)}\n\n"
+
+            except Exception as e:
+                logger.exception(f"[流式API] 处理异常: {str(e)}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+        return Response(generate(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache',
+                                 'Connection': 'keep-alive',
+                                 'X-Accel-Buffering': 'no'})
+
+    except Exception as e:
+        logger.exception(f"agent_chat_stream设置异常: {str(e)}")
         return jsonify({
             "success": False,
             "message": str(e)
@@ -828,29 +1201,65 @@ def agent_chat_with_comparison():
         })
 
 
+# 全局比较器实例（延迟初始化）
+_scheduler_comparator = None
+
+def get_scheduler_comparator():
+    """获取或创建调度器比较器实例（直接比较，不走Agent工作流）"""
+    global _scheduler_comparator
+    if _scheduler_comparator is None:
+        from scheduler_comparison.comparator import create_comparator
+        from models.data_loader import get_trains_pydantic, get_stations_pydantic
+        trains = get_trains_pydantic()
+        stations = get_stations_pydantic()
+        _scheduler_comparator = create_comparator(trains, stations)
+        logger.info(f"调度器比较器初始化完成，已注册: {_scheduler_comparator.list_schedulers()}")
+    return _scheduler_comparator
+
+
 @app.route('/api/scheduler_comparison', methods=['POST'])
 def scheduler_comparison():
     """
     调度方法比较API
-    比较FCFS、MIP、基线等多种调度方法
+    直接对比所有调度算法（FCFS、MIP、MaxDelayFirst、Hierarchical、NoOp等），不走Agent工作流
     """
     try:
         data = request.json
-        
+
         train_id = data.get('train_id')
-        station_code = data.get('station_code')
-        from config import DispatchEnvConfig
-        delay_seconds = data.get('delay_seconds', DispatchEnvConfig.default_delay_seconds())
+        station_code = data.get('station')
+        if not station_code:
+            station_code = data.get('station_code')
+        delay_minutes = data.get('delay_minutes', 20)
         criteria = data.get('criteria', 'balanced')
-        
+
         if not train_id:
-            return jsonify({
-                "success": False,
-                "message": "请提供列车ID"
-            })
-        
-        logger.info(f"调度比较请求: train={train_id}, station={station_code}, delay={delay_seconds}s, criteria={criteria}")
-        
+            return jsonify({"success": False, "message": "请提供列车ID"})
+        if not station_code:
+            return jsonify({"success": False, "message": "请提供车站"})
+
+        delay_seconds = delay_minutes * 60
+        logger.info(f"调度比较请求: train={train_id}, station={station_code}, delay={delay_minutes}min, criteria={criteria}")
+
+        # 解析比较准则
+        criteria_map = {
+            'min_max_delay': ComparisonCriteria.MIN_MAX_DELAY,
+            'min_avg_delay': ComparisonCriteria.MIN_AVG_DELAY,
+            'min_total_delay': ComparisonCriteria.MIN_TOTAL_DELAY,
+            'max_on_time_rate': ComparisonCriteria.MAX_ON_TIME_RATE,
+            'min_affected_trains': ComparisonCriteria.MIN_AFFECTED_TRAINS,
+            'balanced': ComparisonCriteria.BALANCED,
+            'real_time': ComparisonCriteria.REAL_TIME
+        }
+        comparison_criteria = criteria_map.get(criteria, ComparisonCriteria.BALANCED)
+
+        # 解析优化目标
+        objective = "min_total_delay"
+        if criteria == 'min_max_delay':
+            objective = "min_max_delay"
+        elif criteria == 'min_avg_delay':
+            objective = "min_avg_delay"
+
         # 构建延误注入
         delay_injection = DelayInjection(
             scenario_type=ScenarioType.TEMPORARY_SPEED_LIMIT,
@@ -863,61 +1272,64 @@ def scheduler_comparison():
                     timestamp="2024-01-15T10:00:00Z"
                 )
             ],
-            affected_trains=[train_id],
-            scenario_params={
-                "user_preference": criteria
-            }
+            affected_trains=[train_id]
         )
-        
-        # 使用Agent的比较功能
-        agent = get_agent()
-        if agent is None:
+
+        # 【关键修复】直接调用比较器，不走Agent工作流，无需LLM实体提取
+        comparator = get_scheduler_comparator()
+        result = comparator.compare_all(
+            delay_injection,
+            criteria=comparison_criteria,
+            objective=objective
+        )
+
+        if not result.success:
             return jsonify({
                 "success": False,
-                "message": "Agent未初始化"
+                "message": "调度比较执行失败",
+                "comparison_result": {"all_results": [], "recommendations": result.recommendations}
             })
 
-        result = agent.analyze_with_comparison(
-            delay_injection.model_dump(),
-            user_prompt=f"{train_id}在{station_code}延误{delay_seconds // 60}分钟",
-            comparison_criteria=criteria
-        )
-        
-        if result.success and result.dispatch_result:
-            dispatch = result.dispatch_result
-            
-            # 构建结构化输出
-            comparison_output = {
-                "success": True,
-                "comparison": {
-                    "recommendation": {
-                        "scheduler_name": dispatch.delay_statistics.get("winner_scheduler", "未知"),
-                        "scheduler_type": "mip",
-                        "key_metrics": {
-                            "max_delay_minutes": dispatch.delay_statistics.get("max_delay_seconds", 0) // 60,
-                            "avg_delay_minutes": round(dispatch.delay_statistics.get("avg_delay_seconds", 0) / 60, 2),
-                            "affected_trains": dispatch.delay_statistics.get("affected_trains_count", 0),
-                            "on_time_rate": round(dispatch.delay_statistics.get("on_time_rate", 1.0) * 100, 1)
-                        }
-                    },
-                    "all_options": dispatch.delay_statistics.get("ranking", []),
-                    "analysis": dispatch.delay_statistics.get("recommendations", [])
-                },
-                "message": dispatch.message
-            }
-            
-            return jsonify(comparison_output)
-        else:
-            return jsonify({
-                "success": False,
-                "message": result.error_message or "比较执行失败"
+        # 构建前端兼容的输出格式
+        all_results = []
+        for r in result.results:
+            m = r.result.metrics if r.result else None
+            all_results.append({
+                "rank": r.rank,
+                "scheduler_name": r.scheduler_name,
+                "scheduler_type": r.scheduler_type.value if r.scheduler_type else "unknown",
+                "score": r.score,
+                "is_winner": r.is_winner,
+                "metrics": m.to_dict() if m else {},
+                "improvement_over_baseline": r.improvement_over_baseline
             })
-    
+
+        winner = result.winner
+        comparison_result = {
+            "success": True,
+            "criteria": result.criteria.value,
+            "all_results": all_results,
+            "recommendations": result.recommendations,
+            "computation_time": result.computation_time,
+            "winner": {
+                "scheduler_name": winner.scheduler_name,
+                "score": winner.score,
+                "metrics": winner.result.metrics.to_dict() if winner.result and winner.result.metrics else {}
+            } if winner else None
+        }
+
+        return jsonify({
+            "success": True,
+            "comparison_result": comparison_result,
+            "message": f"已对比 {len(all_results)} 个调度器，最优方案: {winner.scheduler_name if winner else '无'}"
+        })
+
     except Exception as e:
         logger.exception(f"调度比较异常: {str(e)}")
         return jsonify({
             "success": False,
-            "message": str(e)
+            "message": str(e),
+            "comparison_result": {"all_results": [], "recommendations": [f"异常: {str(e)}"]}
         })
 
 
@@ -1538,8 +1950,14 @@ if __name__ == '__main__':
             port = 8082
             logger.info(f"尝试使用端口 {port}...")
 
+        # 无论端口是否被占用，都显示访问地址
         logger.info(f"访问地址: http://localhost:{port}")
         logger.info(f"或者访问: http://127.0.0.1:{port}")
+        logger.info(f"")
+        logger.info(f"= 界面访问说明 =")
+        logger.info(f"  统一入口：http://localhost:{port}/")
+        logger.info(f"  （智能调度 + 调度器对比 + LLM工作流三合一界面）")
+        logger.info(f"=")
         logger.info("按 Ctrl+C 停止服务")
         logger.info("=" * 50)
 

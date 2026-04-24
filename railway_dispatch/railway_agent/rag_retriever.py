@@ -280,27 +280,145 @@ class RAGRetriever:
     def _load_knowledge_files(self) -> Dict[str, str]:
         """
         从知识库目录加载额外的知识文件
+        支持从operations/、rules/、reference/子目录加载
         """
         file_knowledge = {}
 
-        # 定义要加载的文件
+        # 定义要加载的文件（支持子目录）
         knowledge_files = {
-            "station_knowledge.txt": "车站知识",
-            "timetable_knowledge.txt": "时刻表知识",
-            "operational_rules.txt": "操作规则"
+            "reference/station_knowledge.txt": "车站知识",
+            "reference/timetable_knowledge.txt": "时刻表知识",
+            "rules/operational_rules.txt": "操作规则"
         }
 
-        for filename, key in knowledge_files.items():
-            filepath = os.path.join(self.knowledge_dir, filename)
-            if os.path.exists(filepath):
+        for filepath, key in knowledge_files.items():
+            full_path = os.path.join(self.knowledge_dir, filepath)
+            if os.path.exists(full_path):
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
+                    with open(full_path, 'r', encoding='utf-8') as f:
                         file_knowledge[key] = f.read()
-                    logger.info(f"成功加载知识库文件: {filename}")
+                    logger.info(f"成功加载知识库文件: {filepath}")
                 except Exception as e:
-                    logger.warning(f"加载知识库文件失败 {filename}: {e}")
+                    logger.warning(f"加载知识库文件失败 {filepath}: {e}")
+
+        # 加载operations/目录下的JSON操作知识库
+        operations_dir = os.path.join(self.knowledge_dir, "operations")
+        if os.path.exists(operations_dir):
+            json_knowledge = self._load_operations_json(operations_dir)
+            file_knowledge.update(json_knowledge)
 
         return file_knowledge
+
+    def _load_operations_json(self, operations_dir: str) -> Dict[str, str]:
+        """
+        从operations目录递归加载JSON格式的调度员操作知识库（支持子文件夹层级）
+
+        Args:
+            operations_dir: operations目录路径
+
+        Returns:
+            Dict[str, str]: 解析后的知识库字典
+        """
+        operations_knowledge = {}
+        loaded_files = 0
+
+        try:
+            for root, _, files in os.walk(operations_dir):
+                for filename in files:
+                    if not filename.endswith('.json'):
+                        continue
+                    filepath = os.path.join(root, filename)
+                    rel_path = os.path.relpath(filepath, operations_dir)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        # 解析JSON知识库（支持 scenes 数组或单场景结构）
+                        scenes = data.get('scenes', [])
+                        if not scenes and 'scene_id' in data:
+                            scenes = [data]
+
+                        # 提取场景名称作为key
+                        for scene in scenes:
+                            scene_id = scene.get('scene_id', 'unknown')
+                            scene_id_name = scene.get('scene_name', scene_id)
+                            # 注入来源路径，方便追溯
+                            scene['_source_path'] = rel_path
+                            operations_knowledge[scene_id_name] = self._format_scene_knowledge(scene)
+
+                        loaded_files += 1
+                    except Exception as e:
+                        logger.warning(f"加载操作知识库失败 {rel_path}: {e}")
+            logger.info(f"成功加载操作知识库: {loaded_files} 个文件，共 {len(operations_knowledge)} 个场景")
+        except Exception as e:
+            logger.warning(f"读取operations目录失败: {e}")
+
+        return operations_knowledge
+
+    def _format_scene_knowledge(self, scene: Dict) -> str:
+        """
+        将JSON场景格式化为可检索的知识文本
+
+        Args:
+            scene: 场景字典
+
+        Returns:
+            str: 格式化后的知识文本
+        """
+        lines = []
+        lines.append(f"## 场景: {scene.get('scene_name', '未知')}")
+        lines.append(f"类别: {scene.get('category', '未知')}")
+        lines.append(f"场景ID: {scene.get('scene_id', '未知')}")
+
+        # 关键词
+        keywords = scene.get('keywords', {})
+        if keywords:
+            primary = keywords.get('primary', [])
+            secondary = keywords.get('secondary', [])
+            lines.append(f"关键词: {', '.join(primary + secondary)}")
+
+        # 触发条件
+        trigger_conditions = scene.get('trigger_conditions', [])
+        if trigger_conditions:
+            lines.append("触发条件:")
+            for tc in trigger_conditions:
+                field = tc.get('field', '')
+                op = tc.get('op', '')
+                value = tc.get('value', '')
+                unit = tc.get('unit', '')
+                lines.append(f"  - {field} {op} {value} {unit}")
+
+        # 操作步骤
+        operations = scene.get('operations', [])
+        if operations:
+            lines.append("\n操作步骤:")
+            for op in operations:
+                step_id = op.get('step_id', '')
+                phase = op.get('phase', '')
+                title = op.get('title', '')
+                time_limit = op.get('time_limit', '')
+                actions = op.get('actions', [])
+
+                lines.append(f"\n[{step_id}] {title}")
+                lines.append(f"  阶段: {phase} | 时限: {time_limit}")
+                for action in actions:
+                    lines.append(f"    - {action}")
+
+        # 验证项
+        lines.append("\n验证要点:")
+        for op in operations:
+            verification = op.get('verification', [])
+            for v in verification:
+                lines.append(f"  - {v}")
+
+        # 参考规章
+        references = scene.get('references', [])
+        if references:
+            lines.append("\n参考规章:")
+            for ref in references:
+                lines.append(f"  - {ref}")
+
+        return "\n".join(lines)
 
     def retrieve(self, query: str, top_k: int = 3) -> List[Dict[str, str]]:
         """
@@ -486,16 +604,28 @@ class RAGRetriever:
 
         guide = guides[0]
 
-        # 构建操作指南文本
+        # 构建操作指南文本（按step分组，减少prompt长度）
         guide_parts = ["\n" + "=" * 60]
         guide_parts.append("【调度员操作指南】")
         guide_parts.append(f"场景: {guide['scene_name']}")
         guide_parts.append(f"匹配度: {guide['relevance_score']:.1f}")
         guide_parts.append("-" * 60)
 
-        # 添加操作步骤
-        for i, operation in enumerate(guide['operations'], 1):
-            guide_parts.append(f"{i}. {operation}")
+        # 添加操作步骤（支持新step结构或旧operations结构）
+        steps = guide.get('steps', [])
+        if steps:
+            for step in steps:
+                phase = step.get('phase', '')
+                actions = step.get('actions', [])
+                if not actions:
+                    continue
+                guide_parts.append(f"\n▶ {phase}")
+                for action in actions:
+                    guide_parts.append(f"  - {action}")
+        else:
+            # 兼容旧结构
+            for i, operation in enumerate(guide.get('operations', []), 1):
+                guide_parts.append(f"{i}. {operation}")
 
         guide_parts.append("")
         guide_parts.append(f"来源: {guide['source']}")

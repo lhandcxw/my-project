@@ -55,6 +55,27 @@ class AccidentCard(BaseModel):
     #   已确定：scene_category + start_time + affected_section
     #   且运行状态快照包含：列车编号 + 当前位置 + 当前晚点 + 车站容量 + 区间状态 + headway
 
+    # ========== 统一字段接口 ==========
+    # scene_type: 从 scene_category 转换为枚举值（用于 DelayInjection）
+    @property
+    def scene_type(self) -> "SceneType":
+        """
+        获取场景类型枚举值
+        从 scene_category（中文字符串）转换为 SceneType 枚举
+        """
+        from models.data_models import ScenarioType
+        mapping = {
+            "临时限速": ScenarioType.TEMPORARY_SPEED_LIMIT,
+            "突发故障": ScenarioType.SUDDEN_FAILURE,
+            "区间封锁": ScenarioType.SECTION_INTERRUPT,
+        }
+        return mapping.get(self.scene_category, ScenarioType.TEMPORARY_SPEED_LIMIT)
+
+    @property
+    def scene_id(self) -> str:
+        """获取场景唯一标识"""
+        return f"{self.location_code}_{self.scene_category}" if self.location_code else self.scene_category
+
 
 class NetworkSnapshot(BaseModel):
     """
@@ -304,10 +325,11 @@ class HighSpeedMetrics(BaseModel):
     propagation_coefficient: float = Field(default=0.0, description="传播系数(深度/广度)")
 
     # 延误分布指标
-    micro_delay_count: int = Field(default=0, description="微小延误数量(<5分钟)")
-    small_delay_count: int = Field(default=0, description="小延误数量(5-15分钟)")
-    medium_delay_count: int = Field(default=0, description="中延误数量(15-30分钟)")
-    large_delay_count: int = Field(default=0, description="大延误数量(>30分钟)")
+    # 【统一】与 config/dispatch_env.yaml 及 rules/validator.py 保持一致
+    micro_delay_count: int = Field(default=0, description="微延误数量 [0,5)分钟")
+    small_delay_count: int = Field(default=0, description="小延误数量 [5,30)分钟")
+    medium_delay_count: int = Field(default=0, description="中延误数量 [30,100)分钟")
+    large_delay_count: int = Field(default=0, description="大延误数量 [100,+∞)分钟")
 
     # 综合评分
     overall_score: float = Field(default=0.0, description="综合评分(0-100)")
@@ -350,11 +372,11 @@ class EvaluationReport(BaseModel):
     delay_propagation_depth: int = Field(default=0, description="传播深度（影响车站数）")
     delay_propagation_breadth: int = Field(default=0, description="传播广度（影响列车数）")
     propagation_coefficient: float = Field(default=0.0, description="传播系数")
-    micro_delay_count: int = Field(default=0, description="微延误次数（<2分钟）")
-    small_delay_count: int = Field(default=0, description="小延误次数（2-5分钟）")
-    medium_delay_count: int = Field(default=0, description="中延误次数（5-15分钟）")
-    large_delay_count: int = Field(default=0, description="大延误次数（>15分钟）")
-    evaluation_grade: str = Field(default="A", description="综合评级")
+    # [统一] 与 config/dispatch_env.yaml 及 rules/validator.py 保持一致
+    micro_delay_count: int = Field(default=0, description="微延误次数 [0,5)分钟")
+    small_delay_count: int = Field(default=0, description="小延误次数 [5,30)分钟")
+    medium_delay_count: int = Field(default=0, description="中延误次数 [30,100)分钟")
+    large_delay_count: int = Field(default=0, description="大延误次数 [100,+∞)分钟")
 
     # 兼容性字段（保持向后兼容）
     high_speed_metrics: Optional[HighSpeedMetrics] = Field(default=None, description="高铁专用评估指标（已废弃）")
@@ -366,6 +388,9 @@ class EvaluationReport(BaseModel):
     counterfactual_summary: str = Field(default="", description="反事实分析说明")
     why_not_other_solver: str = Field(default="", description="为何不选择其他求解器的解释")
     confidence: float = Field(default=0.8, description="评估置信度(0-1)")
+
+    # 综合评级字段（A/B/C/D，与 layer4_evaluation._calculate_evaluation_grade 对应）
+    evaluation_grade: str = Field(default="C", description="综合评级: A(优秀)/B(良好)/C(合格)/D(不合格)")
 
     metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
 

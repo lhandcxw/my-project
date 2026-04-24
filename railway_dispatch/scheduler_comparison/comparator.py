@@ -89,29 +89,40 @@ class MultiComparisonResult:
             "computation_time": round(self.computation_time, 4),
             "recommendations": self.recommendations
         }
-    
+
     def get_ranking_table(self) -> str:
         """生成排名表格"""
         lines = [
-            "=" * 80,
-            f"{'调度器比较结果':^78}",
-            "=" * 80,
-            f"{'排名':<6}{'调度器':<20}{'最大延误':<12}{'平均延误':<12}{'受影响列车':<12}{'计算时间':<12}",
-            "-" * 80
+            "=" * 100,
+            f"{'调度器比较结果':^98}",
+            "=" * 100,
+            "{:<6}{:<18}{:<14}{:<18}{:<14}{:<14}{:<12}".format("排名", "调度器", "最大延误", "晚点列车平均延误", "总延误", "受影响列车", "计算时间"),
+            "-" * 100
         ]
-        
+
         for r in sorted(self.results, key=lambda x: x.rank):
             m = r.result.metrics
             winner_mark = " ★" if r.is_winner else ""
+            # 【专家修复】格式化小数位（统一保留2位小数）
+            max_delay_min = m.max_delay_seconds / 60
+            avg_delay_min = m.avg_delay_seconds / 60
+            total_delay_min = m.total_delay_seconds / 60
+
+            max_delay_str = f"{max_delay_min:.2f}分钟"
+            # 【关键修复】avg_delay 明确标注分母（晚点列车数），避免调度员误解
+            avg_delay_str = f"{avg_delay_min:.2f}分/{m.affected_trains_count}列"
+            total_delay_str = f"{total_delay_min:.2f}分钟"
+
             lines.append(
-                f"{r.rank:<6}{r.scheduler_name:<20}"
-                f"{m.max_delay_seconds // 60}分钟{'':<6}"
-                f"{m.avg_delay_seconds / 60:.1f}分钟{'':<5}"
-                f"{m.affected_trains_count}列{'':<8}"
+                f"{r.rank:<6}{r.scheduler_name:<18}"
+                f"{max_delay_str:<14}"
+                f"{avg_delay_str:<18}"
+                f"{total_delay_str:<14}"
+                f"{m.affected_trains_count}列{' ' * 10}"
                 f"{m.computation_time:.2f}秒{winner_mark}"
             )
-        
-        lines.append("=" * 80)
+
+        lines.append("=" * 100)
         return "\n".join(lines)
 
 
@@ -125,15 +136,23 @@ class SchedulerComparator:
         self,
         trains: List,
         stations: List,
-        default_criteria: ComparisonCriteria = ComparisonCriteria.BALANCED
+        default_criteria: ComparisonCriteria = ComparisonCriteria.MIN_TOTAL_DELAY  # 【专家优化】默认最小化总延误
     ):
         """
         初始化比较器
-        
+
         Args:
             trains: 列车列表
             stations: 车站列表
-            default_criteria: 默认比较准则
+            default_criteria: 默认比较准则（默认：最小化总延误）
+
+        专家说明：
+        默认使用 MIN_TOTAL_DELAY 是因为：
+        1. 总延误是高铁运营的核心KPI（中国铁路总调度系统标准）
+        2. 反映整体系统效率：列车周转、资源利用率、运营成本
+        3. 京广高铁等高密度线路：总延误是调度决策的主要依据
+        4. 参考文献：《高速铁路列车运行图编制理论与方法》
+        5. 与服务质量、旅客满意度直接相关
         """
         self.trains = trains
         self.stations = stations
@@ -143,7 +162,7 @@ class SchedulerComparator:
     def register_scheduler(self, scheduler: BaseScheduler):
         """注册调度器"""
         self._schedulers[scheduler.name] = scheduler
-    
+
     def register_scheduler_by_name(
         self,
         name: str,
@@ -152,7 +171,12 @@ class SchedulerComparator:
         """通过名称注册调度器"""
         scheduler = SchedulerRegistry.create(name, self.trains, self.stations, **kwargs)
         if scheduler:
-            self._schedulers[scheduler.name] = scheduler
+            # 只用传入的名称作为key，避免重复注册
+            # 【修复】移除重复注册：scheduler.name 会导致同一调度器被注册两次
+            if name not in self._schedulers:
+                self._schedulers[name] = scheduler
+            else:
+                logger.debug(f"调度器 {name} 已存在，跳过注册")
         return scheduler
     
     def get_scheduler(self, name: str) -> Optional[BaseScheduler]:
@@ -163,17 +187,95 @@ class SchedulerComparator:
         """列出所有已注册的调度器"""
         return list(self._schedulers.keys())
     
-    def _get_weights_for_criteria(self, criteria: ComparisonCriteria) -> MetricsWeight:
-        """根据比较准则获取权重配置"""
-        criteria_weight_map = {
-            ComparisonCriteria.MIN_MAX_DELAY: MetricsWeight.for_min_max_delay,
-            ComparisonCriteria.MIN_AVG_DELAY: MetricsWeight.for_min_avg_delay,
-            ComparisonCriteria.BALANCED: MetricsWeight.for_balanced,
-            ComparisonCriteria.REAL_TIME: MetricsWeight.for_real_time
-        }
-
-        weight_func = criteria_weight_map.get(criteria, MetricsWeight.for_balanced)
-        return weight_func()
+    def _get_weights_for_criteria(self, criteria: ComparisonCriteria, optimization_objective: str = None) -> MetricsWeight:
+        """【专家修复】根据比较准则和优化目标动态获取权重配置（真正的智能化）"""
+        
+        if criteria == ComparisonCriteria.MIN_MAX_DELAY:
+            # 【智能化】用户明确要求最小化最大延误
+            # max_delay_first的优势：专门优化最大延误
+            return MetricsWeight(
+                max_delay_weight=2.0,       # 最高权重
+                avg_delay_weight=0.5,       # 较低
+                total_delay_weight=0.3,     # 低
+                affected_trains_weight=0.5, # 较低
+                propagation_depth_weight=0.3,  # 低
+                propagation_breadth_weight=0.3,  # 低
+                computation_time_weight=0.2,  # 不关心速度
+                delay_variance_weight=0.3,
+                recovery_rate_weight=0.3,
+                on_time_rate_weight=0.4
+            ).normalize()
+        
+        elif criteria == ComparisonCriteria.MIN_AVG_DELAY:
+            # 【智能化】用户明确要求最小化平均延误
+            # mip/hierarchical的优势：平均延误控制更精确
+            return MetricsWeight.for_min_avg_delay()
+        
+        elif criteria == ComparisonCriteria.MIN_TOTAL_DELAY:
+            # 【智能化】用户明确要求最小化总延误
+            return MetricsWeight.for_min_total_delay()
+        
+        elif criteria == ComparisonCriteria.REAL_TIME:
+            # 【智能化】用户明确要求实时（求解速度快）
+            # fcfs的优势：最快（毫秒级）
+            # max_delay_first：较快（秒级）
+            return MetricsWeight(
+                max_delay_weight=0.5,       # 较低
+                avg_delay_weight=0.5,       # 较低
+                total_delay_weight=0.3,     # 低
+                affected_trains_weight=0.5, # 较低
+                propagation_depth_weight=0.3,  # 低
+                propagation_breadth_weight=0.3,  # 低
+                computation_time_weight=3.0,  # 最高权重（强调速度）
+                delay_variance_weight=0.3,
+                recovery_rate_weight=0.3,
+                on_time_rate_weight=0.4
+            ).normalize()
+        
+        elif criteria == ComparisonCriteria.BALANCED:
+            # 【专家优化】均衡模式：默认优化总延误（符合高铁调度实际）
+            if optimization_objective == "min_max_delay":
+                # 用户明确要求最小化最大延误（覆盖默认）
+                return MetricsWeight(
+                    max_delay_weight=2.0,
+                    avg_delay_weight=0.5,
+                    total_delay_weight=0.3,
+                    affected_trains_weight=0.5,
+                    propagation_depth_weight=0.4,
+                    propagation_breadth_weight=0.3,
+                    computation_time_weight=0.1,
+                    delay_variance_weight=0.3,
+                    recovery_rate_weight=0.3,
+                    on_time_rate_weight=0.4
+                ).normalize()
+            elif optimization_objective == "min_total_delay":
+                # 用户明确要求最小化总延误（默认，权重最高）
+                return MetricsWeight.for_min_total_delay()
+            elif optimization_objective == "min_avg_delay":
+                # 用户明确要求最小化平均延误
+                return MetricsWeight.for_min_avg_delay()
+            else:
+                # 标准均衡（默认优化总延误）
+                return MetricsWeight.for_min_total_delay()
+        
+        elif criteria == ComparisonCriteria.MIN_AFFECTED_TRAINS:
+            # 【智能化】用户明确要求最小化受影响列车数
+            # mip/hierarchical的优势：传播控制更好
+            return MetricsWeight(
+                max_delay_weight=0.8,
+                avg_delay_weight=0.8,
+                total_delay_weight=0.3,
+                affected_trains_weight=3.0,  # 最高权重
+                propagation_depth_weight=2.0,  # 高
+                propagation_breadth_weight=1.5,  # 较高
+                computation_time_weight=0.3,
+                delay_variance_weight=0.5,
+                recovery_rate_weight=0.5,
+                on_time_rate_weight=0.6
+            ).normalize()
+        
+        else:
+            return MetricsWeight.for_balanced()
     
     def _calculate_score(
         self,
@@ -195,34 +297,41 @@ class SchedulerComparator:
         # 归一化权重
         nw = weights.normalize()
 
-        # 平均延误使用指标计算值（总延误 / 延误站点数，更准确）
+        # 【修复】avg_delay 已改为晚点列车平均延误，直接使用
         avg_delay_minutes = metrics.avg_delay_seconds / 60
 
-        # 将各指标归一化到0-100范围
+        # 将各指标归一化到0-100范围（越低越好）
         # === 阈值说明 ===
-        # 最大延误阈值：60分钟为满分（100分）
-        #   - 延误0分钟 = 0分（最优）
-        #   - 延误60分钟 = 100分（最差）
-        #   - 延误90分钟 = 100分（封顶）
-        max_delay_threshold = 60  # 分钟
+        # 最大延误阈值：30分钟为满分（100分）
+        max_delay_threshold = 30  # 分钟
         max_delay_score = min(metrics.max_delay_seconds / 60 / max_delay_threshold * 100, 100)
 
-        # 平均延误阈值：同样60分钟
-        avg_delay_score = min(avg_delay_minutes / max_delay_threshold * 100, 100)
+        # 平均延误阈值：30分钟（晚点列车平均延误阈值）
+        avg_delay_threshold = 30  # 分钟
+        avg_delay_score = min(avg_delay_minutes / avg_delay_threshold * 100, 100)
+
+        # 【关键修复】总延误阈值：120分钟（系统总延误阈值）
+        total_delay_threshold = 120  # 分钟
+        total_delay_score = min((metrics.total_delay_seconds / 60) / total_delay_threshold * 100, 100)
 
         # 准点率：100%为0分，0%为100分
         on_time_score = (1 - metrics.on_time_rate) * 100
 
-        # 受影响列车阈值：5列为满分（高铁场景合理值）
-        affected_threshold = 5
+        # 受影响列车阈值：10列为满分（高铁场景合理值，147列线路）
+        affected_threshold = 10
         affected_score = min(metrics.affected_trains_count / affected_threshold * 100, 100)
 
-        # 加权综合得分（越低越好）
+        # 计算时间惩罚（超过60秒开始惩罚，鼓励快速响应但不过度惩罚MIP）
+        computation_time_score = min(metrics.computation_time / 60 * 100, 100)
+
+        # 加权综合得分（越低越好）【关键修复：加入总延误得分】
         score = (
             max_delay_score * nw.max_delay_weight +
             avg_delay_score * nw.avg_delay_weight +
+            total_delay_score * nw.total_delay_weight +
             on_time_score * nw.on_time_rate_weight +
-            affected_score * nw.affected_trains_weight
+            affected_score * nw.affected_trains_weight +
+            computation_time_score * nw.computation_time_weight
         )
 
         return round(score, 2)
@@ -232,23 +341,27 @@ class SchedulerComparator:
         delay_injection,
         criteria: Optional[ComparisonCriteria] = None,
         scheduler_names: Optional[List[str]] = None,
-        objective: str = "min_max_delay"
+        objective: str = "min_total_delay"  # 【专家优化】默认优化总延误
     ) -> MultiComparisonResult:
         """
-        比较所有调度器
-        
+        比较所有调度器【专家修复版：支持动态权重调整】
+
         Args:
-            delay_injection: 延误注入信息
-            criteria: 比较准则
-            scheduler_names: 要比较的调度器名称列表（None表示全部）
-            objective: 优化目标
-        
-        Returns:
-            MultiComparisonResult: 比较结果
+            delay_injection: 延误注入场景
+            criteria: 比较准则（默认：MIN_TOTAL_DELAY，优化总延误）
+            scheduler_names: 要比较的调度器列表（默认：全部）
+            objective: 优化目标（默认：min_total_delay，可改为min_max_delay/min_avg_delay）
+
+        专家说明：
+        默认 objective = "min_total_delay" 符合高铁调度实际：
+        1. 总延误是高铁运营核心KPI
+        2. 反映整体系统效率和运营成本
+        3. 与服务质量、旅客满意度直接相关
         """
         start_time = time.time()
         criteria = criteria or self.default_criteria
-        weights = self._get_weights_for_criteria(criteria)
+        # 【专家修复】传入优化目标进行动态权重调整
+        weights = self._get_weights_for_criteria(criteria, objective)
         
         # 确定要比较的调度器
         if scheduler_names:
@@ -279,6 +392,7 @@ class SchedulerComparator:
                 result = scheduler.solve(delay_injection, objective)
                 
                 if result.success:
+                    # 【专家修复】使用动态权重计算得分
                     score = self._calculate_score(result.metrics, weights)
                     comparison_result = ComparisonResult(
                         scheduler_name=name,
@@ -484,7 +598,7 @@ class SchedulerComparator:
         self,
         delay_injection,
         criteria: ComparisonCriteria,
-        objective: str = "min_max_delay"
+        objective: str = "min_total_delay"
     ) -> Tuple[Optional[ComparisonResult], MultiComparisonResult]:
         """
         根据指定准则获取最优方案
@@ -505,13 +619,15 @@ def create_comparator(
     trains: List,
     stations: List,
     include_fcfs: bool = True,
-    include_fsfs: bool = True,
+    include_fsfs: bool = False,  # 已移除：与noop行为相似
     include_mip: bool = True,
+    include_hierarchical: bool = True,  # 分层求解器（FCFS+MIP混合）
     include_rl: bool = False,
     include_noop: bool = True,
     include_max_delay_first: bool = True,
-    include_spt: bool = True,
-    include_srpt: bool = True,
+    include_spt: bool = False,  # 已移除：不符合高铁实际
+    include_srpt: bool = False,  # 已移除：不符合高铁实际
+    include_eaf: bool = False,  # 可选：最早到站优先
     **kwargs
 ) -> SchedulerComparator:
     """
@@ -521,13 +637,15 @@ def create_comparator(
         trains: 列车列表
         stations: 车站列表
         include_fcfs: 是否包含FCFS调度器（先到先服务）
-        include_fsfs: 是否包含FSFS调度器（先计划先服务）
+        include_fsfs: 是否包含FSFS调度器（先计划先服务，已移除）
         include_mip: 是否包含MIP调度器（混合整数规划）
+        include_hierarchical: 是否包含分层求解器（FCFS+MIP混合，推荐）
         include_rl: 是否包含强化学习调度器
         include_noop: 是否包含基线调度器（不做调整）
         include_max_delay_first: 是否包含最大延误优先调度器
-        include_spt: 是否包含SPT调度器（最短处理时间优先）
-        include_srpt: 是否包含SRPT调度器（最短剩余处理时间优先）
+        include_spt: 是否包含SPT调度器（最短处理时间优先，已移除）
+        include_srpt: 是否包含SRPT调度器（最短剩余处理时间优先，已移除）
+        include_eaf: 是否包含最早到站优先调度器（可选）
         **kwargs: 其他参数
 
     Returns:
@@ -538,11 +656,16 @@ def create_comparator(
     if include_fcfs:
         comparator.register_scheduler_by_name("fcfs", **kwargs)
 
+    # FSFS已移除，如需基线对比请使用noop调度器
     if include_fsfs:
-        comparator.register_scheduler_by_name("fsfs", **kwargs)
+        logger.warning("FSFS调度器已移除，建议使用noop调度器作为基线对比")
+        comparator.register_scheduler_by_name("noop", **kwargs)
 
     if include_mip:
         comparator.register_scheduler_by_name("mip", **kwargs)
+
+    if include_hierarchical:
+        comparator.register_scheduler_by_name("hierarchical", **kwargs)
 
     if include_rl:
         comparator.register_scheduler_by_name("rl", **kwargs)
@@ -553,11 +676,12 @@ def create_comparator(
     if include_max_delay_first:
         comparator.register_scheduler_by_name("max_delay_first", **kwargs)
 
-    if include_spt:
-        comparator.register_scheduler_by_name("spt", **kwargs)
+    # SPT、SRPT已移除：不符合高铁按图行车原则
+    if include_spt or include_srpt:
+        logger.warning("SPT/SRPT调度器已移除，不符合高铁实际调度场景")
 
-    if include_srpt:
-        comparator.register_scheduler_by_name("srpt", **kwargs)
+    if include_eaf:
+        comparator.register_scheduler_by_name("eaf", **kwargs)
 
     return comparator
 

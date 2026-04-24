@@ -1,6 +1,72 @@
 # 铁路调度求解器模块
 
+## ⚠️ 重要架构变更通知
+
+### 废弃组件（2026-04-21）
+
+以下组件已废弃，请使用 **Scheduler 系统**（`scheduler_comparison/`）替代：
+
+- ❌ `solver/base_solver.py` - BaseSolver接口
+- ❌ `solver/solver_registry.py` - SolverRegistry
+- ❌ `solver/fcfs_adapter.py` - 适配器层（已删除）
+- ❌ `solver/mip_adapter.py` - 适配器层（已删除）
+- ❌ `solver/max_delay_first_adapter.py` - 适配器层（已删除）
+- ❌ `solver/noop_adapter.py` - 适配器层（已删除）
+
+### 保留组件
+
+以下组件保留，提供调度器的**核心算法实现**：
+
+- ✅ `solver/fcfs_scheduler.py` - FCFS调度器核心实现
+- ✅ `solver/mip_scheduler.py` - MIP调度器核心实现
+- ✅ `solver/max_delay_first_scheduler.py` - MaxDelayFirst调度器核心实现
+- ✅ `solver/noop_scheduler.py` - NoOp调度器核心实现
+- ✅ `solver/scheduler_interface.py` - EAF（最早到达优先）调度器核心实现（位于 scheduler_comparison/ 中）
+
+### 迁移指南
+
+#### 旧代码（已废弃）
+```python
+from solver.solver_registry import SolverRegistry
+registry = SolverRegistry.get_solver("mip")
+result = registry.solve(request)
+```
+
+#### 新代码（推荐）
+```python
+from scheduler_comparison.scheduler_interface import SchedulerRegistry
+
+scheduler = SchedulerRegistry.create("mip", trains, stations)
+result = scheduler.solve(delay_injection, objective="min_max_delay")
+```
+
+详细迁移说明请参考：`ARCHITECTURE_DUPLICATION_ANALYSIS.md`
+
+---
+
+## 模块说明
+
 本模块提供列车调度的多种算法实现，包括FCFS（先到先服务）、MIP（混合整数规划）和MaxDelayFirst（最大延误优先）调度策略。
+
+### 架构说明
+
+**当前架构**（统一后）：
+```
+solver/
+├── fcfs_scheduler.py              ✅ 核心实现（保留）
+├── mip_scheduler.py               ✅ 核心实现（保留）
+├── max_delay_first_scheduler.py   ✅ 核心实现（保留）
+├── noop_scheduler.py              ✅ 核心实现（保留）
+├── base_solver.py                ⚠️  已废弃
+└── solver_registry.py            ⚠️  已废弃
+
+scheduler_comparison/
+├── scheduler_interface.py        ✅ 统一接口（主要，含EAF实现）
+├── comparator.py                  ✅ 调度器比较
+└── metrics.py                     ✅ 评估指标
+```
+
+**核心调度器**由 Scheduler 系统（`scheduler_comparison/`）管理和调用。
 
 ## 求解器概览
 
@@ -45,7 +111,20 @@
 - 延误传播严重的场景
 - 需要控制最大延误的场景
 
-### 4. NoOp调度器（NoOpScheduler）
+### 4. EAF调度器（EarliestArrivalFirstScheduler）
+
+**最早到达优先调度器** - 按最早计划到达时间优先发车。
+
+**特点**：
+- 保持原运行图的正点结构
+- 适合早班车或恢复正点运行场景
+- 计算速度快
+
+**适用场景**：
+- 早高峰时段需要保持正点的场景
+- 轻微延误后快速恢复的场景
+
+### 5. NoOp调度器（NoOpScheduler）
 
 **空操作调度器** - 仅记录，不做调整。
 
@@ -116,31 +195,44 @@ print(f"  计算时间: {mdf_result.computation_time:.4f} 秒")
 
 ## 求解器对比
 
-| 特性 | FCFS | MIP | MaxDelayFirst | NoOp |
-|------|------|-----|---------------|------|
-| 计算速度 | 快（毫秒级） | 较慢（秒级到分钟级） | 中等 | 最快 |
-| 优化效果 | 一般 | 优秀 | 良好 | 无 |
-| 实现复杂度 | 低 | 高 | 中 | 低 |
-| 适用场景 | 实时调度、突发故障 | 离线优化、临时限速 | 延误控制 | 区间封锁、基线 |
+| 特性 | FCFS | MIP | MaxDelayFirst | EAF | NoOp |
+|------|------|-----|---------------|-----|------|
+| 计算速度 | 快（毫秒级） | 较慢（秒级到分钟级） | 中等 | 快 | 最快 |
+| 优化效果 | 一般 | 优秀 | 良好 | 一般 | 无 |
+| 实现复杂度 | 低 | 高 | 中 | 低 | 低 |
+| 适用场景 | 实时调度、突发故障 | 离线优化、临时限速 | 延误控制 | 恢复正点 | 区间封锁、基线 |
 
-## 求解器注册
+## 调度器注册和使用
 
-系统使用求解器注册表统一管理所有求解器：
+### 推荐方式：使用 Scheduler 系统
 
 ```python
-from solver.solver_registry import get_default_registry
+from scheduler_comparison.scheduler_interface import SchedulerRegistry
+from scheduler_comparison.comparator import create_comparator
 
-# 获取注册表
-registry = get_default_registry()
+# 方式1：创建单个调度器
+scheduler = SchedulerRegistry.create("mip", trains, stations)
+result = scheduler.solve(delay_injection, objective="min_max_delay")
 
-# 列出所有求解器
-for solver_name in registry.list_solvers():
-    print(f"求解器: {solver_name}")
-
-# 获取求解器实例
-solver = registry.get_solver("mip_scheduler")
-result = solver.solve(delay_injection)
+# 方式2：创建调度器比较器
+comparator = create_comparator(trains, stations, include_fcfs=True, include_mip=True)
+comparison_result = comparator.compare_all(delay_injection)
+print(comparison_result.get_ranking_table())
 ```
+
+### 直接使用核心调度器
+
+```python
+from solver.fcfs_scheduler import FCFSScheduler
+from solver.mip_scheduler import MIPScheduler
+from solver.max_delay_first_scheduler import MaxDelayFirstScheduler
+
+# 直接创建调度器
+fcfs_scheduler = FCFSScheduler(trains, stations)
+result = fcfs_scheduler.solve(delay_injection)
+```
+
+**注意**：不推荐直接使用 `solver.solver_registry.SolverRegistry`，该系统已废弃。
 
 ## 调度结果说明
 
@@ -180,12 +272,14 @@ class SolverResult:
 **metrics** 格式：
 ```python
 {
-    "max_delay_seconds": 600,  # 最大延误（秒）
-    "avg_delay_seconds": 43.64,  # 平均延误（秒）
-    "total_delay_seconds": 9600,  # 总延误（秒）
-    "affected_trains_count": 1  # 受影响列车数
+    "max_delay_seconds": 600,     # 最大延误（秒）——所有受影响列车中的最大延误
+    "avg_delay_seconds": 120.0,   # 平均延误（秒）——各受影响列车最大延误的平均值
+    "total_delay_seconds": 9600,  # 总延误（秒）——所有受影响站点的延误总和
+    "affected_trains_count": 2    # 受影响列车数
 }
 ```
+
+**注意**：`avg_delay_seconds` 计算的是"各受影响列车最大延误的平均值"，而非所有站点延误的平均值。例如，若G1563最大延误600秒、G1571最大延误300秒，则 `avg_delay_seconds = (600 + 300) / 2 = 450` 秒。
 
 ## 参数说明
 
@@ -254,25 +348,93 @@ python test_full_workflow.py
 
 如果需要添加新的调度器，请按照以下步骤：
 
-1. 在 `solver` 目录下创建新的调度器文件（如 `new_scheduler.py`）
-2. 实现 `BaseScheduler` 接口
-3. 在 `solver/__init__.py` 中导出新的调度器
-4. 在 `solver_registry.py` 中注册求解器
+1. **在 `solver` 目录下创建新的调度器文件**（如 `new_scheduler.py`）
+2. **实现调度逻辑**
+3. **在 `scheduler_comparison/scheduler_interface.py` 中创建适配器**
+4. **在 SchedulerRegistry 中注册**
 
-示例结构：
+#### 步骤1：创建核心调度器实现
+
 ```python
+# solver/new_scheduler.py
+from typing import List, Dict, Any
 from dataclasses import dataclass
-from solver.base_solver import BaseSolver, SolverRequest, SolverResult
+import time
 
-class NewScheduler(BaseSolver):
-    def __init__(self, trains, stations, **kwargs):
-        super().__init__(trains, stations, **kwargs)
+@dataclass
+class SolveResult:
+    success: bool
+    optimized_schedule: Dict[str, List[Dict]]
+    delay_statistics: Dict[str, Any]
+    computation_time: float
+    message: str = ""
+
+class NewScheduler:
+    """新调度器核心实现"""
+
+    def __init__(self, trains: List, stations: List, **kwargs):
+        self.trains = trains
+        self.stations = stations
         # ... 初始化参数
 
-    def solve(self, request: SolverRequest) -> SolverResult:
+    def solve(self, delay_injection, objective: str = "min_max_delay") -> SolveResult:
+        start_time = time.time()
         # ... 实现调度逻辑
-        return SolverResult(...)
+        return SolveResult(...)
 ```
+
+#### 步骤2：创建调度器适配器
+
+```python
+# scheduler_comparison/scheduler_interface.py
+
+class NewSchedulerAdapter(BaseScheduler):
+    """新调度器适配器"""
+
+    def __init__(
+        self,
+        trains: List[Train],
+        stations: List[Station],
+        **kwargs
+    ):
+        super().__init__(trains, stations, name="新调度器", **kwargs)
+        self._scheduler = None
+
+    def _get_scheduler(self):
+        """延迟加载调度器"""
+        if self._scheduler is None:
+            from solver.new_scheduler import NewScheduler
+            self._scheduler = NewScheduler(
+                trains=self.trains,
+                stations=self.stations
+            )
+        return self._scheduler
+
+    @property
+    def scheduler_type(self) -> SchedulerType:
+        return SchedulerType.CUSTOM
+
+    def solve(
+        self,
+        delay_injection: DelayInjection,
+        objective: str = "min_max_delay"
+    ) -> SchedulerResult:
+        scheduler = self._get_scheduler()
+        result = scheduler.solve(delay_injection, objective)
+        # 转换为 SchedulerResult
+        ...
+```
+
+#### 步骤3：注册到 SchedulerRegistry
+
+```python
+# scheduler_comparison/scheduler_interface.py
+
+# 注册调度器
+SchedulerRegistry.register("new_scheduler", NewSchedulerAdapter)
+```
+
+**注意**：不要在 `solver/solver_registry.py` 中注册，该系统已废弃。
 
 ## 常见问题
 

@@ -413,7 +413,7 @@ class PromptManager:
             template_type=PromptTemplateType.L2_PLANNER,
             template_name="L2规划器",
             description="根据事故场景特征，LLM自主决策最优求解策略、参数配置和目标权重",
-            system_prompt="你是一名经验丰富的中国高铁调度专家。你需要仔细分析事故场景的各项特征（场景类型、受影响列车数、延误时长、位置、运营时段等），基于铁路运营实际做出最优决策。\n\n决策原则：\n1. 安全第一：优先确保列车运行安全\n2. 效率优先：在安全前提下最小化延误\n3. 快速响应：紧急场景优先使用秒级求解器\n4. 精准优化：非紧急场景使用MIP求全局最优\n\n输出要求：\n- 只输出JSON格式，不要任何解释文字\n- 所有字段必须有值，不能为null或空字符串\n- solver_candidates必须包含至少2个候选求解器\n- objective_weights的四项权重之和必须为1.0\n- 需要预测求解效果（延误范围、求解时间、决策置信度）",
+            system_prompt="你是一名经验丰富的中国高铁调度专家。你需要仔细分析事故场景的各项特征（场景类型、受影响列车数、延误时长、位置、运营时段等），基于铁路运营实际做出最优决策。\n\n决策原则：\n1. 安全第一：优先确保列车运行安全\n2. 效率优先：在安全前提下最小化延误\n3. 快速响应：紧急场景优先使用秒级求解器\n4. 精准优化：非紧急场景使用MIP求全局最优\n\n输出要求：\n- 只输出JSON格式，不要任何解释文字\n- 所有字段必须有值，不能为null或空字符串\n- solver_candidates必须包含至少2个候选求解器",
             user_prompt_template="""【事故场景特征】
 {scenario_features}
 
@@ -475,32 +475,14 @@ class PromptManager:
      * min_total_delay：最小化总延误（提升整体效率）
      * min_avg_delay：最小化平均延误
 
-5. **目标权重（objective_weights）**：四项权重之和必须为1.0
-   - max_delay_weight：最大单列延误权重（铁路运营中最重要）
-   - avg_delay_weight：平均延误权重
-   - affected_trains_weight：受影响列车数权重
-   - runtime_weight：求解时间权重（紧急场景下重要）
-   
-   权重建议：
-   * 轻微延误（≤10分）：max=0.5, avg=0.3, affected=0.1, runtime=0.1
-   * 一般延误（10-30分）：max=0.4, avg=0.3, affected=0.2, runtime=0.1
-   * 较大延误（30-60分）：max=0.3, avg=0.4, affected=0.2, runtime=0.1
-   * 严重延误（>60分）：max=0.2, avg=0.3, affected=0.3, runtime=0.2
-
-6. **预期求解效果（predicted_outcomes）**：预测求解后的效果
-   - expected_total_delay：预期总延误范围（分钟），格式："80-120"
-   - expected_max_delay：预期最大延误范围（分钟），格式："20-30"
-   - expected_solve_time：预期求解时间（秒），整数
-   - decision_confidence：决策置信度（0-1），0.85表示85%的信心
-
-7. **决策理由（reasoning）**：简要说明选择理由（30-60字）
+5. **决策理由（reasoning）**：简要说明选择理由（30-60字）
 
 8. **不选其他solver的理由（rejected_solvers_reasoning）**：简要说明不选其他候选求解器的理由
    - 字典格式，例如：{{"fcfs":"FCFS虽然快但无法优化延误","spt":"本场景不是短途列车优先场景"}}
 
 【输出格式】（必须严格遵守）
-{{"planning_intent":"recalculate_corridor_schedule","问题描述":"场景的简要描述","solver_suggestion":"mip","solver_candidates":["mip","fcfs"],"solver_config":{{"time_limit":120,"optimality_gap":0.05,"optimization_objective":"min_max_delay"}},"objective_weights":{{"max_delay_weight":0.5,"avg_delay_weight":0.3,"affected_trains_weight":0.1,"runtime_weight":0.1}},"predicted_outcomes":{{"expected_total_delay":"80-120","expected_max_delay":"20-30","expected_solve_time":90,"decision_confidence":0.85}},"reasoning":"选择mip求解器，因为列车规模小（5列）、时间充裕，可以求全局最优解","rejected_solvers_reasoning":{{"fcfs":"FCFS虽然快但无法优化延误"}}}}""",
-            required_output_fields=["planning_intent", "solver_suggestion", "solver_config", "objective_weights", "predicted_outcomes"],
+{{"planning_intent":"recalculate_corridor_schedule","问题描述":"场景的简要描述","solver_suggestion":"mip","solver_candidates":["mip","fcfs"],"solver_config":{{"time_limit":120,"optimality_gap":0.05,"optimization_objective":"min_max_delay"}},"reasoning":"选择mip求解器，因为列车规模小（5列）、时间充裕，可以求全局最优解","rejected_solvers_reasoning":{{"fcfs":"FCFS虽然快但无法优化延误"}}}}""",
+            required_output_fields=["planning_intent", "solver_suggestion", "solver_config", "reasoning"],
             temperature=0.2,
             max_tokens=1024,
             tags=["planner", "intent", "solver_selection", "llm_decision", "finetuning"],

@@ -32,12 +32,6 @@ class LLMConfig:
     L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
     L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称或路径
 
-    # ========== L1 数据建模层配置 ==========
-    # L1 提取方式: "prompt" | "finetuned"
-    # - prompt: 使用 Prompt 模板调用 LLM 提取（默认，当前使用）
-    # - finetuned: 使用微调后的模型直接提取（训练完成后切换）
-    L1_EXTRACTION_MODE = "prompt"
-
     # 微调模型配置（当 L1_EXTRACTION_MODE = "finetuned" 时使用）
     L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
     L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称
@@ -49,7 +43,7 @@ class LLMConfig:
     # ========== 方式1：阿里云 DashScope API ==========
     # 注意：当前开发阶段使用直接配置，项目结束后将改为环境变量
     DASHSCOPE_API_KEY = "sk-bcf1668108cd4708b2f113d5073e42d4"  # 请在此填写您的DashScope API Key，例如："sk-xxx..."
-    DASHSCOPE_MODEL = "glm-5"
+    DASHSCOPE_MODEL = "glm-5.1"
     DASHSCOPE_ENABLE_THINKING = False  # qwen3.6-plus 不支持深度思考模式
 
     # ========== 方式2：本地微调模型 ==========

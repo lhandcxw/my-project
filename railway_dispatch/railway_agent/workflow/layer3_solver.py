@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-第三层：求解技能层（简化版）
-根据L2的智能决策选择并执行求解器，将L2推荐的参数传递给求解器
+第三层：求解执行引擎（重构版 - 使用 Scheduler 系统）
+
+职责边界（与 L2 Agent 清晰分离）：
+  - L2 Agent：态势感知 + 策略决策 + 求解器选择 + 参数调优
+  - L3 Solver：纯求解执行引擎，接收明确指令后执行求解
+
+改造要点（2026-04-21 架构统一）：
+  1. 移除 Solver 系统，统一使用 Scheduler 系统
+  2. _get_scheduler 使用 SchedulerRegistry.create()
+  3. 转换 accident_card 为 DelayInjection
+  4. 转换 SchedulerResult 为工作流需要的格式
 """
 
 import logging
@@ -9,25 +18,22 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from models.workflow_models import AccidentCard
-from solver.solver_registry import get_default_registry
-from solver.base_solver import SolverRequest
-from config import DispatchEnvConfig
+from models.data_models import DelayInjection, InjectedDelay, DelayLocation
 
 logger = logging.getLogger(__name__)
 
 
 class Layer3Solver:
     """
-    第三层：求解技能层 (L3 Solver Layer) - 简化版
+    第三层：求解执行引擎 (L3 Solver Engine) - 使用 Scheduler 系统
 
-    职责：
-    1. 接收L2的智能决策（preferred_solver, solver_config）
-    2. 将solver_config中的参数传递给求解器（time_limit等）
-    3. 执行求解并返回结果
+    核心改变：
+    - 旧版：使用 Solver 系统（solver.solver_registry）
+    - 新版：使用 Scheduler 系统（scheduler_comparison.scheduler_interface）
     """
 
     def __init__(self):
-        self.registry = None
+        pass
 
     def execute(
         self,
@@ -38,264 +44,351 @@ class Layer3Solver:
         planner_decision: Optional[Dict[str, Any]] = None,
         network_snapshot: Optional[Any] = None
     ) -> Dict[str, Any]:
-        """执行第三层求解"""
-        logger.debug("[L3] 求解技能层")
+        """
+        执行求解（回退模式入口）
 
-        # 从L2决策中提取solver配置
-        solver_config = {}
+        当 L2 Agent 未能完成求解时（agent_executed_solve=False），
+        工作流引擎调用此方法作为回退执行路径。
+
+        参数:
+            planning_intent: L2 输出的规划意图
+            accident_card: 事故信息卡
+            trains: 列车数据（工作流传入）
+            stations: 车站数据（工作流传入）
+            planner_decision: L2 的 planner_decision，包含 preferred_solver 和 solver_config
+            network_snapshot: 网络快照（预留）
+        """
+        logger.debug("[L3] 求解执行引擎启动（回退模式）")
+
+        # 【修复】当 trains/stations 为 None 时，自动加载真实数据
+        if trains is None or stations is None:
+            from models.data_loader import get_trains_pydantic, get_stations_pydantic
+            if trains is None:
+                trains = get_trains_pydantic()
+                logger.info(f"[L3] 自动加载列车数据: {len(trains)} 列")
+            if stations is None:
+                stations = get_stations_pydantic()
+                logger.info(f"[L3] 自动加载车站数据: {len(stations)} 个")
+
+        # 【修复】确保 trains/stations 是 Pydantic 对象（防止传入 dict）
+        trains, stations = self._ensure_pydantic_objects(trains, stations)
+
+        # 从 L2 决策中提取求解器名和配置
+        scheduler_name = "fcfs"  # 默认安全选择
+        objective = "min_max_delay"
+        scheduler_config = {}
+
         if planner_decision and isinstance(planner_decision, dict):
-            solver_config = planner_decision.get("solver_config", {})
+            scheduler_name = planner_decision.get("preferred_solver", "fcfs")
+            scheduler_config = planner_decision.get("solver_config", {})
+            objective = scheduler_config.get("optimization_objective", "min_max_delay")
 
-        # 选择求解器（优先L2推荐）
-        main_skill = self.select_solver(
-            planning_intent=planning_intent,
-            scene_category=accident_card.scene_category,
-            train_count=len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0,
-            is_complete=accident_card.is_complete,
-            planner_decision=planner_decision
+        logger.debug(f"[L3] 执行调度器: {scheduler_name}, 目标: {objective}, 参数: {scheduler_config}")
+
+        # 获取调度器实例
+        scheduler = self._get_scheduler(scheduler_name, trains, stations)
+        if scheduler is None:
+            return self._build_error_result(scheduler_name, f"无法获取调度器: {scheduler_name}")
+
+        # 安全约束兜底
+        if accident_card.scene_category == "区间封锁" and scheduler_name != "fcfs":
+            logger.info(f"[L3] 安全约束：区间封锁，{scheduler_name} → fcfs")
+            scheduler = self._get_scheduler("fcfs", trains, stations) or scheduler
+
+        if not accident_card.is_complete and scheduler_name not in ("fcfs", "noop"):
+            logger.info(f"[L3] 安全约束：信息不完整，{scheduler_name} → fcfs")
+            scheduler = self._get_scheduler("fcfs", trains, stations) or scheduler
+
+        # 构建 DelayInjection
+        delay_injection = self._build_delay_injection(
+            accident_card, scheduler_config
         )
 
-        logger.debug(f"[L3] 执行求解器: {main_skill}, 参数: {solver_config}")
-
-        # 获取求解器实例
-        solver = self._get_solver(main_skill)
-        if solver is None:
-            return self._build_error_result(main_skill, f"无法获取求解器: {main_skill}")
-
-        # 构建求解请求（传入L2的solver_config）
-        solver_request = self._build_solver_request(accident_card, trains, stations, solver_config)
-
-        # 执行求解
+        # 执行调度
         try:
-            solver_response = solver.solve(solver_request)
+            scheduler_result = scheduler.solve(delay_injection, objective=objective)
 
-            logger.info(f"[L3] 求解完成: solver={main_skill}, 状态={solver_response.status}, "
-                       f"成功={solver_response.success}, 耗时={solver_response.solving_time_seconds:.2f}秒")
+            logger.info(
+                f"[L3] 调度完成: scheduler={scheduler_name}, "
+                f"成功={scheduler_result.success}, "
+                f"耗时={scheduler_result.metrics.computation_time:.2f}秒"
+            )
 
-            # 提取指标
-            metrics = solver_response.metrics or {}
-            total_delay_seconds = metrics.get("total_delay_seconds", 0)
-            max_delay_seconds = metrics.get("max_delay_seconds", 0)
-            total_delay = total_delay_seconds // 60
-            max_delay = max_delay_seconds // 60
-            avg_delay = metrics.get("avg_delay_seconds", 0) / 60 if metrics.get("avg_delay_seconds") else 0
-            affected_trains = len(accident_card.affected_train_ids) if accident_card.affected_train_ids else 0
-
-            if solver_response.success:
-                logger.info("=" * 50)
-                logger.info("【L3求解结果】")
-                logger.info(f"  求解器: {main_skill}")
-                logger.info(f"  总延误: {total_delay}分钟")
-                logger.info(f"  最大延误: {max_delay}分钟")
-                logger.info(f"  平均延误: {avg_delay:.2f}分钟")
-                logger.info(f"  影响列车数: {affected_trains}列")
-                logger.info("=" * 50)
-
-            # 构建solver_response字典
-            solver_response_dict = solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {
-                "success": solver_response.success,
-                "status": solver_response.status,
-                "total_delay_minutes": total_delay,
-                "max_delay_minutes": max_delay,
-                "message": solver_response.message,
-                "optimized_schedule": solver_response.schedule if hasattr(solver_response, 'schedule') else {}
-            }
-
-            # 提取位置信息
-            location_code = accident_card.location_code or ""
-            location_name = accident_card.location_name or ""
-            location_type = accident_card.location_type or "station"
-
-            # 构建延误注入信息
-            delay_minutes = accident_card.expected_duration if accident_card.expected_duration else 10
-            delay_seconds = delay_minutes * 60
-
-            delay_injection_info = {
-                "injected_delays": [
-                    {
-                        "train_id": train_id,
-                        "location": {"location_type": location_type, "station_code": location_code},
-                        "initial_delay_seconds": delay_seconds
-                    }
-                    for train_id in (accident_card.affected_train_ids if accident_card.affected_train_ids else [])
-                ]
-            }
-
-            response_note = f"求解器: {main_skill}, 参数: {solver_config}"
-
-            return {
-                "skill_execution_result": {
-                    "skill_name": main_skill,
-                    "execution_status": solver_response.status,
-                    "success": solver_response.success,
-                    "solving_time": solver_response.solving_time_seconds,
-                    "total_delay_minutes": total_delay,
-                    "max_delay_minutes": max_delay,
-                    "location": location_name or location_code or "未知位置",
-                    "location_code": location_code,
-                    "location_type": location_type,
-                    "scenario_type": self._map_scene_to_scenario_type(accident_card.scene_category),
-                    "affected_trains": accident_card.affected_train_ids or [],
-                    "affected_trains_count": affected_trains,
-                    "delay_injection": delay_injection_info,
-                    "solver_config_used": solver_config,
-                    "_response_note": response_note
-                },
-                "solver_response": solver_response_dict,
-                "metrics": metrics,
-                "llm_response": response_note
-            }
+            if scheduler_result.success:
+                return self._build_success_result(
+                    scheduler_name, accident_card, scheduler_result, scheduler_config
+                )
+            else:
+                return self._build_error_result(
+                    scheduler_name, scheduler_result.message
+                )
 
         except Exception as e:
-            logger.error(f"第三层执行失败: {e}")
-            return self._build_error_result(main_skill, str(e))
+            logger.error(f"[L3] 调度执行失败: {e}")
+            import traceback
+            logger.error(f"详细堆栈: {traceback.format_exc()}")
+            return self._build_error_result(scheduler_name, str(e))
 
-    def select_solver(
-        self,
-        planning_intent: str,
-        scene_category: str,
-        train_count: int,
-        is_complete: bool,
-        planner_decision: Optional[Dict[str, Any]] = None
-    ) -> str:
+    # ================================================================
+    # 调度器加载（使用 Scheduler 系统）
+    # ================================================================
+
+    def _get_scheduler(self, scheduler_name: str, trains: List, stations: List):
         """
-        选择求解器
-        优先使用L2的preferred_solver（LLM智能决策），规则仅做安全兜底
+        获取调度器实例（使用 Scheduler 系统）
+
+        支持的调度器：
+        - fcfs: 先到先服务
+        - mip: 混合整数规划
+        - max_delay_first: 最大延误优先
+        - noop: 基线（无调整）
+        - eaf: 最早到站优先（可选）
         """
-        logger.debug("[L3] 选择求解器")
-
-        # 区间封锁：强制FCFS（安全约束，不可覆盖）
-        if scene_category == "区间封锁" or planning_intent == "handle_section_block":
-            logger.debug("[L3] 区间封锁场景，强制使用fcfs")
-            return "fcfs"
-
-        # 信息不完整：强制FCFS（无法精确优化）
-        if not is_complete:
-            logger.debug("[L3] 信息不完整，强制使用fcfs")
-            return "fcfs"
-
-        # 使用L2智能决策的preferred_solver
-        if planner_decision and isinstance(planner_decision, dict):
-            preferred_solver = planner_decision.get("preferred_solver")
-            if preferred_solver:
-                valid_solvers = ["mip", "fcfs", "max_delay_first", "noop"]
-                if preferred_solver in valid_solvers:
-                    logger.debug(f"[L3] 使用L2推荐的solver: {preferred_solver}")
-                    return preferred_solver
-                else:
-                    logger.warning(f"[L3] L2推荐的solver无效: {preferred_solver}，回退到默认")
-
-        # 规则兜底
-        if train_count <= 3 and is_complete:
-            logger.debug("[L3] 规则兜底: 列车数≤3，使用mip")
-            return "mip"
-        if train_count > 10:
-            logger.debug("[L3] 规则兜底: 列车数>10，使用fcfs")
-            return "fcfs"
-
-        logger.debug("[L3] 规则兜底: 默认使用mip")
-        return "mip"
-
-    def _get_solver(self, solver_name: str):
-        """获取求解器实例"""
-        if self.registry is None:
-            self.registry = get_default_registry()
-
-        solver = self.registry.get_solver(solver_name)
-        if solver is not None:
-            return solver
-
         try:
-            if solver_name == "mip":
-                from solver.mip_adapter import MIPSolverAdapter
-                return MIPSolverAdapter()
-            elif solver_name == "fcfs":
-                from solver.fcfs_adapter import FCFSSolverAdapter
-                return FCFSSolverAdapter()
-            elif solver_name == "max_delay_first":
-                from solver.max_delay_first_adapter import MaxDelayFirstSolverAdapter
-                return MaxDelayFirstSolverAdapter()
-            elif solver_name == "noop":
-                from solver.noop_adapter import NoOpSolverAdapter
-                return NoOpSolverAdapter()
+            from scheduler_comparison.scheduler_interface import SchedulerRegistry
+
+            # 使用 SchedulerRegistry 创建调度器
+            scheduler = SchedulerRegistry.create(scheduler_name, trains, stations)
+
+            if scheduler:
+                logger.debug(f"[L3] 成功创建调度器: {scheduler_name}")
+            else:
+                logger.warning(f"[L3] 调度器未注册: {scheduler_name}")
+
+            return scheduler
+
         except Exception as e:
-            logger.error(f"加载求解器失败: {e}")
+            logger.error(f"[L3] 加载调度器失败 {scheduler_name}: {e}")
+            return None
 
-        return None
+    # ================================================================
+    # 数据类型转换（防御性编程：防止传入 dict 而非 Pydantic 对象）
+    # ================================================================
 
-    def _build_solver_request(
+    def _ensure_pydantic_objects(self, trains: List[Any], stations: List[Any]):
+        """
+        确保 trains 和 stations 是 Pydantic 对象
+
+        问题背景：
+        - NetworkSnapshot.trains / NetworkSnapshot.stations 是 List[Dict]
+        - 但 FCFSScheduler / MIPScheduler 等期望 List[Train] / List[Station]（Pydantic对象）
+        - 如果传入 dict，会导致 AttributeError: 'dict' object has no attribute 'station_code'
+
+        修复策略：
+        - 检测到 dict 时，使用 Pydantic 模型构造函数转换
+        - 已经是 Pydantic 对象则直接返回
+        """
+        from models.data_models import Train, Station, TrainSchedule, TrainStop
+
+        # 处理 trains
+        if trains and isinstance(trains[0], dict):
+            logger.debug(f"[L3] trains 为 dict 列表，转换为 Pydantic Train 对象")
+            pydantic_trains = []
+            for t in trains:
+                try:
+                    # Pydantic v1 支持递归解析嵌套 BaseModel
+                    train = Train(**t)
+                    pydantic_trains.append(train)
+                except Exception as e:
+                    logger.warning(f"[L3] Train(**dict) 失败: {e}，尝试手动转换")
+                    # 手动转换回退
+                    schedule_data = t.get("schedule", {}) if isinstance(t.get("schedule"), dict) else {}
+                    stops_data = schedule_data.get("stops", []) if isinstance(schedule_data, dict) else []
+                    stops = []
+                    for s in stops_data:
+                        if not isinstance(s, dict):
+                            continue
+                        stops.append(TrainStop(
+                            station_code=s.get("station_code", ""),
+                            station_name=s.get("station_name", ""),
+                            arrival_time=s.get("arrival_time", ""),
+                            departure_time=s.get("departure_time", ""),
+                            is_stopped=s.get("is_stopped", True),
+                            stop_duration=s.get("stop_duration", 0)
+                        ))
+                    if stops:
+                        pydantic_trains.append(Train(
+                            train_id=t.get("train_id", ""),
+                            train_type=t.get("train_type", "高速动车组"),
+                            schedule=TrainSchedule(stops=stops)
+                        ))
+            trains = pydantic_trains
+            logger.info(f"[L3] 列车数据转换完成: {len(trains)} 列 Pydantic 对象")
+
+        # 处理 stations
+        if stations and isinstance(stations[0], dict):
+            logger.debug(f"[L3] stations 为 dict 列表，转换为 Pydantic Station 对象")
+            pydantic_stations = []
+            for s in stations:
+                try:
+                    station = Station(**s)
+                    pydantic_stations.append(station)
+                except Exception as e:
+                    logger.warning(f"[L3] Station(**dict) 失败: {e}，使用手动转换")
+                    pydantic_stations.append(Station(
+                        station_code=s.get("station_code", ""),
+                        station_name=s.get("station_name", ""),
+                        track_count=s.get("track_count", 1),
+                        node_type=s.get("node_type", "station")
+                    ))
+            stations = pydantic_stations
+            logger.info(f"[L3] 车站数据转换完成: {len(stations)} 个 Pydantic 对象")
+
+        return trains, stations
+
+    # ================================================================
+    # DelayInjection 构建
+    # ================================================================
+
+    def _build_delay_injection(
         self,
         accident_card: AccidentCard,
-        trains: List[Any],
-        stations: List[Any],
-        solver_config: Dict[str, Any] = None
-    ) -> SolverRequest:
-        """构建求解请求，将L2的solver_config合并传入"""
-        solver_config = solver_config or {}
+        scheduler_config: Dict[str, Any]
+    ) -> DelayInjection:
+        """
+        构建 DelayInjection
 
-        # 构建延误注入
-        affected_trains = accident_card.affected_train_ids if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids else ["G1563"]
-        location_code = accident_card.location_code if accident_card.location_code else "SJP"
-        default_delay = DispatchEnvConfig.default_delay_seconds()
-        delay_seconds = int(accident_card.expected_duration * 60) if accident_card.expected_duration else default_delay
+        从 AccidentCard 转换为 DelayInjection
+        """
+        from config import DispatchEnvConfig
 
-        injected_delays = []
-        for train_id in affected_trains:
-            injected_delays.append({
-                "train_id": train_id,
-                "location": {"location_type": "station", "station_code": location_code},
-                "initial_delay_seconds": delay_seconds,
-                "timestamp": datetime.now().isoformat()
-            })
-
-        # 使用全部列车数据
-        from models.data_loader import load_trains, load_stations
-        all_trains = load_trains()
-        all_stations = load_stations()
-
-        scenario_type = self._map_scene_to_scenario_type(accident_card.scene_category)
-
-        return SolverRequest(
-            scene_type=scenario_type,
-            scene_id="llm_workflow_001",
-            trains=all_trains,
-            stations=all_stations,
-            injected_delays=injected_delays,
-            solver_config=solver_config,
-            metadata={
-                "accident_card": accident_card.model_dump(),
-                "scenario_type": scenario_type,
-                "l2_solver_config": solver_config
-            }
+        # 提取受影响列车ID
+        affected_train_ids = (
+            accident_card.affected_train_ids
+            if hasattr(accident_card, 'affected_train_ids') and accident_card.affected_train_ids
+            else []
         )
 
-    def _map_scene_to_scenario_type(self, scene_category: str) -> str:
-        """将场景类别映射到场景类型"""
-        mapping = {
-            "临时限速": "temporary_speed_limit",
-            "突发故障": "sudden_failure",
-            "区间封锁": "section_interrupt"
-        }
-        return mapping.get(scene_category, "temporary_speed_limit")
+        # 构建注入的延误列表
+        injected_delays = []
 
-    def _build_error_result(self, solver_name: str, error_message: str) -> Dict[str, Any]:
-        """构建错误结果"""
+        if affected_train_ids:
+            # 使用第一个受影响列车（简化处理）
+            train_id = affected_train_ids[0]
+
+            # 确定延误时间（分钟 → 秒）
+            delay_minutes = accident_card.expected_duration if accident_card.expected_duration else 15
+            delay_seconds = int(delay_minutes * 60)
+
+            # 确定位置
+            location_code = accident_card.location_code or "SJP"
+
+            injected_delays.append(InjectedDelay(
+                train_id=train_id,
+                location=DelayLocation(
+                    location_type="station",
+                    station_code=location_code
+                ),
+                initial_delay_seconds=delay_seconds,
+                timestamp=datetime.now().isoformat()
+            ))
+
+        # 使用 AccidentCard 的统一接口获取场景类型
+        scenario_type = accident_card.scene_type
+        scenario_id = accident_card.scene_id
+
+        return DelayInjection(
+            scenario_type=scenario_type,
+            scenario_id=scenario_id,
+            injected_delays=injected_delays,
+            affected_trains=affected_train_ids,
+            scenario_params=scheduler_config
+        )
+
+    # ================================================================
+    # 结果构建
+    # ================================================================
+
+    def _build_success_result(
+        self,
+        scheduler_name: str,
+        accident_card: AccidentCard,
+        scheduler_result,
+        scheduler_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        构建成功结果
+        """
+        metrics = scheduler_result.metrics
+
+        # 【修复】提取实际受影响的列车ID
+        affected_train_ids = []
+        if scheduler_result.optimized_schedule and isinstance(scheduler_result.optimized_schedule, dict):
+            affected_train_ids = [
+                tid for tid, stops in scheduler_result.optimized_schedule.items()
+                if isinstance(stops, list) and any(
+                    s.get("delay_seconds", 0) > 0 for s in stops if isinstance(s, dict)
+                )
+            ]
+
         return {
+            "success": True,
             "skill_execution_result": {
-                "skill_name": solver_name,
-                "execution_status": "error",
+                "success": True,
+                "skill_name": scheduler_name,
+                "total_delay_minutes": metrics.total_delay_seconds / 60,
+                "max_delay_minutes": metrics.max_delay_seconds / 60,
+                "avg_delay_minutes": metrics.avg_delay_seconds / 60,
+                "affected_trains_count": metrics.affected_trains_count,
+                "affected_trains": affected_train_ids,
+                "solving_time_seconds": metrics.computation_time,
+                "scheduler_name": scheduler_name,
+                "adjustments": [],
+                "optimized_schedule": scheduler_result.optimized_schedule
+            },
+            "solver_response": {
+                "success": True,
+                "skill_name": scheduler_name,
+                "scheduler_name": scheduler_name,
+                "optimized_schedule": scheduler_result.optimized_schedule,
+                "metrics": {
+                    "max_delay_minutes": metrics.max_delay_seconds / 60,
+                    "avg_delay_minutes": metrics.avg_delay_seconds / 60,
+                    "total_delay_minutes": metrics.total_delay_seconds / 60,
+                    "affected_trains_count": metrics.affected_trains_count,
+                    "on_time_rate": metrics.on_time_rate,
+                    "computation_time": metrics.computation_time
+                },
+                "message": scheduler_result.message,
+                "solver_config_used": scheduler_config
+            }
+        }
+
+    def _build_error_result(
+        self,
+        scheduler_name: str,
+        error_message: str
+    ) -> Dict[str, Any]:
+        """
+        构建错误结果
+        """
+        return {
+            "success": False,
+            "skill_execution_result": {
                 "success": False,
-                "error_message": error_message,
+                "skill_name": scheduler_name,
                 "total_delay_minutes": 0,
                 "max_delay_minutes": 0,
-                "location": "未知位置",
-                "location_code": "",
-                "location_type": "station",
-                "scenario_type": "temporary_speed_limit",
-                "affected_trains": [],
-                "delay_injection": {"injected_delays": []},
-                "solver_config_used": {}
+                "avg_delay_minutes": 0,
+                "affected_trains_count": 0,
+                "solving_time_seconds": 0,
+                "scheduler_name": scheduler_name,
+                "error": error_message
             },
-            "solver_response": None,
-            "llm_response": f"执行失败: {error_message}"
+            "solver_response": {
+                "success": False,
+                "skill_name": scheduler_name,
+                "scheduler_name": scheduler_name,
+                "optimized_schedule": {},
+                "metrics": {
+                    "max_delay_minutes": 0,
+                    "avg_delay_minutes": 0,
+                    "total_delay_minutes": 0,
+                    "affected_trains_count": 0,
+                    "on_time_rate": 1.0,
+                    "computation_time": 0.0
+                },
+                "message": f"求解失败: {error_message}",
+                "error": error_message
+            }
         }

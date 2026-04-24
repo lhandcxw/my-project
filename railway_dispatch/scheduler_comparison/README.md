@@ -2,7 +2,7 @@
 
 ## 概述
 
-本模块提供了多种调度方法（FCFS、MIP）的比较和优选功能，支持根据不同指标偏好选择最优调度方案。
+本模块提供了多种调度方法（FCFS、MIP、MaxDelayFirst、EAF、NoOp）的统一接口、比较和优选功能，支持根据不同指标偏好选择最优调度方案。
 
 ## 模块结构
 
@@ -101,9 +101,9 @@ result = comparator.compare_all(
 
 | 指标 | 说明 |
 |------|------|
-| `max_delay_seconds` | 最大延误时间（秒） |
-| `avg_delay_seconds` | 平均延误时间（秒） |
-| `total_delay_seconds` | 总延误时间（秒） |
+| `max_delay_seconds` | 最大延误时间（秒）——所有受影响列车中的最大延误 |
+| `avg_delay_seconds` | 平均延误时间（秒）——各受影响列车**最大延误**的平均值 |
+| `total_delay_seconds` | 总延误时间（秒）——所有受影响站点的延误总和 |
 | `affected_trains_count` | 受影响列车数 |
 
 ### 扩展指标
@@ -132,6 +132,8 @@ result = comparator.compare_all(
 | FCFS | 先到先服务 | 快 | 一般 |
 | MIP | 混合整数规划 | 慢 | 优秀 |
 | MaxDelayFirst | 最大延误优先 | 中 | 良好 |
+| EAF | 最早到达优先 | 快 | 一般 |
+| NoOp | 无调整（基线） | 最快 | 无 |
 
 ## 权重配置
 
@@ -207,5 +209,5 @@ A: 是的，所有调度器都支持多股道车站。
 
 ---
 
-*文档版本：v1.0*
-*更新时间：2026-04-08*
+*文档版本：v1.1*
+*更新时间：2026-04-24*

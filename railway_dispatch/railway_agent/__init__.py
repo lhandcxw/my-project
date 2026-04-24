@@ -3,7 +3,7 @@
 railway_agent - LLM-TTRA 铁路调度Agent模块
 基于大模型的列车时刻表重排系统
 
-v6.0: 统一LLM驱动架构，移除RuleAgent
+v8.0: Agent 框架重构，Skill 体系能力导向改造
 """
 
 # 主入口：工作流引擎（推荐）
@@ -19,13 +19,14 @@ from railway_agent.agents import LLMAgent, create_llm_agent, AgentResult
 RuleAgent = LLMAgent
 create_rule_agent = create_llm_agent
 
-# 技能系统
+# 技能系统（Agent 框架版）
 from railway_agent.adapters.skill_registry import SkillRegistry, get_skill_registry
 from railway_agent.adapters.skills import (
     BaseDispatchSkill,
-    TemporarySpeedLimitSkill,
-    SuddenFailureSkill,
-    SectionInterruptSkill,
+    DispatchSolveSkill,
+    CompareStrategiesSkill,
+    StationLoadSkill,
+    DelayPropagationSkill,
     GetTrainStatusSkill,
     QueryTimetableSkill,
     create_skills,
@@ -58,11 +59,11 @@ __all__ = [
     # 主入口：工作流引擎
     "LLMWorkflowEngineV2",
     "create_workflow_engine",
-    # Agent接口（统一LLM驱动）
+    # Agent接口
     "LLMAgent",
     "create_llm_agent",
     "AgentResult",
-    # 向后兼容（旧名称）
+    # 向后兼容
     "RuleAgent",
     "create_rule_agent",
     # 工作流分层模块
@@ -83,9 +84,10 @@ __all__ = [
     "get_llm_prompt_adapter",
     # Skills
     "BaseDispatchSkill",
-    "TemporarySpeedLimitSkill",
-    "SuddenFailureSkill",
-    "SectionInterruptSkill",
+    "DispatchSolveSkill",
+    "CompareStrategiesSkill",
+    "StationLoadSkill",
+    "DelayPropagationSkill",
     "GetTrainStatusSkill",
     "QueryTimetableSkill",
     "create_skills",

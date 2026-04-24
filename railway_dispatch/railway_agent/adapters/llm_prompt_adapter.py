@@ -181,14 +181,18 @@ class LLMPromptAdapter:
                 raise RuntimeError(f"LLM调用失败 ({template_id}): {str(e)}") from e
             else:
                 # 非强制模式，返回空结果，让上层使用规则回退
+                import uuid
                 logger.warning(f"[LLM调用失败] {template_id}: {str(e)}，将使用规则回退")
                 return PromptResponse(
+                    request_id=context.request_id,
+                    template_id=template_id,
                     is_valid=False,
                     raw_response="",
                     parsed_output={},
                     error=str(e),
                     model_used="rule_fallback",
-                    fallback_reason="LLM调用失败，使用规则回退"
+                    fallback_reason="LLM调用失败，使用规则回退",
+                    timestamp=_now_iso()
                 )
 
         # 验证输出

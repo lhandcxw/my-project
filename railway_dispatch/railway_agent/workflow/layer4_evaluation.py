@@ -1,30 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-第四层：结果输出与评估层
-评估调度方案，生成解释和风险提示
+第四层：评估与方案生成层（重构版）
+
+核心改造：
+  1. 评估 prompt 专业化 — 提供京广高铁评估框架和标准
+  2. 合并两次 LLM 调用为一次 — 评估+方案生成+调整指令一次完成
+  3. schedule 转调整指令 — LLM 读取优化后时刻表，生成每列车的具体调整说明
+  4. 方案对比与推荐 — 当有多方案结果时，LLM 自动生成对比分析
+
+LLM 在本层的定位：
+  - 不是"打分器"（PolicyEngine 已做阈值判断）
+  - 而是"调度方案解释专家"——将数值结果转化为调度员可理解和汇报的材料
 """
 
 import logging
-from typing import Dict, Any
+import json
+from typing import Dict, Any, Optional
 
 from models.workflow_models import EvaluationReport, RollbackFeedback, RankingResult, BaselineMetrics
 from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
+from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.policy_engine import PolicyEngine
-from evaluation.evaluator import BaselineComparator
-from scheduler_comparison.metrics import MetricsDefinition
 
 logger = logging.getLogger(__name__)
 
 
 class Layer4Evaluation:
     """
-    第四层：评估层
-    使用LLM生成解释和风险提示，PolicyEngine做最终决策
+    第四层：评估与方案生成层（重构版）
+
+    与旧版的核心区别：
+    - 旧版：两次独立 LLM 调用（评估 + NL Plan），prompt 极其简陋
+    - 新版：一次 LLM 调用完成评估 + 方案生成 + 调整指令 + 方案对比
+    - prompt 包含京广高铁专业评估标准
+    - 支持多方案对比（接收 L2 Agent 的 compare_strategies 结果）
     """
 
     def __init__(self):
-        """初始化第四层"""
         self.prompt_adapter = get_llm_prompt_adapter()
         self.policy_engine = PolicyEngine()
 
@@ -32,432 +45,355 @@ class Layer4Evaluation:
         self,
         skill_execution_result: Dict[str, Any],
         solver_response: Any,
-        enable_rag: bool = False
+        enable_rag: bool = False,
+        comparison_results: Optional[list] = None
     ) -> Dict[str, Any]:
         """
         执行第四层评估
 
         Args:
-            skill_execution_result: 第三层执行结果
+            skill_execution_result: 求解执行结果
             solver_response: 求解器响应
-            enable_rag: 是否启用RAG
-
-        Returns:
-            Dict: 包含评估报告和决策的字典
+            enable_rag: 是否启用RAG（保留接口）
+            comparison_results: L2 Agent 的多方案对比结果（可选）
         """
-        logger.debug("[L4] 评估层")
+        logger.debug("[L4] 评估与方案生成层")
 
-        # 如果求解失败，生成默认评估报告
+        # 求解失败：生成默认报告
         if not skill_execution_result.get("success", False):
-            logger.warning("求解执行失败，生成默认评估报告")
-
-            # 生成默认评估报告（包含高铁指标）
-            default_evaluation_report = self._generate_default_evaluation_report(skill_execution_result, solver_response)
-
-            rollback_feedback = RollbackFeedback(
-                needs_rerun=True,
-                rollback_reason="求解执行失败",
-                suggested_fixes=["检查求解器配置", "尝试其他求解器"]
-            )
-
-            logger.debug("第四层完成: 需要回退（求解失败），使用默认评估报告")
-
-            # 生成默认自然语言方案
-            default_plan = self._generate_fallback_plan(skill_execution_result, solver_response)
-
+            logger.warning("[L4] 求解执行失败，生成默认评估报告")
+            default_report = self._generate_default_evaluation_report(skill_execution_result, solver_response)
             return {
-                "evaluation_report": default_evaluation_report,
+                "evaluation_report": default_report,
                 "ranking_result": None,
-                "rollback_feedback": rollback_feedback,
+                "rollback_feedback": RollbackFeedback(
+                    needs_rerun=True,
+                    rollback_reason="求解执行失败",
+                    suggested_fixes=["检查求解器配置", "尝试其他求解器"]
+                ),
                 "llm_summary": "求解执行失败，使用默认评估",
-                "natural_language_plan": default_plan
+                "natural_language_plan": self._generate_fallback_plan(skill_execution_result, solver_response)
             }
 
-        # 调用LLM生成评估
-        evaluation_report = self._generate_llm_evaluation(
-            skill_execution_result,
-            solver_response,
-            enable_rag
+        # 构建评估上下文
+        evaluation_context = self._build_evaluation_context(
+            skill_execution_result, solver_response, comparison_results
         )
 
-        # PolicyEngine做最终决策
-        policy_decision = self._make_policy_decision(
-            evaluation_report,
-            skill_execution_result
+        # 计算高铁专用指标（规则计算，不走 LLM）
+        high_speed_metrics = self._calculate_high_speed_metrics(
+            skill_execution_result, solver_response
         )
 
-        # 构建回退反馈
+        # 一次 LLM 调用：评估 + 方案生成 + 调整指令
+        llm_result = self._generate_comprehensive_evaluation(evaluation_context)
+
+        # 构建 EvaluationReport
+        evaluation_report = self._build_evaluation_report(
+            skill_execution_result, solver_response, high_speed_metrics, llm_result
+        )
+
+        # PolicyEngine 规则决策
+        policy_decision = self._make_policy_decision(evaluation_report, skill_execution_result)
         rollback_feedback = self._build_rollback_feedback(policy_decision)
 
-        logger.info(f"[L4] 评估完成: 决策={policy_decision.decision}")
-
-        # 打印评估结果摘要（确保总是打印）
-        if evaluation_report:
-            logger.info("=" * 50)
-            logger.info("【L4评估结果】")
-            logger.info(f"  LLM摘要: {evaluation_report.llm_summary}")
-            logger.info(f"  可行性得分: {evaluation_report.feasibility_score:.2f}")
-            logger.info(f"  风险警告: {len(evaluation_report.risk_warnings)}项")
-            logger.info(f"  决策: {policy_decision.decision}")
-            
-            # 打印高铁专用指标（使用字典访问避免属性错误）
-            logger.info("  高铁专用指标:")
-            
-            # 安全获取高铁指标（兼容新旧模型定义）
-            if hasattr(evaluation_report, 'on_time_rate'):
-                # 新模型定义（直接字段）
-                on_time_rate = getattr(evaluation_report, 'on_time_rate', 1.0)
-                punctuality_strict = getattr(evaluation_report, 'punctuality_strict', 1.0)
-                delay_std_dev = getattr(evaluation_report, 'delay_std_dev', 0.0)
-                delay_propagation_depth = getattr(evaluation_report, 'delay_propagation_depth', 0)
-                delay_propagation_breadth = getattr(evaluation_report, 'delay_propagation_breadth', 0)
-                evaluation_grade = getattr(evaluation_report, 'evaluation_grade', 'A')
-            elif hasattr(evaluation_report, 'high_speed_metrics') and evaluation_report.high_speed_metrics:
-                # 旧模型定义（通过high_speed_metrics字段）
-                high_speed = evaluation_report.high_speed_metrics
-                on_time_rate = getattr(high_speed, 'on_time_rate', 1.0)
-                punctuality_strict = getattr(high_speed, 'punctuality_strict', 1.0)
-                delay_std_dev = getattr(high_speed, 'delay_std_dev', 0.0)
-                delay_propagation_depth = getattr(high_speed, 'delay_propagation_depth', 0)
-                delay_propagation_breadth = getattr(high_speed, 'delay_propagation_breadth', 0)
-                evaluation_grade = getattr(high_speed, 'evaluation_grade', 'A')
-            else:
-                # 默认值
-                on_time_rate = 1.0
-                punctuality_strict = 1.0
-                delay_std_dev = 0.0
-                delay_propagation_depth = 0
-                delay_propagation_breadth = 0
-                evaluation_grade = 'A'
-            
-            logger.info(f"    准点率: {on_time_rate * 100:.1f}%")
-            logger.info(f"    严格准点率: {punctuality_strict * 100:.1f}%")
-            logger.info(f"    延误标准差: {delay_std_dev:.2f}秒")
-            logger.info(f"    传播深度: {delay_propagation_depth}站")
-            logger.info(f"    传播广度: {delay_propagation_breadth}列")
-            logger.info(f"    综合评级: {evaluation_grade}")
-            logger.info("=" * 50)
-
-        # 标记响应来源
-        llm_response_type = evaluation_report.metadata.get("llm_response_type", "unknown") if evaluation_report else "unknown"
-        if evaluation_report and "[MOCK]" in str(llm_response_type):
-            logger.debug("[L4] 使用的是模拟响应（非LLM生成）")
-
-        # 生成自然语言调度方案（添加调试日志）
-        logger.debug("[L4] 开始生成自然语言调度方案...")
-        try:
-            natural_language_plan = self._generate_natural_language_plan(
-                skill_execution_result,
-                solver_response,
-                evaluation_report
-            )
-            logger.debug(f"[L4] 自然语言调度方案生成完成，长度: {len(natural_language_plan) if natural_language_plan else 0}")
-        except Exception as e:
-            logger.error(f"[L4] 自然语言调度方案生成异常: {e}")
-            import traceback
-            logger.debug(f"堆栈: {traceback.format_exc()}")
-            natural_language_plan = self._generate_fallback_plan(skill_execution_result, solver_response)
+        # 日志输出
+        self._log_evaluation_result(evaluation_report, policy_decision, high_speed_metrics)
 
         return {
             "evaluation_report": evaluation_report,
-            "ranking_result": None,  # 暂不实现排序
+            "ranking_result": None,
             "rollback_feedback": rollback_feedback,
             "policy_decision": policy_decision.model_dump(),
-            "llm_summary": evaluation_report.llm_summary if evaluation_report else "评估失败",
-            "llm_response_type": llm_response_type,
-            "natural_language_plan": natural_language_plan  # 新增：自然语言调度方案
+            "llm_summary": evaluation_report.llm_summary,
+            "llm_response_type": llm_result.get("response_type", "unknown"),
+            "natural_language_plan": llm_result.get("natural_language_plan", ""),
+            "comparison_analysis": llm_result.get("comparison_analysis", "")
         }
 
-    def _generate_llm_evaluation(
+    # ================================================================
+    # 核心评估（一次 LLM 调用）
+    # ================================================================
+
+    def _build_evaluation_context(
         self,
         skill_execution_result: Dict[str, Any],
         solver_response: Any,
-        enable_rag: bool
-    ) -> EvaluationReport:
-        """生成LLM评估（集成BaselineComparator的数值对比）"""
-        # 构建Prompt上下文
-        context = PromptContext(
-            request_id="eval_001",
-            execution_result=skill_execution_result,
-            solver_result=solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {}
-        )
+        comparison_results: Optional[list] = None
+    ) -> Dict[str, Any]:
+        """构建完整的评估上下文（供 LLM 使用）"""
+        ctx = {}
 
-        # 调用LLM
-        response = self.prompt_adapter.execute_prompt(
-            template_id="l4_evaluation",
-            context=context,
-            enable_rag=enable_rag
-        )
+        # 基础指标
+        ctx["total_delay_minutes"] = skill_execution_result.get("total_delay_minutes", 0)
+        ctx["max_delay_minutes"] = skill_execution_result.get("max_delay_minutes", 0)
+        ctx["avg_delay_minutes"] = skill_execution_result.get("avg_delay_minutes", 0)
+        ctx["affected_trains_count"] = skill_execution_result.get("affected_trains_count", 0)
+        ctx["affected_trains"] = skill_execution_result.get("affected_trains", [])
+        ctx["solving_time"] = skill_execution_result.get("solving_time", 0)
+        ctx["solver_name"] = skill_execution_result.get("skill_name", "未知")
+        ctx["scenario_type"] = skill_execution_result.get("scenario_type", "未知")
+        ctx["location"] = skill_execution_result.get("location", "未知位置")
 
-        # 构建评估报告
-        if response.is_valid and response.parsed_output:
-            llm_summary = response.parsed_output.get("llm_summary", "方案评估完成")
-            risk_warnings = response.parsed_output.get("risk_warnings", [])
-            feasibility_score = response.parsed_output.get("feasibility_score", 0.8)
-            constraint_check = response.parsed_output.get("constraint_check", {})
+        # 从 solver_response 提取优化后时刻表
+        schedule = {}
+        if solver_response:
+            if hasattr(solver_response, 'schedule'):
+                schedule = solver_response.schedule
+            elif isinstance(solver_response, dict):
+                # 【修复】同时支持 schedule 和 optimized_schedule
+                schedule = solver_response.get('schedule') or solver_response.get('optimized_schedule', {})
+
+        # 如果 schedule 为空，尝试从 skill_execution_result 提取
+        if not schedule and skill_execution_result:
+            schedule = skill_execution_result.get('optimized_schedule', {})
+
+        # 提取受影响列车的具体调整（最多展示 5 列避免 context 过长）
+        train_adjustments = {}
+        affected_ids = set(ctx["affected_trains"]) if ctx["affected_trains"] else set()
+        count = 0
+        for train_id, stops in schedule.items():
+            if count >= 5:
+                break
+            train_stops = []
+            for stop in stops:
+                delay_s = stop.get("delay_seconds", 0)
+                if delay_s > 0:
+                    train_stops.append({
+                        "station_code": stop.get("station_code", ""),
+                        "station_name": stop.get("station_name", ""),
+                        "original_arrival": stop.get("original_arrival", ""),
+                        "adjusted_arrival": stop.get("arrival_time", ""),
+                        "delay_minutes": round(delay_s / 60, 1)
+                    })
+            if train_stops:
+                train_adjustments[train_id] = train_stops
+                count += 1
+        ctx["train_adjustments"] = train_adjustments
+
+        # 多方案对比数据
+        if comparison_results:
+            ctx["comparison_results"] = comparison_results
+            ctx["has_comparison"] = True
         else:
-            # LLM失败，使用默认值
-            logger.warning("LLM评估失败，使用默认值")
-            llm_summary = "LLM评估失败，使用默认评估"
-            risk_warnings = []
-            feasibility_score = 0.8
-            constraint_check = {}
+            ctx["has_comparison"] = False
 
-        # 从执行结果中提取指标
+        return ctx
+
+    def _generate_comprehensive_evaluation(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        一次 LLM 调用完成：
+          1. 专业评估（基于京广高铁标准）
+          2. 自然语言调度方案
+          3. 具体调整指令（每列车+站点+时间）
+          4. 多方案对比分析（如果有）
+        """
+        # 构建 user prompt
+        user_content = self._build_evaluation_prompt(ctx)
+
+        # 【修复】使用正确的LLM调用方式
+        try:
+            llm = get_llm_caller()
+
+            # 方式1：使用 call_with_tools（支持messages参数）
+            messages = [
+                {"role": "system", "content": _EVALUATION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content}
+            ]
+            response = llm.call_with_tools(
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.3
+            )
+            raw = response.get("content", "")
+
+        except Exception as e:
+            logger.warning(f"[L4] LLM 调用失败（使用call_with_tools）: {e}")
+            try:
+                # 方式2：回退到传统call方法（使用prompt字符串）
+                full_prompt = f"{_EVALUATION_SYSTEM_PROMPT}\n\n{user_content}"
+                response_text, _ = llm.call(
+                    prompt=full_prompt,
+                    max_tokens=1024,
+                    temperature=0.3
+                )
+                raw = response_text
+            except Exception as e2:
+                logger.warning(f"[L4] LLM 调用失败（使用call）: {e2}")
+                return {"natural_language_plan": "", "comparison_analysis": "", "response_type": "fallback"}
+
+        if not raw:
+            return {"natural_language_plan": "", "comparison_analysis": "", "response_type": "empty"}
+
+        # 解析 LLM 输出（可能是 JSON 也可能是纯文本）
+        return self._parse_llm_output(raw, ctx)
+
+    def _build_evaluation_prompt(self, ctx: Dict[str, Any]) -> str:
+        """构建评估 user prompt"""
+        parts = []
+        parts.append("【调度场景信息】")
+        parts.append(f"- 场景类型: {ctx['scenario_type']}")
+        parts.append(f"- 事故位置: {ctx['location']}")
+        parts.append(f"- 使用求解器: {ctx['solver_name']}")
+        parts.append(f"- 求解耗时: {ctx['solving_time']}秒")
+        parts.append("")
+
+        parts.append("【求解结果】")
+        parts.append(f"- 受影响列车: {ctx['affected_trains_count']}列")
+        if ctx["affected_trains"]:
+            parts.append(f"- 受影响车次: {', '.join(ctx['affected_trains'][:15])}")
+        parts.append(f"- 总延误: {ctx['total_delay_minutes']}分钟")
+        parts.append(f"- 最大延误: {ctx['max_delay_minutes']}分钟")
+        # 【修复】明确标注 avg_delay 为晚点列车平均延误，避免调度员误解
+        affected_count = ctx.get('affected_trains_count', 0)
+        parts.append(f"- 晚点列车平均延误: {ctx['avg_delay_minutes']}分钟 (共{affected_count}列晚点列车)")
+        parts.append("")
+
+        # 具体列车调整
+        if ctx["train_adjustments"]:
+            parts.append("【列车调整详情（优化后时刻表）】")
+            for train_id, stops in ctx["train_adjustments"].items():
+                parts.append(f"{train_id}:")
+                for s in stops:
+                    parts.append(
+                        f"  {s['station_name']}({s['station_code']}): "
+                        f"延误{s['delay_minutes']}分钟"
+                    )
+            parts.append("")
+
+        # 多方案对比
+        if ctx.get("has_comparison") and ctx.get("comparison_results"):
+            parts.append("【多方案对比数据】")
+            for r in ctx["comparison_results"]:
+                if r.get("success"):
+                    parts.append(
+                        f"- {r.get('solver', '?')}: "
+                        f"总延误{r.get('total_delay_minutes', '?')}分, "
+                        f"最大延误{r.get('max_delay_minutes', '?')}分, "
+                        f"耗时{r.get('solving_time_seconds', '?')}秒"
+                    )
+                else:
+                    parts.append(f"- {r.get('solver', '?')}: 失败({r.get('error', '')})")
+            parts.append("")
+
+        parts.append("请根据以上数据生成评估报告。输出JSON格式。")
+
+        return "\n".join(parts)
+
+    def _parse_llm_output(self, raw: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """解析 LLM 输出（容错：JSON 或纯文本）"""
+        # 尝试 JSON 解析
+        try:
+            # 去除可能的 markdown 代码块标记
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                result = {
+                    "llm_summary": parsed.get("llm_summary", parsed.get("summary", "")),
+                    "feasibility_score": float(parsed.get("feasibility_score", 0.8)),
+                    "risk_warnings": parsed.get("risk_warnings", []),
+                    "natural_language_plan": parsed.get("natural_language_plan", ""),
+                    "comparison_analysis": parsed.get("comparison_analysis", ""),
+                    "response_type": "json"
+                }
+                # 处理转义换行
+                for key in ("natural_language_plan", "comparison_analysis", "llm_summary"):
+                    if isinstance(result[key], str) and "\\n" in result[key]:
+                        result[key] = result[key].replace("\\n", "\n").replace("\\t", "\t")
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # JSON 解析失败，直接使用纯文本作为方案
+        logger.debug("[L4] LLM 输出非 JSON，使用纯文本")
+        return {
+            "llm_summary": raw[:200],
+            "feasibility_score": 0.7,
+            "risk_warnings": [],
+            "natural_language_plan": raw,
+            "comparison_analysis": "",
+            "response_type": "text"
+        }
+
+    # ================================================================
+    # EvaluationReport 构建
+    # ================================================================
+
+    def _build_evaluation_report(
+        self,
+        skill_execution_result: Dict[str, Any],
+        solver_response: Any,
+        high_speed_metrics: Dict[str, Any],
+        llm_result: Dict[str, Any]
+    ) -> EvaluationReport:
+        """构建 EvaluationReport"""
         total_delay = skill_execution_result.get("total_delay_minutes", 0)
         max_delay = skill_execution_result.get("max_delay_minutes", 0)
-        avg_delay = skill_execution_result.get("avg_delay_minutes", 0)
-        affected_trains = skill_execution_result.get("affected_trains_count", 0)
         solving_time = skill_execution_result.get("solving_time", 0.0)
+        affected_count = skill_execution_result.get("affected_trains_count", 0)
 
-        # 计算高铁专用指标
-        high_speed_metrics = self._calculate_high_speed_metrics(
-            skill_execution_result, solver_response
-        )
+        llm_summary = llm_result.get("llm_summary", "评估完成")
+        feasibility_score = llm_result.get("feasibility_score", 0.8)
+        risk_warnings = llm_result.get("risk_warnings", [])
 
-        # 提取 LLM 返回的增强字段
-        feasibility_risks = response.parsed_output.get("feasibility_risks", []) if response.parsed_output else []
-        operational_risks = response.parsed_output.get("operational_risks", []) if response.parsed_output else []
-        human_review_points = response.parsed_output.get("human_review_points", []) if response.parsed_output else []
-        counterfactual_summary = response.parsed_output.get("counterfactual_summary", "") if response.parsed_output else ""
-        why_not_other_solver = response.parsed_output.get("why_not_other_solver", "") if response.parsed_output else ""
-        confidence = response.parsed_output.get("confidence", 0.8) if response.parsed_output else 0.8
-
-        # 禁用基线对比功能（存在类型错误，暂时关闭）
-        baseline_comparison = None
-        logger.debug("[L4] 基线对比功能已禁用")
-
-        # 计算高铁专用评估指标
-        high_speed_metrics = self._calculate_high_speed_metrics(
-            skill_execution_result, solver_response
-        )
+        # 【关键修复】优先使用 skill_execution_result 中的 affected_trains_count
+        # 原因：_calculate_high_speed_metrics 从 solver_response.schedule 重新计算可能因数据格式问题导致不一致
+        l4_affected_count = skill_execution_result.get("affected_trains_count", affected_count)
+        if l4_affected_count != affected_count:
+            logger.debug(f"[L4] affected_trains_count 修正: {affected_count} -> {l4_affected_count}")
 
         return EvaluationReport(
             solution_id="solution_001",
-            is_feasible=feasibility_score >= 0.5,
+            is_feasible=float(feasibility_score) >= 0.5,
             total_delay_minutes=float(total_delay),
             max_delay_minutes=float(max_delay),
             solving_time_seconds=float(solving_time),
-            affected_trains_count=int(affected_trains),  # 添加受影响列车数量
+            affected_trains_count=int(l4_affected_count),
             risk_warnings=risk_warnings,
-            constraint_satisfaction=constraint_check,
+            constraint_satisfaction={},
             llm_summary=llm_summary,
             feasibility_score=float(feasibility_score),
-            # L4 增强字段
-            feasibility_risks=feasibility_risks,
-            operational_risks=operational_risks,
-            human_review_points=human_review_points,
-            counterfactual_summary=counterfactual_summary,
-            why_not_other_solver=why_not_other_solver,
-            confidence=float(confidence),
-            # 基线对比指标（集成evaluator.py）
-            baseline_metrics=baseline_comparison,
-            # 高铁专用指标
+            feasibility_risks=[],
+            operational_risks=[],
+            human_review_points=[],
+            counterfactual_summary=llm_result.get("comparison_analysis", ""),
+            why_not_other_solver="",
+            confidence=float(feasibility_score),
+            baseline_metrics=None,
             on_time_rate=high_speed_metrics.get("on_time_rate", 0.0),
             punctuality_strict=high_speed_metrics.get("punctuality_strict", 0.0),
             delay_std_dev=high_speed_metrics.get("delay_std_dev", 0.0),
             delay_propagation_depth=high_speed_metrics.get("delay_propagation_depth", 0),
-            delay_propagation_breadth=high_speed_metrics.get("delay_propagation_breadth", 0),
+            # 【关键修复】delay_propagation_breadth 使用 skill_execution_result 中的 affected_trains_count
+            # 保证与求解器输出一致，避免 schedule 数据格式差异导致的不一致
+            delay_propagation_breadth=int(l4_affected_count),
             propagation_coefficient=high_speed_metrics.get("propagation_coefficient", 0.0),
             micro_delay_count=high_speed_metrics.get("micro_delay_count", 0),
             small_delay_count=high_speed_metrics.get("small_delay_count", 0),
             medium_delay_count=high_speed_metrics.get("medium_delay_count", 0),
             large_delay_count=high_speed_metrics.get("large_delay_count", 0),
             evaluation_grade=high_speed_metrics.get("evaluation_grade", "unknown"),
-            metadata={"llm_response_type": response.model_used}
+            metadata={"llm_response_type": llm_result.get("response_type", "unknown")}
         )
 
-    def _calculate_baseline_comparison(
-        self,
-        skill_execution_result: Dict[str, Any],
-        solver_response: Any = None
-    ) -> BaselineMetrics:
-        """
-        计算与基线方案的对比指标
-        集成BaselineComparator的数值计算能力
-        """
-        try:
-            # 获取优化后的时刻表（从solver_response中获取schedule字段）
-            optimized_schedule = None
-            if solver_response:
-                if hasattr(solver_response, 'schedule'):
-                    optimized_schedule = solver_response.schedule
-                elif isinstance(solver_response, dict):
-                    optimized_schedule = solver_response.get('schedule')
+    # ================================================================
+    # PolicyEngine 决策（保持纯规则）
+    # ================================================================
 
-            if not optimized_schedule:
-                logger.warning("无法获取优化后的时刻表，跳过基线对比")
-                return None
-
-            # 从execution_result中提取原始时刻表和延误注入
-            original_schedule = skill_execution_result.get('original_schedule', {})
-            delay_injection = skill_execution_result.get('delay_injection', {})
-            
-            # 确保original_schedule是字典类型
-            if isinstance(original_schedule, str):
-                try:
-                    import json
-                    original_schedule = json.loads(original_schedule)
-                except:
-                    original_schedule = {}
-            elif not isinstance(original_schedule, dict):
-                original_schedule = {}
-            
-            # 确保delay_injection是字典类型
-            if isinstance(delay_injection, str):
-                try:
-                    import json
-                    delay_injection = json.loads(delay_injection)
-                except:
-                    delay_injection = {"injected_delays": []}
-            elif not isinstance(delay_injection, dict):
-                delay_injection = {"injected_delays": []}
-
-            if not original_schedule:
-                logger.warning("无法获取原始时刻表，跳过基线对比")
-                return None
-
-            # 使用BaselineComparator计算基线对比
-            comparator = BaselineComparator(baseline_strategy="no_adjustment")
-
-            # 构建delay_injection字典格式
-            delay_injection_dict = {
-                "injected_delays": delay_injection.get('injected_delays', [])
-            }
-
-            # 计算评估结果
-            eval_result = comparator.compare(
-                proposed_schedule=optimized_schedule,
-                original_schedule=original_schedule,
-                delay_injection=delay_injection_dict
-            )
-
-            # HighSpeedEvaluationResult 的正确字段：
-            # - proposed_metrics: HighSpeedMetrics
-            # - baseline_metrics: HighSpeedMetrics
-            # - max_delay_improvement, avg_delay_improvement, propagation_improvement
-            # - is_better_than_baseline, recommended_output
-            # - recommendations (注意：不是recommendations）
-
-            proposed_metrics = getattr(eval_result, 'proposed_metrics', None)
-            baseline_metrics = getattr(eval_result, 'baseline_metrics', None)
-            max_delay_improvement = getattr(eval_result, 'max_delay_improvement', 0.0)
-            avg_delay_improvement = getattr(eval_result, 'avg_delay_improvement', 0.0)
-            is_better_than_baseline = getattr(eval_result, 'is_better_than_baseline', False)
-            recommended_output = getattr(eval_result, 'recommended_output', False)
-            recommendations = getattr(eval_result, 'recommendations', [])  # 修正拼写
-
-            # 验证必要字段
-            if not all([proposed_metrics, baseline_metrics]):
-                logger.warning("基线对比结果缺少proposed_metrics或baseline_metrics")
-                return None
-
-            # 安全获取指标值（处理可能的字典或对象类型）
-            def get_metric(obj, field, default=0):
-                """安全获取指标值"""
-                if obj is None:
-                    return default
-                
-                # 处理字符串类型（JSON字符串）
-                if isinstance(obj, str):
-                    try:
-                        import json
-                        obj = json.loads(obj)
-                        logger.info(f"成功解析JSON字符串: {field}")
-                    except Exception as e:
-                        logger.warning(f"无法解析JSON字符串: {e}")
-                        return default
-                
-                if isinstance(obj, dict):
-                    return obj.get(field, default)
-                elif hasattr(obj, field):
-                    # 尝试获取属性
-                    attr_value = getattr(obj, field, default)
-                    # 如果属性值仍然是字典，递归获取
-                    if isinstance(attr_value, dict):
-                        return attr_value.get(field, default)
-                    return attr_value
-                else:
-                    logger.warning(f"无法从对象获取字段 {field}，类型: {type(obj)}")
-                    return default
-
-            # 验证proposed_metrics和baseline_metrics类型，处理JSON字符串
-            if proposed_metrics is not None and isinstance(proposed_metrics, str):
-                try:
-                    import json
-                    proposed_metrics = json.loads(proposed_metrics)
-                    logger.info(f"成功解析proposed_metrics JSON字符串")
-                except Exception as e:
-                    logger.warning(f"无法解析proposed_metrics JSON字符串: {e}，设置为None")
-                    proposed_metrics = None
-            
-            if baseline_metrics is not None and isinstance(baseline_metrics, str):
-                try:
-                    import json
-                    baseline_metrics = json.loads(baseline_metrics)
-                    logger.info(f"成功解析baseline_metrics JSON字符串")
-                except Exception as e:
-                    logger.warning(f"无法解析baseline_metrics JSON字符串: {e}，设置为None")
-                    baseline_metrics = None
-
-            if proposed_metrics is not None and not isinstance(proposed_metrics, (dict, object)):
-                logger.warning(f"proposed_metrics类型错误: {type(proposed_metrics)}，设置为None")
-                proposed_metrics = None
-
-            if baseline_metrics is not None and not isinstance(baseline_metrics, (dict, object)):
-                logger.warning(f"baseline_metrics类型错误: {type(baseline_metrics)}，设置为None")
-                baseline_metrics = None
-
-            if not all([proposed_metrics, baseline_metrics]):
-                logger.warning("基线对比结果缺少proposed_metrics或baseline_metrics")
-                return None
-
-            # 转换为BaselineMetrics
-            try:
-                return BaselineMetrics(
-                    max_delay_improvement=float(max_delay_improvement),
-                    avg_delay_improvement=float(avg_delay_improvement),
-                    is_better_than_baseline=bool(is_better_than_baseline),
-                    # BaselineMetrics中没有recommended_output字段，忽略
-                    proposed_max_delay_minutes=float(get_metric(proposed_metrics, 'max_delay_seconds', 0)) / 60.0,
-                    proposed_avg_delay_minutes=float(get_metric(proposed_metrics, 'avg_delay_seconds', 0)) / 60.0,
-                    proposed_total_delay_minutes=float(get_metric(proposed_metrics, 'total_delay_seconds', 0)) / 60.0,
-                    baseline_max_delay_minutes=float(get_metric(baseline_metrics, 'max_delay_seconds', 0)) / 60.0,
-                    baseline_avg_delay_minutes=float(get_metric(baseline_metrics, 'avg_delay_seconds', 0)) / 60.0,
-                    baseline_total_delay_minutes=float(get_metric(baseline_metrics, 'total_delay_seconds', 0)) / 60.0
-                )
-            except Exception as e:
-                logger.error(f"构建BaselineMetrics时出错: {e}")
-                import traceback
-                logger.debug(f"堆栈: {traceback.format_exc()}")
-                return None
-
-        except Exception as e:
-            logger.warning(f"计算基线对比时出错: {e}")
-            import traceback
-            logger.debug(f"基线对比错误堆栈: {traceback.format_exc()}")
-            return None
-
-    def _make_policy_decision(
-        self,
-        evaluation_report: EvaluationReport,
-        skill_execution_result: Dict[str, Any]
-    ):
-        """使用PolicyEngine做决策"""
-        # 构建评估结果字典
+    def _make_policy_decision(self, evaluation_report, skill_execution_result):
         evaluation_result = {
             "is_feasible": evaluation_report.is_feasible,
             "total_delay_minutes": evaluation_report.total_delay_minutes,
             "max_delay_minutes": evaluation_report.max_delay_minutes,
             "feasibility_score": getattr(evaluation_report, 'feasibility_score', 0.8)
         }
-
-        # 构建求解器指标
-        solver_metrics = {
-            "solving_time": skill_execution_result.get("solving_time", 0.0)
-        }
-
-        # 调用PolicyEngine，优先使用L1层识别的场景类型
+        solver_metrics = {"solving_time": skill_execution_result.get("solving_time", 0.0)}
         scene_type = self._infer_scene_type(evaluation_report, skill_execution_result)
 
         return self.policy_engine.make_decision(
@@ -470,459 +406,257 @@ class Layer4Evaluation:
             scene_type=scene_type
         )
 
-    def _infer_scene_type(self, evaluation_report: EvaluationReport, skill_execution_result: Dict[str, Any] = None) -> str:
-        """
-        获取场景类型（优先使用L1层识别结果）
-
-        场景类型获取优先级：
-        1. 优先使用L1层识别并通过L3传递的场景类型（准确）
-        2. 如果L3层未传递场景类型，则基于延误时间和风险特征推断（兜底）
-        3. 支持三种场景类型：临时限速、突发故障、区间封锁
-
-        Args:
-            evaluation_report: L4评估报告
-            skill_execution_result: L3层的执行结果，包含L1层识别的场景类型
-
-        Returns:
-            str: 场景类型代码 (TEMP_SPEED_LIMIT/SUDDEN_FAILURE/SECTION_INTERRUPT)
-        """
-        # 优先级1：使用L3层传递的场景类型（来自L1层的准确识别）
+    def _infer_scene_type(self, evaluation_report, skill_execution_result=None):
         if skill_execution_result:
             scenario_type = skill_execution_result.get("scenario_type", "").lower()
-            if scenario_type:
-                # 映射到标准场景类型代码
-                scenario_mapping = {
-                    "temporary_speed_limit": "TEMP_SPEED_LIMIT",
-                    "sudden_failure": "SUDDEN_FAILURE",
-                    "section_interrupt": "SECTION_INTERRUPT"
-                }
-                if scenario_type in scenario_mapping:
-                    logger.debug(f"[L4] 使用L1层识别的场景类型: {scenario_type} -> {scenario_mapping[scenario_type]}")
-                    return scenario_mapping[scenario_type]
-
-        # 优先级2：基于延误情况和风险特征推断（兜底方案）
-        logger.warning("[L4] L3层未传递场景类型，使用规则推断（准确性较低）")
+            mapping = {
+                "temporary_speed_limit": "TEMP_SPEED_LIMIT",
+                "sudden_failure": "SUDDEN_FAILURE",
+                "section_interrupt": "SECTION_INTERRUPT"
+            }
+            if scenario_type in mapping:
+                return mapping[scenario_type]
         max_delay = evaluation_report.max_delay_minutes if evaluation_report else 0
-        risk_warnings = evaluation_report.risk_warnings if evaluation_report else []
-
-        # 区间封锁特征：极大延误（>60分钟）或严重风险警告
-        if max_delay > 60 or any("封锁" in str(w) or "中断" in str(w) for w in risk_warnings):
-            logger.debug(f"[L4] 推断场景类型: SECTION_INTERRUPT (最大延误: {max_delay}分钟)")
+        if max_delay > 60:
             return "SECTION_INTERRUPT"
-        # 突发故障特征：中等延误（30-60分钟）或一般风险
-        elif max_delay > 30 or risk_warnings:
-            logger.debug(f"[L4] 推断场景类型: SUDDEN_FAILURE (最大延误: {max_delay}分钟)")
+        elif max_delay > 30:
             return "SUDDEN_FAILURE"
-        # 临时限速特征：较小延误（<30分钟）
-        else:
-            logger.debug(f"[L4] 推断场景类型: TEMP_SPEED_LIMIT (最大延误: {max_delay}分钟)")
-            return "TEMP_SPEED_LIMIT"
+        return "TEMP_SPEED_LIMIT"
 
     def _build_rollback_feedback(self, policy_decision) -> RollbackFeedback:
-        """构建回退反馈"""
         from models.common_enums import PolicyDecisionType
-
         return RollbackFeedback(
             needs_rerun=(policy_decision.decision == PolicyDecisionType.RERUN),
             rollback_reason=policy_decision.reason,
             suggested_fixes=policy_decision.suggested_fixes
         )
 
-    def _generate_natural_language_plan(
-        self,
-        skill_execution_result: Dict[str, Any],
-        solver_response: Any,
-        evaluation_report: EvaluationReport
-    ) -> str:
-        """
-        生成自然语言调度方案
-        使用LLM将数值化的调度结果转换为人类可读的调度指令
-        """
-        try:
-            # 提取调度场景信息
-            affected_trains = skill_execution_result.get("affected_trains", [])
-            scene_type = skill_execution_result.get("scenario_type", "临时限速")
-            delay_location = skill_execution_result.get("location", "未知位置")
+    def _log_evaluation_result(self, report, policy_decision, metrics):
+        if not report:
+            return
+        logger.info("=" * 50)
+        logger.info("【L4评估结果】")
+        logger.info(f"  LLM摘要: {report.llm_summary}")
+        logger.info(f"  可行性得分: {report.feasibility_score:.2f}")
+        logger.info(f"  风险警告: {len(report.risk_warnings)}项")
+        logger.info(f"  决策: {policy_decision.decision}")
+        logger.info("  高铁专用指标:")
+        logger.info(f"    准点率: {report.on_time_rate * 100:.1f}%")
+        logger.info(f"    严格准点率: {report.punctuality_strict * 100:.1f}%")
+        logger.info(f"    延误标准差: {report.delay_std_dev:.2f}秒")
+        logger.info(f"    传播深度: {report.delay_propagation_depth}站")
+        logger.info(f"    传播广度: {report.delay_propagation_breadth}列")
+        logger.info(f"    综合评级: {report.evaluation_grade}")
+        logger.info("=" * 50)
 
-            # 构建Prompt上下文
-            context = PromptContext(
-                request_id="nlp_plan_001",
-                execution_result=skill_execution_result,
-                solver_result=solver_response.model_dump() if hasattr(solver_response, 'model_dump') else {},
-                variables={
-                    "evaluation_summary": evaluation_report.llm_summary if evaluation_report else "",
-                    "feasibility_score": str(evaluation_report.feasibility_score if evaluation_report else 0.8),
-                    "affected_trains": ", ".join(affected_trains) if affected_trains else "G1563",
-                    "scene_type": scene_type,
-                    "delay_location": delay_location
-                }
-            )
+    # ================================================================
+    # 回退方案（LLM 失败时使用）
+    # ================================================================
 
-            # 调用LLM生成自然语言方案
-            logger.debug("[L4] 调用LLM生成自然语言调度方案...")
-            response = self.prompt_adapter.execute_prompt(
-                template_id="l4_natural_language_plan",
-                context=context,
-                enable_rag=False
-            )
-            logger.debug(f"[L4] LLM响应完成，valid={response.is_valid}")
-
-            if response.is_valid and response.parsed_output:
-                # 获取自然语言方案，处理可能的重复问题
-                plan = response.parsed_output.get("natural_language_plan", "")
-
-                # 如果返回的是字符串，直接返回；如果是其他类型，尝试转换
-                if isinstance(plan, str):
-                    # 处理转义的换行符
-                    if "\\n" in plan:  # 注意双反斜杠匹配字面的 \n
-                        # JSON解析后可能还有转义的换行符，需要解码
-                        import codecs
-                        try:
-                            plan = codecs.decode(plan, 'unicode_escape')
-                            logger.debug(f"[L4] 成功解码自然语言方案，移除转义字符")
-                        except Exception as e:
-                            logger.debug(f"[L4] 解码自然语言方案失败: {e}")
-                            # 如果解码失败，尝试简单的替换
-                            plan = plan.replace("\\n", "\n").replace("\\t", "\t")
-                    # 此时plan中的换行符应该是真正的换行符了
-                    logger.debug(f"[L4] 自然语言方案生成成功，长度: {len(plan)}")
-                    return self._deduplicate_plan_content(plan)
-                elif isinstance(plan, dict):
-                    # 如果返回的是字典，提取内容
-                    plan_str = str(plan)
-                    if "\\n" in plan_str:
-                        import codecs
-                        try:
-                            plan_str = codecs.decode(plan_str, 'unicode_escape')
-                            logger.debug(f"[L4] 成功解码字典内容")
-                        except Exception as e:
-                            logger.debug(f"[L4] 解码字典内容失败: {e}")
-                            plan_str = plan_str.replace("\\n", "\n")
-                    logger.debug(f"[L4] 自然语言方案生成成功（字典转换），长度: {len(plan_str)}")
-                    return self._deduplicate_plan_content(plan_str)
-                else:
-                    logger.debug(f"[L4] natural_language_plan类型异常: {type(plan)}，使用规则方案")
-                    return self._generate_fallback_plan(skill_execution_result, solver_response)
-            else:
-                # 如果LLM失败，返回基于规则的简单描述
-                logger.warning("[L4] LLM响应无效，使用规则方案")
-                return self._generate_fallback_plan(skill_execution_result, solver_response)
-
-        except Exception as e:
-            logger.warning(f"[L4] 生成自然语言方案失败: {e}")
-            import traceback
-            logger.debug(f"[L4] 堆栈: {traceback.format_exc()}")
-            return self._generate_fallback_plan(skill_execution_result, solver_response)
-
-    def _generate_fallback_plan(
-        self,
-        skill_execution_result: Dict[str, Any],
-        solver_response: Any
-    ) -> str:
-        """
-        生成简单的回退方案（当LLM失败时使用）
-        """
+    def _generate_fallback_plan(self, skill_execution_result, solver_response):
         try:
             total_delay = skill_execution_result.get("total_delay_minutes", 0)
             max_delay = skill_execution_result.get("max_delay_minutes", 0)
             affected_trains = skill_execution_result.get("affected_trains", [])
+            solver_name = skill_execution_result.get("skill_name", "未知")
 
-            plan_parts = []
-            plan_parts.append(f"调度方案概要：")
-            plan_parts.append(f"- 受影响列车：{', '.join(affected_trains) if affected_trains else '无'}")
-            plan_parts.append(f"- 总延误：{total_delay}分钟")
-            plan_parts.append(f"- 最大延误：{max_delay}分钟")
-            plan_parts.append(f"- 建议：根据优化结果调整列车发车顺序，确保追踪间隔满足安全约束")
-
-            return "\n".join(plan_parts)
+            lines = [
+                "调度方案概要：",
+                f"- 使用求解器: {solver_name}",
+                f"- 受影响列车: {', '.join(affected_trains[:10]) if affected_trains else '无'}",
+                f"- 总延误: {total_delay}分钟",
+                f"- 最大延误: {max_delay}分钟",
+                "- 建议: 根据优化结果调整列车发车顺序，确保追踪间隔满足安全约束"
+            ]
+            return "\n".join(lines)
         except Exception as e:
-            logger.error(f"生成回退方案失败: {e}")
+            logger.error(f"[L4] 生成回退方案失败: {e}")
             return "调度方案生成失败，请查看详细调度数据"
 
-    def _deduplicate_plan_content(self, plan: str) -> str:
-        """
-        去除自然语言方案中的重复内容
-        """
-        if not plan:
-            return plan
-        
-        # 按行分割
-        lines = plan.split('\n')
-        seen = set()
-        result = []
-        
-        for line in lines:
-            # 去除行首行尾空白
-            stripped = line.strip()
-            if not stripped:
-                result.append(line)
-                continue
-            
-            # 如果该行（去除空白后）已存在，则跳过
-            if stripped in seen:
-                continue
-            
-            seen.add(stripped)
-            result.append(line)
-        
-        return '\n'.join(result)
+    def _generate_default_evaluation_report(self, skill_execution_result, solver_response):
+        total_delay = skill_execution_result.get("total_delay_minutes", 0)
+        max_delay = skill_execution_result.get("max_delay_minutes", 0)
+        solving_time = skill_execution_result.get("solving_time", 0.0)
+        affected = skill_execution_result.get("affected_trains_count", 0)
+        return EvaluationReport(
+            solution_id="solution_001", is_feasible=False,
+            total_delay_minutes=float(total_delay), max_delay_minutes=float(max_delay),
+            solving_time_seconds=float(solving_time), affected_trains_count=int(affected),
+            risk_warnings=["求解执行失败"], constraint_satisfaction={},
+            llm_summary="求解失败，建议检查约束条件或使用其他调度器。",
+            feasibility_score=0.5, baseline_metrics=None,
+            on_time_rate=1.0, punctuality_strict=1.0, delay_std_dev=0.0,
+            delay_propagation_depth=0, delay_propagation_breadth=0, propagation_coefficient=0.0,
+            micro_delay_count=0, small_delay_count=0, medium_delay_count=0, large_delay_count=0,
+            evaluation_grade="C",
+            feasibility_risks=["求解器执行失败"], operational_risks=[], human_review_points=[],
+            counterfactual_summary="", why_not_other_solver="", confidence=0.3,
+            metadata={"llm_response_type": "default_evaluation"}
+        )
 
-    def _calculate_high_speed_metrics(
-        self,
-        skill_execution_result: Dict[str, Any],
-        solver_response: Any
-    ) -> Dict[str, Any]:
-        """
-        计算高铁客运专线专用评估指标
-        
-        专家级指标说明：
-        1. 准点率：延误延误<5分钟的列车比例（高铁服务标准）
-        2. 严格准点率：延误延误<3分钟的列车比例（高铁高标准）
-        3. 延误标准差：反映延误分布的均衡性
-        4. 传播深度：延误影响的车站数量
-        5. 传播广度：受影响的列车数量
-        6. 传播系数：传播深度/平均延误，反映传播效率
-        7. 延误分级统计：微延误(<2min)、小延误(2-5min)、中延误(5-15min)、大延误(>15min)
-        8. 综合评级：基于多维度指标的综合评价
-        """
+    # ================================================================
+    # 高铁专用指标计算（规则，保持不变）
+    # ================================================================
+
+    def _calculate_high_speed_metrics(self, skill_execution_result, solver_response):
         try:
-            # 从solver_response获取调度结果
             schedule = None
             if solver_response:
                 if hasattr(solver_response, 'schedule'):
                     schedule = solver_response.schedule
                 elif isinstance(solver_response, dict):
-                    schedule = solver_response.get('schedule')
-            
+                    # 支持 schedule 或 optimized_schedule
+                    schedule = solver_response.get('schedule') or solver_response.get('optimized_schedule')
             if not schedule:
                 return self._get_default_high_speed_metrics()
-            
-            # 收集所有延误数据
-            all_delays = []
+
+            # 【关键修复】指标计算必须基于所有列车，而不是仅延误站点
+            total_trains = len(schedule)
             delay_by_train = {}
-            
+            train_max_delays = []
+            all_delay_points = []
+
             for train_id, stops in schedule.items():
                 train_delays = []
                 for stop in stops:
                     delay = stop.get("delay_seconds", 0)
                     if delay > 0:
-                        all_delays.append(delay)
+                        all_delay_points.append(delay)
                         train_delays.append(delay)
-                
                 if train_delays:
+                    max_d = max(train_delays)
                     delay_by_train[train_id] = {
-                        "max": max(train_delays),
+                        "max": max_d,
                         "avg": sum(train_delays) / len(train_delays),
                         "count": len(train_delays)
                     }
-            
-            if not all_delays:
-                return self._get_default_high_speed_metrics()
-            
-            # 计算基础统计
-            total_trains = len(schedule)
+                    train_max_delays.append(max_d)
+                else:
+                    train_max_delays.append(0)
+
             affected_trains = len(delay_by_train)
-            
-            # 准点率计算（（<5分钟）
-            on_time_count = sum(1 for d in all_delays if d < 300)
-            on_time_rate = on_time_count / len(all_delays) if all_delays else 1.0
-            
-            # 严格准点率（（<3分钟）
-            punctuality_strict_count = sum(1 for d in all_delays if d < 180)
-            punctuality_strict = punctuality_strict_count / len(all_delays) if all_delays else 1.0
-            
-            # 延误标准差
-            avg_delay = sum(all_delays) / len(all_delays)
-            variance = sum((d - avg_delay) ** 2 for d in all_delays) / len(all_delays)
-            delay_std_dev = variance ** 0.5
-            
-            # 传播深度（最大影响车站数）
-            max_propagation_depth = max(
-                (info.get("count", 0) for info in delay_by_train.values()),
-                default=0
+
+            if not all_delay_points:
+                return self._get_default_high_speed_metrics()
+
+            # 准点率 = 最大延误 < 5分钟(300秒) 的列车占比（基于所有列车）
+            on_time_rate = sum(1 for d in train_max_delays if d < 300) / total_trains if total_trains > 0 else 1.0
+            # 严格准点率 = 最大延误 < 3分钟(180秒) 的列车占比
+            punctuality_strict = sum(1 for d in train_max_delays if d < 180) / total_trains if total_trains > 0 else 1.0
+
+            # 标准差基于每列车的最大延误（包含0延误的列车，反映整体均衡性）
+            avg_delay = sum(train_max_delays) / len(train_max_delays) if train_max_delays else 0.0
+            if len(train_max_delays) > 1:
+                variance = sum((d - avg_delay) ** 2 for d in train_max_delays) / len(train_max_delays)
+                delay_std_dev = variance ** 0.5
+            else:
+                delay_std_dev = 0.0
+
+            max_propagation = max((info["count"] for info in delay_by_train.values()), default=0)
+            # 传播系数 = 传播深度 / 平均最大延误(分钟)
+            propagation_coeff = max_propagation / (avg_delay / 60) if avg_delay > 0 else 0
+
+            # 【统一】延误分级统计与 config/dispatch_env.yaml 保持一致
+            # micro: [0,5)min=[0,300)s, small: [5,30)min=[300,1800)s
+            # medium: [30,100)min=[1800,6000)s, large: [100,+∞)min=[6000,+∞)s
+            micro = sum(1 for d in all_delay_points if 0 < d < 300)
+            small = sum(1 for d in all_delay_points if 300 <= d < 1800)
+            medium = sum(1 for d in all_delay_points if 1800 <= d < 6000)
+            large = sum(1 for d in all_delay_points if d >= 6000)
+
+            grade = self._calculate_evaluation_grade(
+                on_time_rate, punctuality_strict,
+                max(all_delay_points) if all_delay_points else 0,
+                affected_trains / total_trains if total_trains > 0 else 0,
+                propagation_coeff
             )
-            
-            # 传播广度（受影响列车数）
-            propagation_breadth = affected_trains
-            
-            # 传播系数 = 传播深度 / 平均延误(分钟)
-            propagation_coefficient = (
-                max_propagation_depth / (avg_delay / 60) if avg_delay > 0 else 0
-            )
-            
-            # 延误分级统计
-            micro_delay_count = sum(1 for d in all_delays if d < 120)  # <2分钟
-            small_delay_count = sum(1 for d in all_delays if 120 <= d < 300)  # 2-5分钟
-            medium_delay_count = sum(1 for d in all_delays if 300 <= d < 900)  # 5-15分钟
-            large_delay_count = sum(1 for d in all_delays if d >= 900)  # >15分钟
-            
-            # 综合评级
-            evaluation_grade = self._calculate_evaluation_grade(
-                on_time_rate=on_time_rate,
-                punctuality_strict=punctuality_strict,
-                max_delay=max(all_delays) if all_delays else 0,
-                affected_ratio=affected_trains / total_trains if total_trains > 0 else 0,
-                propagation_coefficient=propagation_coefficient
-            )
-            
             return {
-                "on_time_rate": round(on_time_rate, 3),
-                "punctuality_strict": round(punctuality_strict, 3),
-                "delay_std_dev": round(delay_std_dev, 2),
-                "delay_propagation_depth": max_propagation_depth,
-                "delay_propagation_breadth": propagation_breadth,
-                "propagation_coefficient": round(propagation_coefficient, 3),
-                "micro_delay_count": micro_delay_count,
-                "small_delay_count": small_delay_count,
-                "medium_delay_count": medium_delay_count,
-                "large_delay_count": large_delay_count,
-                "evaluation_grade": evaluation_grade,
-                "total_trains": total_trains,
-                "affected_trains": affected_trains
+                "on_time_rate": round(on_time_rate, 3), "punctuality_strict": round(punctuality_strict, 3),
+                "delay_std_dev": round(delay_std_dev, 2), "delay_propagation_depth": max_propagation,
+                "delay_propagation_breadth": affected_trains, "propagation_coefficient": round(propagation_coeff, 3),
+                "micro_delay_count": micro, "small_delay_count": small,
+                "medium_delay_count": medium, "large_delay_count": large,
+                "evaluation_grade": grade, "total_trains": total_trains, "affected_trains": affected_trains,
+                "max_delay_seconds": max(all_delay_points) if all_delay_points else 0
             }
-            
         except Exception as e:
-            logger.warning(f"计算高铁专用指标失败: {e}")
+            logger.warning(f"[L4] 计算高铁指标失败: {e}")
             return self._get_default_high_speed_metrics()
-    
-    def _get_default_high_speed_metrics(self) -> Dict[str, Any]:
-        """获取默认的高铁专用指标"""
+
+    def _get_default_high_speed_metrics(self):
         return {
-            "on_time_rate": 1.0,
-            "punctuality_strict": 1.0,
-            "delay_std_dev": 0.0,
-            "delay_propagation_depth": 0,
-            "delay_propagation_breadth": 0,
-            "propagation_coefficient": 0.0,
-            "micro_delay_count": 0,
-            "small_delay_count": 0,
-            "medium_delay_count": 0,
-            "large_delay_count": 0,
-            "evaluation_grade": "A",
-            "total_trains": 0,
-            "affected_trains": 0
+            "on_time_rate": 1.0, "punctuality_strict": 1.0, "delay_std_dev": 0.0,
+            "delay_propagation_depth": 0, "delay_propagation_breadth": 0, "propagation_coefficient": 0.0,
+            "micro_delay_count": 0, "small_delay_count": 0, "medium_delay_count": 0, "large_delay_count": 0,
+            "evaluation_grade": "A", "total_trains": 0, "affected_trains": 0
         }
-    
-    def _calculate_evaluation_grade(
-        self,
-        on_time_rate: float,
-        punctuality_strict: float,
-        max_delay: int,
-        affected_ratio: float,
-        propagation_coefficient: float
-    ) -> str:
-        """
-        计算综合评级
-        
-        评级标准（专家经验）：
-        A级：准点率>95%，严格准点率>90%，最大延误延误<10分钟，影响比例比例<20%
-        B级：准点率>85%，严格准点率>75%，最大延误延误<20分钟，影响比例比例<40%
-        C级：准点率>70%，严格准点率>60%，最大延误延误<30分钟，影响比例比例<60%
-        D级：其他情况
-        """
-        # 计算得分（百分制）
+
+    def _calculate_evaluation_grade(self, on_time_rate, punctuality_strict, max_delay, affected_ratio, propagation_coeff):
         score = 0
-        
-        # 准点率得分（权重30%）
         score += on_time_rate * 30
-        
-        # 严格准点率得分（权重25%）
         score += punctuality_strict * 25
-        
-        # 最大延误得分（权重20%）
-        max_delay_minutes = max_delay / 60
-        if max_delay_minutes < 10:
-            score += 20
-        elif max_delay_minutes < 20:
-            score += 15
-        elif max_delay_minutes < 30:
-            score += 10
-        else:
-            score += 5
-        
-        # 影响比例得分（权重15%）
+        max_min = max_delay / 60
+        score += 20 if max_min < 10 else (15 if max_min < 20 else (10 if max_min < 30 else 5))
         score += (1 - affected_ratio) * 15
-        
-        # 传播系数得分（权重10%）
-        if propagation_coefficient < 0.5:
-            score += 10
-        elif propagation_coefficient < 1.0:
-            score += 7
-        elif propagation_coefficient < 2.0:
-            score += 4
-        else:
-            score += 1
-        
-        # 根据总分评级
-        if score >= 90:
-            return "A"
-        elif score >= 75:
-            return "B"
-        elif score >= 60:
-            return "C"
-        else:
-            return "D"
+        score += 10 if propagation_coeff < 0.5 else (7 if propagation_coeff < 1.0 else (4 if propagation_coeff < 2.0 else 1))
+        if score >= 90: return "A"
+        elif score >= 75: return "B"
+        elif score >= 60: return "C"
+        return "D"
 
-    def _generate_default_evaluation_report(
-        self,
-        skill_execution_result: Dict[str, Any],
-        solver_response: Any
-    ) -> EvaluationReport:
-        """
-        生成默认评估报告（当求解失败时使用）
-        包含高铁专用指标
-        """
-        logger.info("[L4] 生成默认评估报告")
 
-        # 从skill_execution_result中提取基本信息
-        total_delay = skill_execution_result.get("total_delay_minutes", 0)
-        max_delay = skill_execution_result.get("max_delay_minutes", 0)
-        avg_delay = skill_execution_result.get("avg_delay_minutes", 0)
-        affected_trains = skill_execution_result.get("affected_trains_count", 0)
-        solving_time = skill_execution_result.get("solving_time", 0.0)
+# ================================================================
+# L4 专业评估 System Prompt
+# ================================================================
 
-        # 计算默认高铁指标
-        high_speed_metrics = self._get_default_high_speed_metrics()
+_EVALUATION_SYSTEM_PROMPT = """你是京广高铁（北京西→安阳东，13站，147列列车）高级调度评估专家。
 
-        # 如果有solver_response，尝试计算一些指标
-        if solver_response and hasattr(solver_response, 'schedule'):
-            schedule = solver_response.schedule
-            if schedule:
-                high_speed_metrics["total_trains"] = len(schedule)
-                high_speed_metrics["affected_trains"] = affected_trains
+## 你的职责
+根据调度求解结果，生成专业的评估报告和调度方案文档。你的输出将直接用于调度决策汇报。
 
-        # 构建默认评估报告
-        return EvaluationReport(
-            solution_id="solution_001",
-            is_feasible=False,
-            total_delay_minutes=float(total_delay),
-            max_delay_minutes=float(max_delay),
-            solving_time_seconds=float(solving_time),
-            affected_trains_count=int(affected_trains),
-            risk_warnings=["求解执行失败，结果可能不准确"],
-            constraint_satisfaction={},
-            llm_summary="求解执行失败，使用默认评估。建议检查约束条件或使用其他调度器。",
-            feasibility_score=0.5,
-            # 基线对比指标
-            baseline_metrics=None,
-            # 高铁专用指标（使用默认值）
-            on_time_rate=high_speed_metrics.get("on_time_rate", 0.0),
-            punctuality_strict=high_speed_metrics.get("punctuality_strict", 0.0),
-            delay_std_dev=high_speed_metrics.get("delay_std_dev", 0.0),
-            delay_propagation_depth=high_speed_metrics.get("delay_propagation_depth", 0),
-            delay_propagation_breadth=high_speed_metrics.get("delay_propagation_breadth", 0),
-            propagation_coefficient=high_speed_metrics.get("propagation_coefficient", 0.0),
-            micro_delay_count=high_speed_metrics.get("micro_delay_count", 0),
-            small_delay_count=high_speed_metrics.get("small_delay_count", 0),
-            medium_delay_count=high_speed_metrics.get("medium_delay_count", 0),
-            large_delay_count=high_speed_metrics.get("large_delay_count", 0),
-            evaluation_grade=high_speed_metrics.get("evaluation_grade", "C"),
-            # L4 增强字段
-            feasibility_risks=["求解器执行失败"],
-            operational_risks=[],
-            human_review_points=["建议人工审核"],
-            counterfactual_summary="由于求解失败，无法进行反事实分析",
-            why_not_other_solver="未尝试其他求解器",
-            confidence=0.3,
-            metadata={"llm_response_type": "default_evaluation"}
-        )
+## 评估标准（基于京广高铁运营实际）
+
+1. 正点率影响
+   - 优秀：延误<5分钟的列车占比>90%
+   - 良好：延误<5分钟的列车占比>75%
+   - 需关注：延误>15分钟的列车超过3列
+
+2. 最大延误控制
+   - 优秀：单列车最大延误<10分钟
+   - 可接受：单列车最大延误<20分钟
+   - 需干预：单列车最大延误>30分钟
+
+3. 延误均衡性
+   - 延误是否集中在少数列车上（标准差越大越不均衡）
+   - 理想状态：所有受影响列车延误相近
+
+4. 执行可行性
+   - 方案是否需要大量跨站协调
+   - 追踪间隔是否满足最小安全间隔（3分钟）
+
+## 输出要求
+
+输出JSON，包含以下字段：
+
+{
+    "llm_summary": "2-3句话的方案总体评价（如：方案可行，总延误15分钟，最大延误8分钟，准点率92%，建议执行）",
+    "feasibility_score": 0.85,
+    "risk_warnings": ["风险项1", "风险项2"],
+    "natural_language_plan": "完整的自然语言调度方案，包含：\\n【调整概述】原因+影响范围\\n【具体调整】每列车的调整详情（站点+时间变化）\\n【注意事项】安全要求+关键节点",
+    "comparison_analysis": "如果有多个方案对比数据，生成对比分析（如无则留空字符串）"
+}
+
+## 多方案对比要求
+
+当提供了多个方案的对比数据时，在 comparison_analysis 中：
+1. 列出每个方案的关键指标
+2. 分析各方案优劣
+3. 给出明确的推荐结论和理由
+4. 对比格式示例：
+"方案对比分析：\\n- FCFS方案：总延误62分，最大延误18分，<1秒出解\\n- MIP方案：总延误45分，最大延误12分，45秒出解\\n推荐MIP方案：总延误减少27%，虽然求解耗时增加，但在当前非紧急场景下可接受。"
+
+## 注意事项
+- natural_language_plan 中的【具体调整】必须包含具体的站点和时刻变化
+- 如果列车调整详情中给出了优化后时刻表数据，据此生成具体调整指令
+- 风险警告要具体（如"G1563在石家庄站延误12分钟，可能影响后续D1234的发车"），不要泛泛而谈
+- feasibility_score 基于整体方案质量给出 0-1 的评分"""

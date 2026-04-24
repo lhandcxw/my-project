@@ -119,10 +119,17 @@ class LLMOutputAdapter:
         for r in sorted(result.results, key=lambda x: x.rank):
             m = r.result.metrics
             winner_mark = " ⭐" if r.is_winner else ""
+            # 【专家修复】格式化小数位（整数不显示小数点）
+            max_delay_min = m.max_delay_seconds / 60
+            avg_delay_min = m.avg_delay_seconds / 60
+
+            max_delay_str = f"{int(max_delay_min)}分钟" if max_delay_min == int(max_delay_min) else f"{max_delay_min:.1f}分钟"
+            avg_delay_str = f"{int(avg_delay_min)}分钟" if avg_delay_min == int(avg_delay_min) else f"{avg_delay_min:.1f}分钟"
+
             lines.append(
                 f"| {r.rank} | {r.scheduler_name}{winner_mark} | "
-                f"{m.max_delay_seconds // 60}分钟 | "
-                f"{m.avg_delay_seconds / 60:.1f}分钟 | "
+                f"{max_delay_str} | "
+                f"{avg_delay_str} | "
                 f"{m.affected_trains_count}列 | "
                 f"{m.on_time_rate * 100:.1f}% | "
                 f"{m.computation_time:.2f}秒 |"
@@ -215,10 +222,17 @@ class LLMOutputAdapter:
         for r in sorted(result.results, key=lambda x: x.rank):
             m = r.result.metrics
             mark = " ★" if r.is_winner else ""
+            # 【专家修复】格式化小数位（整数不显示小数点）
+            max_delay_min = m.max_delay_seconds / 60
+            avg_delay_min = m.avg_delay_seconds / 60
+
+            max_delay_str = f"{int(max_delay_min)}分钟" if max_delay_min == int(max_delay_min) else f"{max_delay_min:.1f}分钟"
+            avg_delay_str = f"{int(avg_delay_min)}分钟" if avg_delay_min == int(avg_delay_min) else f"{avg_delay_min:.1f}分钟"
+
             lines.append(
                 f"  {r.rank}. {r.scheduler_name}: "
-                f"最大延误 {m.max_delay_seconds // 60}分钟, "
-                f"平均延误 {m.avg_delay_seconds / 60:.1f}分钟{mark}"
+                f"最大延误 {max_delay_str}, "
+                f"平均延误 {avg_delay_str}{mark}"
             )
         
         lines.extend(["", "=" * 60])
@@ -228,14 +242,21 @@ class LLMOutputAdapter:
         """转换为摘要格式"""
         if not result.winner:
             return "无法确定最优调度方案"
-        
+
         winner = result.winner
         m = winner.result.metrics
-        
+
+        # 【专家修复】格式化小数位（整数不显示小数点）
+        max_delay_min = m.max_delay_seconds / 60
+        avg_delay_min = m.avg_delay_seconds / 60
+
+        max_delay_str = f"{int(max_delay_min)}分钟" if max_delay_min == int(max_delay_min) else f"{max_delay_min:.1f}分钟"
+        avg_delay_str = f"{int(avg_delay_min)}分钟" if avg_delay_min == int(avg_delay_min) else f"{avg_delay_min:.1f}分钟"
+
         return (
             f"推荐使用 {winner.scheduler_name} 方案。"
-            f"最大延误 {m.max_delay_seconds // 60} 分钟，"
-            f"平均延误 {m.avg_delay_seconds / 60:.1f} 分钟，"
+            f"最大延误 {max_delay_str}，"
+            f"平均延误 {avg_delay_str}，"
             f"影响 {m.affected_trains_count} 列列车，"
             f"准点率 {m.on_time_rate * 100:.1f}%。"
         )
@@ -255,8 +276,22 @@ class LLMOutputAdapter:
         
         for r in result.results:
             m = r.result.metrics
+            # 【专家修复】格式化小数位（整数不显示小数点）
+            max_delay_min = m.max_delay_seconds / 60
+            avg_delay_min = m.avg_delay_seconds / 60
+
+            max_delay_str = f"{int(max_delay_min)}分钟" if max_delay_min == int(max_delay_min) else f"{max_delay_min:.1f}分钟"
+            avg_delay_str = f"{int(avg_delay_min)}分钟" if avg_delay_min == int(avg_delay_min) else f"{avg_delay_min:.1f}分钟"
+
             lines.extend([
                 f"### {r.scheduler_name} (排名: {r.rank})",
+                "",
+                f"- 最大延误: {max_delay_str}",
+                f"- 平均延误: {avg_delay_str}",
+                f"- 总延误: {m.total_delay_seconds // 60}分钟",
+                f"- 受影响列车: {m.affected_trains_count}列",
+                f"- 准点率: {m.on_time_rate * 100:.1f}%",
+                f"- 计算时间: {m.computation_time:.2f}秒",
                 "",
                 "```json",
                 json.dumps(m.to_dict(), ensure_ascii=False, indent=2),

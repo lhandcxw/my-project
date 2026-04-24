@@ -123,6 +123,119 @@ class LLMCaller:
         else:
             return self._call_openai(prompt, max_tokens, temperature)
 
+    def call_with_tools(
+        self,
+        messages: list,
+        tools: list = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2
+    ) -> dict:
+        """
+        调用 LLM with Function Calling 支持（OpenAI兼容协议）
+
+        Args:
+            messages: 消息历史列表（OpenAI格式）
+            tools: 工具定义列表（OpenAI function calling格式）
+            max_tokens: 最大生成token数
+            temperature: 温度参数
+
+        Returns:
+            dict: {
+                "content": str or None,                             # LLM 文本响应
+                "tool_calls": [{"id", "name", "arguments"}],       # 工具调用列表
+                "assistant_message": dict,                          # 可直接追加到 messages
+                "response_type": str                                # 模型标识
+            }
+        """
+        provider = self.DEFAULT_PROVIDER
+        try:
+            if provider == "ollama":
+                return self._call_with_tools_impl(
+                    self._get_ollama_client(), self.OLLAMA_MODEL,
+                    messages, tools, max_tokens, temperature, "ollama"
+                )
+            elif provider == "dashscope":
+                return self._call_with_tools_impl(
+                    self._get_dashscope_client(), self.DASHSCOPE_MODEL,
+                    messages, tools, max_tokens, temperature, "dashscope"
+                )
+            else:
+                return self._call_with_tools_impl(
+                    self._get_openai_client(), "gpt-4o",
+                    messages, tools, max_tokens, temperature, "openai"
+                )
+        except Exception as e:
+            logger.error(f"[Function Calling] LLM调用失败: {e}")
+            raise RuntimeError(f"Function Calling 调用失败: {e}") from e
+
+    def _call_with_tools_impl(
+        self,
+        client,
+        model: str,
+        messages: list,
+        tools: list,
+        max_tokens: int,
+        temperature: float,
+        provider_name: str
+    ) -> dict:
+        """
+        Function Calling 统一实现
+        适用于 OpenAI / DashScope / Ollama（均为OpenAI兼容协议）
+        """
+        if client is None:
+            raise RuntimeError(f"{provider_name} 客户端不可用")
+
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        response = client.chat.completions.create(**kwargs)
+        message = response.choices[0].message
+
+        # 解析 tool_calls
+        tool_calls = []
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments
+                })
+
+        # 构建可直接追加到 messages 的 assistant 消息
+        assistant_msg = {"role": "assistant", "content": message.content}
+        if message.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in message.tool_calls
+            ]
+
+        logger.debug(
+            f"[Function Calling] model={provider_name}:{model}, "
+            f"content={'有' if message.content else '无'}, "
+            f"tool_calls={len(tool_calls)}个"
+        )
+
+        return {
+            "content": message.content,
+            "tool_calls": tool_calls,
+            "assistant_message": assistant_msg,
+            "response_type": f"{provider_name}:{model}"
+        }
+
     def _call_ollama(self, prompt: str, max_tokens: int, temperature: float) -> tuple:
         """调用 Ollama 本地模型"""
         client = self._get_ollama_client()

@@ -11,6 +11,7 @@
 
 import os
 import re
+import json
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import logging
@@ -135,7 +136,7 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="high",
-            references=[《铁路技术管理规程》, 《高速铁路调度规则》]
+            references=["《铁路技术管理规程》", "《高速铁路调度规则》"]
         )
 
         # 2. 暴雨天气操作指南
@@ -206,7 +207,7 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="high",
-            references=[《铁路技术管理规程》, 《高速铁路自然灾害及异物侵限监测系统运用维护办法》]
+            references=["《铁路技术管理规程》", "《高速铁路自然灾害及异物侵限监测系统运用维护办法》"]
         )
 
         # 3. 冰雪天气操作指南
@@ -276,7 +277,7 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="medium",
-            references=[《铁路技术管理规程》, 《铁路冰雪天气行车组织办法》]
+            references=["《铁路技术管理规程》", "《铁路冰雪天气行车组织办法》"]
         )
 
         # 4. 设备故障操作指南
@@ -335,7 +336,7 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="high",
-            references=[《铁路技术管理规程》, 《高速铁路突发事件应急预案》]
+            references=["《铁路技术管理规程》", "《高速铁路突发事件应急预案》"]
         )
 
         # 5. 区间封锁操作指南
@@ -394,7 +395,7 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="high",
-            references=[《铁路技术管理规程》, 《铁路营业线施工安全管理办法》]
+            references=["《铁路技术管理规程》", "《铁路营业线施工安全管理办法》"]
         )
 
         # 6. 列车故障操作指南
@@ -453,29 +454,134 @@ class DispatchOperatorGuideRetriever:
                 }
             ],
             emergency_level="high",
-            references=[《铁路技术管理规程》, 《动车组故障应急处置办法》]
+            references=["《铁路技术管理规程》", "《动车组故障应急处置办法》"]
         )
 
         return core_guides
 
     def _load_guides_from_file(self) -> Dict[str, OperatorGuide]:
-        """从知识库文件加载操作指南"""
+        """从知识库文件加载操作指南（从operations/目录JSON文件）"""
         guides = {}
 
-        # 尝试加载调度员操作知识库
-        operator_guide_file = os.path.join(
-            self.knowledge_dir,
-            "High-Speed Train Dispatcher Emergency Operation Knowledge.txt"
-        )
-
-        if os.path.exists(operator_guide_file):
+        # 从operations/目录加载JSON知识库
+        operations_dir = os.path.join(self.knowledge_dir, "operations")
+        if os.path.exists(operations_dir):
             try:
-                guides.update(self._parse_operator_guide_file(operator_guide_file))
-                logger.info(f"[OperatorGuide] 从文件加载操作指南: {operator_guide_file}")
+                json_guides = self._load_guides_from_json(operations_dir)
+                guides.update(json_guides)
+                logger.info(f"[OperatorGuide] 从JSON知识库加载了 {len(json_guides)} 个操作指南")
             except Exception as e:
-                logger.warning(f"[OperatorGuide] 加载文件失败: {e}")
+                logger.warning(f"[OperatorGuide] 加载JSON知识库失败: {e}")
 
         return guides
+
+    def _load_guides_from_json(self, operations_dir: str) -> Dict[str, OperatorGuide]:
+        """
+        从operations/目录加载JSON格式的调度员操作知识库
+
+        Args:
+            operations_dir: operations目录路径
+
+        Returns:
+            Dict[str, OperatorGuide]: 操作指南字典
+        """
+        guides = {}
+
+        try:
+            for filename in os.listdir(operations_dir):
+                if filename.endswith('.json'):
+                    filepath = os.path.join(operations_dir, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        # 解析JSON知识库
+                        scenes = data.get('scenes', [])
+                        for scene in scenes:
+                            guide = self._parse_scene_to_guide(scene)
+                            if guide:
+                                # 使用scene_id作为key
+                                guide_key = scene.get('scene_id', filename)
+                                guides[guide_key] = guide
+
+                        logger.info(f"[OperatorGuide] 成功加载: {filename}, 包含 {len(scenes)} 个场景")
+                    except Exception as e:
+                        logger.warning(f"[OperatorGuide] 加载JSON失败 {filename}: {e}")
+        except Exception as e:
+            logger.warning(f"[OperatorGuide] 读取operations目录失败: {e}")
+
+        return guides
+
+    def _parse_scene_to_guide(self, scene: Dict) -> Optional[OperatorGuide]:
+        """
+        将JSON场景转换为OperatorGuide
+
+        Args:
+            scene: 场景字典
+
+        Returns:
+            OperatorGuide: 操作指南对象
+        """
+        try:
+            scene_id = scene.get('scene_id', '')
+            scene_name = scene.get('scene_name', '')
+            category = scene.get('category', '')
+
+            # 提取关键词
+            keywords_data = scene.get('keywords', {})
+            keywords = []
+            keywords.extend(keywords_data.get('primary', []))
+            keywords.extend(keywords_data.get('secondary', []))
+            # 添加同义词
+            synonyms = keywords_data.get('synonyms', {})
+            for syn_list in synonyms.values():
+                keywords.extend(syn_list)
+
+            # 提取操作步骤
+            operations = []
+            for op in scene.get('operations', []):
+                step = {
+                    "step": len(operations) + 1,
+                    "phase": op.get('phase', '执行阶段'),
+                    "title": op.get('title', ''),
+                    "actions": op.get('actions', []),
+                    "time_limit": op.get('time_limit', '根据情况')
+                }
+                operations.append(step)
+
+            # 提取参考规章
+            references = scene.get('references', [])
+
+            # 确定紧急程度
+            severity_levels = scene.get('severity_levels', [])
+            if '红色预警' in severity_levels:
+                emergency_level = "high"
+            elif '橙色预警' in severity_levels or category == '自然灾害':
+                emergency_level = "high"
+            else:
+                emergency_level = "medium"
+
+            # 根据scene_id映射scene_type
+            scene_type_map = {
+                "RAIN_SPEED_LIMIT": "TEMPORARY_SPEED_LIMIT",
+                "SNOW_SPEED_LIMIT": "TEMPORARY_SPEED_LIMIT",
+                "WIND_SPEED_LIMIT": "TEMPORARY_SPEED_LIMIT",
+                "EARTHQUAKE_WARNING": "SECTION_INTERRUPT",
+                "FOREIGN_INVASION": "SECTION_INTERRUPT"
+            }
+            scene_type = scene_type_map.get(scene_id, "UNKNOWN")
+
+            return OperatorGuide(
+                scene_type=scene_type,
+                scene_name=scene_name,
+                keywords=keywords,
+                operations=operations,
+                emergency_level=emergency_level,
+                references=references
+            )
+        except Exception as e:
+            logger.warning(f"[OperatorGuide] 解析场景失败: {e}")
+            return None
 
     def _parse_operator_guide_file(self, filepath: str) -> Dict[str, OperatorGuide]:
         """

@@ -1,12 +1,31 @@
 # -*- coding: utf-8 -*-
 """
 基础求解器接口模块
-定义统一求解器接口
+【已废弃】请使用 scheduler_comparison.scheduler_interface.BaseScheduler
+
+废弃原因：
+1. 架构重复：与 Scheduler 系统的 BaseScheduler 功能重叠
+2. 维护困难：需要同时维护两套接口
+3. 接口不一致：导致使用困惑
+
+替代方案：
+使用 scheduler_comparison.scheduler_interface.BaseScheduler
+
+迁移日期：2026-04-21
+计划完全移除日期：2026-06-01
 """
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
+
+# 添加废弃警告
+warnings.warn(
+    "BaseSolver/SolverRequest/SolverResponse已废弃，请使用BaseScheduler/DelayInjection/SchedulerResult（scheduler_comparison）",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class SolverRequest(BaseModel):

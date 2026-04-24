@@ -113,11 +113,18 @@ class LLMAgent:
             if not workflow_result.success:
                 raise RuntimeError(f"工作流执行失败: {workflow_result.message}")
 
-            # 从工作流结果提取信息
+# 从工作流结果提取信息
             accident_card_data = workflow_result.debug_trace.get("accident_card", {})
             planning_intent = workflow_result.debug_trace.get("planning_intent", "unknown")
             skill_dispatch = workflow_result.debug_trace.get("skill_dispatch", {})
-            selected_solver = skill_dispatch.get("主技能", "unknown")
+
+            # 处理 skill_dispatch 可能是字符串的情况
+            if isinstance(skill_dispatch, str):
+                selected_solver = skill_dispatch
+            elif isinstance(skill_dispatch, dict):
+                selected_solver = skill_dispatch.get("主技能", skill_dispatch.get("solver", "unknown"))
+            else:
+                selected_solver = "unknown"
 
             # 映射场景类型
             scene_mapping = {
@@ -127,13 +134,8 @@ class LLMAgent:
             }
             recognized_scenario = scene_mapping.get(accident_card_data.get("scene_category", ""), "unknown")
 
-            # 映射技能
-            skill_mapping = {
-                "临时限速": "temporary_speed_limit_skill",
-                "突发故障": "sudden_failure_skill",
-                "区间封锁": "section_interrupt_skill"
-            }
-            selected_skill = skill_mapping.get(accident_card_data.get("scene_category", ""), "unknown")
+            # 所有场景统一使用通用求解技能
+            selected_skill = "dispatch_solve_skill"
 
             # 提取 policy_decision
             policy_decision = workflow_result.debug_trace.get("policy_decision", {})
@@ -173,12 +175,13 @@ class LLMAgent:
                     skill_name=selected_skill
                 )
             else:
+                error_msg = getattr(solver_result, 'error_message', None) if solver_result else None
                 dispatch_result = DispatchSkillOutput(
                     optimized_schedule=[],
                     delay_statistics={},
                     computation_time=0,
                     success=False,
-                    message=solver_result.message if solver_result else "工作流执行失败",
+                    message=error_msg if error_msg else "工作流执行失败",
                     skill_name=selected_skill
                 )
 
@@ -437,8 +440,10 @@ class LLMAgent:
             )
 
             # 注册多个调度器进行比较
+            # 【修复】移除已废弃的fsfs调度器，确保所有可用调度器都被注册
             available_schedulers = [
-                "mip", "fcfs", "fsfs", "max_delay_first", "noop"
+                "mip", "fcfs", "hierarchical", "max_delay_first", "noop"
+                # 可选：添加 "eaf"（最早到站优先）进行对比
             ]
             logger.debug(f"[Agent] 开始注册调度器: {available_schedulers}")
             for sched_name in available_schedulers:
@@ -481,17 +486,29 @@ class LLMAgent:
                 # 返回失败结果，但仍尝试显示部分信息
                 return result
 
-            # 构建比较结果
+# 构建比较结果
             if result_comparison and result_comparison.success and result_comparison.results:
                 winner = result_comparison.winner
                 ranking = []
                 for r in result_comparison.results:
+                    # 【专家修复】添加小数位格式化（统一保留2位小数）
+                    max_delay_min = r.result.metrics.max_delay_seconds / 60 if r.result.metrics else 0
+                    avg_delay_min = r.result.metrics.avg_delay_seconds / 60 if r.result.metrics else 0
+                    total_delay_min = r.result.metrics.total_delay_seconds / 60 if r.result.metrics else 0
+
+                    # 【关键修复】加入受影响列车数和求解时间，保证前后端展示一致
+                    affected_count = r.result.metrics.affected_trains_count if r.result.metrics else 0
+                    comp_time = r.result.metrics.computation_time if r.result.metrics else 0
+
                     ranking.append({
                         "rank": r.rank,
                         "scheduler": r.scheduler_name,
-                        "max_delay_minutes": r.result.metrics.max_delay_seconds / 60 if r.result.metrics else 0,
-                        "avg_delay_minutes": r.result.metrics.avg_delay_seconds / 60 if r.result.metrics else 0,
-                        "score": r.score
+                        "max_delay_minutes": round(max_delay_min, 2),
+                        "avg_delay_minutes": round(avg_delay_min, 2),
+                        "total_delay_minutes": round(total_delay_min, 2),
+                        "affected_trains_count": affected_count,
+                        "computation_time": round(comp_time, 2),
+                        "score": round(r.score, 2)
                     })
 
                 winner_scheduler = winner.scheduler_name if winner else "unknown"
@@ -530,8 +547,28 @@ class LLMAgent:
                 result.dispatch_result.delay_statistics = delay_statistics
                 
                 # 增强推理过程显示比较结果
-                ranking_str = "\n".join([f"  {i+1}. {r['scheduler']}: 最高延误{r['max_delay_minutes']:.1f}分钟, 平均延误{r['avg_delay_minutes']:.1f}分钟" 
-                                        for i, r in enumerate(ranking)])
+                # 【关键修复】统一显示格式：与 comparator.get_ranking_table() 保持一致
+                ranking_lines = [
+                    "  排名  调度器           最大延误    晚点列车平均延误      总延误      受影响列车  计算时间",
+                    "  " + "-" * 88
+                ]
+                for i, r in enumerate(ranking):
+                    max_delay_str = f"{r['max_delay_minutes']:.2f}分"
+                    avg_delay_str = f"{r['avg_delay_minutes']:.2f}分/{r['affected_trains_count']}列"
+                    total_delay_str = f"{r['total_delay_minutes']:.2f}分"
+                    comp_time_str = f"{r['computation_time']:.2f}秒"
+                    winner_mark = " ★" if r['scheduler'] == winner_scheduler else ""
+
+                    ranking_lines.append(
+                        f"  {r['rank']:<6}{r['scheduler']:<16}"
+                        f"{max_delay_str:<10}"
+                        f"{avg_delay_str:<18}"
+                        f"{total_delay_str:<12}"
+                        f"{r['affected_trains_count']}列{' ' * 6}"
+                        f"{comp_time_str}{winner_mark}"
+                    )
+
+                ranking_str = "\n".join(ranking_lines)
                 result.reasoning += f"\n【调度器比较】\n{ranking_str}\n【推荐方案】{winner_scheduler}"
 
             computation_time = time.time() - start_time
@@ -541,8 +578,8 @@ class LLMAgent:
             # 打印调度方案摘要
             if result.dispatch_result and result.dispatch_result.delay_statistics:
                 stats = result.dispatch_result.delay_statistics
-                logger.info(f"[Agent] 调度完成: 总延误{stats.get('total_delay_minutes', 0)}分钟, "
-                           f"最大延误{stats.get('max_delay_minutes', 0)}分钟, "
+                logger.info(f"[Agent] 调度完成: 总延误{stats.get('total_delay_minutes', 0):.1f}分钟, "
+                           f"最大延误{stats.get('max_delay_minutes', 0):.1f}分钟, "
                            f"推荐调度器: {stats.get('winner_scheduler', '未知')}, "
                            f"耗时: {computation_time:.2f}秒")
 

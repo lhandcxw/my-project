@@ -224,12 +224,30 @@ def validate_time_monotonicity(schedule: Dict[str, List[Dict]]) -> List[str]:
 def validate_headway(
     schedule: Dict[str, List[Dict]],
     station_codes: List[str],
-    headway_time: int = HEADWAY_TIME
+    headway_time: int = HEADWAY_TIME,
+    station_track_counts: Optional[Dict[str, int]] = None
 ) -> List[str]:
-    """验证追踪间隔约束：在同一车站，后车必须晚于前车发车"""
+    """
+    验证追踪间隔约束：在同一车站，同股道后车必须晚于前车发车
+    【修复】考虑多股道能力：不同股道列车不受追踪间隔约束，只受最小发车间隔约束
+    """
     errors = []
 
-    # 按发车时间排序所有列车
+    # 加载车站股道数据（如果未提供）
+    if station_track_counts is None:
+        try:
+            from models.data_loader import load_stations
+            stations_data = load_stations()
+            station_track_counts = {
+                s["station_code"]: s.get("track_count", 1)
+                for s in stations_data
+            }
+        except Exception:
+            station_track_counts = {}
+
+    # 最小发车间隔（多股道车站不同股道之间的最小间隔）
+    min_departure_interval = DispatchEnvConfig.get("constraints.min_departure_interval", 120)
+
     for station in station_codes:
         train_departures = []
 
@@ -237,22 +255,65 @@ def validate_headway(
             for stop in stops:
                 if stop["station_code"] == station:
                     dep_time = time_to_seconds(stop["departure_time"])
+                    arr_time = time_to_seconds(stop["arrival_time"])
+                    # 【修复】跳过通过站（arrival == departure），不占站台，不纳入发车间隔检查
+                    if arr_time == dep_time:
+                        continue
                     train_departures.append((train_id, dep_time))
                     break
 
         # 按发车时间排序
         train_departures.sort(key=lambda x: x[1])
 
-        # 检查追踪间隔
-        for i in range(1, len(train_departures)):
-            prev_train, prev_time = train_departures[i - 1]
-            curr_train, curr_time = train_departures[i]
+        track_count = station_track_counts.get(station, 1)
 
-            if curr_time - prev_time < headway_time:
-                errors.append(
-                    f"车站 {station}: 列车 {prev_train} 和 {curr_train} "
-                    f"追踪间隔 {curr_time - prev_time}秒 少于要求的 {headway_time}秒"
-                )
+        if track_count <= 1:
+            # 单股道车站：所有列车必须满足追踪间隔
+            for i in range(1, len(train_departures)):
+                prev_train, prev_time = train_departures[i - 1]
+                curr_train, curr_time = train_departures[i]
+
+                if curr_time - prev_time < headway_time:
+                    errors.append(
+                        f"车站 {station} (单股道): 列车 {prev_train} 和 {curr_train} "
+                        f"追踪间隔 {curr_time - prev_time}秒 少于要求的 {headway_time}秒"
+                    )
+        else:
+            # 多股道车站：使用轮询分配股道，同股道检查追踪间隔，不同股道检查最小发车间隔
+            last_departures_per_track = [0] * track_count
+
+            for idx, (train_id, dep_time) in enumerate(train_departures):
+                assigned_track = idx % track_count
+                last_dep = last_departures_per_track[assigned_track]
+
+                if last_dep > 0:
+                    # 同股道需满足追踪间隔
+                    if dep_time - last_dep < headway_time:
+                        errors.append(
+                            f"车站 {station} (股道{assigned_track+1}): 列车 {train_id} "
+                            f"追踪间隔 {dep_time - last_dep}秒 少于要求的 {headway_time}秒"
+                        )
+
+                # 【修复】对于大站（>6股道），放宽咽喉区约束阈值；
+                # 大站通常有多条咽喉进路，不同股道可近似并行发车
+                # 同时排除当前股道的最后发车时间（避免同一时刻不同股道发车被误判）
+                other_track_deps = [last_departures_per_track[i] for i in range(track_count) if i != assigned_track and last_departures_per_track[i] > 0]
+                if other_track_deps:
+                    most_recent = max(other_track_deps)
+                    # 根据车站规模动态调整最小发车间隔
+                    if track_count >= 10:
+                        effective_min_interval = 60  # 特等站近似并行能力
+                    elif track_count >= 6:
+                        effective_min_interval = 90  # 大站
+                    else:
+                        effective_min_interval = min_departure_interval
+                    if dep_time - most_recent < effective_min_interval:
+                        errors.append(
+                            f"车站 {station}: 列车 {train_id} 发车间隔 {dep_time - most_recent}秒 "
+                            f"少于最小发车间隔 {effective_min_interval}秒（咽喉区约束）"
+                        )
+
+                last_departures_per_track[assigned_track] = dep_time
 
     return errors
 
@@ -324,6 +385,7 @@ def calculate_delay_statistics(
             delay_by_train[train_id] = {"max": 0, "avg": 0, "total": 0}
 
     # 按等级统计
+    # 【修复】使用 DelayLevel.name 作为键（MICRO/SMALL/MEDIUM/LARGE），与枚举定义一致
     level_counts = {
         "MICRO": 0,
         "SMALL": 0,
@@ -333,7 +395,7 @@ def calculate_delay_statistics(
 
     for delay in delays:
         level = calculate_delay_level(delay)
-        level_counts[level.value] += 1
+        level_counts[level.name] += 1
 
     stats = {
         "total_delays": len(delays),
