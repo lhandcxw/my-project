@@ -49,7 +49,7 @@ from railway_agent.snapshot_builder import SnapshotBuilder, get_snapshot_builder
 from railway_agent.session_manager import SessionManager, get_session_manager
 
 # 适配器
-from railway_agent.adapters.llm_adapter import LLMAdapter, get_llm_adapter
+from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.adapters.llm_prompt_adapter import LLMPromptAdapter, get_llm_prompt_adapter
 
 # 为了向后兼容，ToolRegistry 指向 SkillRegistry
@@ -78,8 +78,7 @@ __all__ = [
     "SessionManager",
     "get_session_manager",
     # LLM适配器
-    "LLMAdapter",
-    "get_llm_adapter",
+    "get_llm_caller",
     "LLMPromptAdapter",
     "get_llm_prompt_adapter",
     # Skills

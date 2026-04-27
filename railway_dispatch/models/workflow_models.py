@@ -4,10 +4,13 @@
 定义统一中间模型，用于工作流骨架
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from enum import Enum
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SceneType(str, Enum):
@@ -49,6 +52,36 @@ class AccidentCard(BaseModel):
     # 信息完整性判定
     is_complete: bool = Field(default=False, description="信息是否完整")
     missing_fields: List[str] = Field(default_factory=list, description="缺失信息列表")
+
+    # 用户意图（由全局Agent用于 Light/Heavy 模式切换）
+    intent: str = Field(default="dispatch", description="用户意图: dispatch(调度)/query(查询)/chat(闲聊)/overview(概览)")
+
+    @field_validator("intent", mode="before")
+    @classmethod
+    def _normalize_intent(cls, v):
+        """意图归一化验证：只允许预定义值，非法值回退到 dispatch"""
+        if not isinstance(v, str):
+            return "dispatch"
+        v_lower = v.strip().lower()
+        allowed = {"dispatch", "query", "chat", "overview"}
+        if v_lower in allowed:
+            return v_lower
+        # 常见别名映射
+        alias_map = {
+            "调度": "dispatch",
+            "查询": "query",
+            "问答": "chat",
+            "闲聊": "chat",
+            "概览": "overview",
+            "总览": "overview",
+            "search": "query",
+            "ask": "chat",
+            "talk": "chat",
+        }
+        if v_lower in alias_map:
+            return alias_map[v_lower]
+        logger.warning(f"[AccidentCard] 非法意图值 '{v}'，回退到 dispatch")
+        return "dispatch"
 
     # 判定规则（导师建议）：
     # 可以进入求解条件：

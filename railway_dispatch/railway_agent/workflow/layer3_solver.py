@@ -14,7 +14,7 @@
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
 from models.workflow_models import AccidentCard
@@ -56,7 +56,7 @@ class Layer3Solver:
             trains: 列车数据（工作流传入）
             stations: 车站数据（工作流传入）
             planner_decision: L2 的 planner_decision，包含 preferred_solver 和 solver_config
-            network_snapshot: 网络快照（预留）
+            network_snapshot: 网络快照（可选），用于裁剪求解范围
         """
         logger.debug("[L3] 求解执行引擎启动（回退模式）")
 
@@ -69,6 +69,9 @@ class Layer3Solver:
             if stations is None:
                 stations = get_stations_pydantic()
                 logger.info(f"[L3] 自动加载车站数据: {len(stations)} 个")
+
+        # 【新增】利用 NetworkSnapshot 裁剪数据范围，减少求解规模
+        trains, stations = self._apply_snapshot_filter(trains, stations, network_snapshot)
 
         # 【修复】确保 trains/stations 是 Pydantic 对象（防止传入 dict）
         trains, stations = self._ensure_pydantic_objects(trains, stations)
@@ -128,6 +131,84 @@ class Layer3Solver:
             import traceback
             logger.error(f"详细堆栈: {traceback.format_exc()}")
             return self._build_error_result(scheduler_name, str(e))
+
+    # ================================================================
+    # Snapshot 数据裁剪（新增）
+    # ================================================================
+
+    def _apply_snapshot_filter(
+        self,
+        trains: List[Any],
+        stations: List[Any],
+        network_snapshot: Optional[Any]
+    ) -> Tuple[List[Any], List[Any]]:
+        """
+        利用 NetworkSnapshot 裁剪求解数据范围
+
+        策略：
+        1. 如果 snapshot 存在且有 candidate_train_ids，从全量数据中筛选出候选列车
+        2. 如果 snapshot 存在且有 stations，从全量数据中筛选出窗口内车站
+        3. 如果筛选后数据为空，自动回退到全量数据（安全兜底）
+
+        Args:
+            trains: 全量列车数据
+            stations: 全量车站数据
+            network_snapshot: 网络快照（可选）
+
+        Returns:
+            Tuple[trains, stations]: 裁剪后的数据（可能仍为全量）
+        """
+        if not network_snapshot:
+            return trains, stations
+
+        # 筛选列车：使用 candidate_train_ids
+        filtered_trains = trains
+        if hasattr(network_snapshot, 'candidate_train_ids') and network_snapshot.candidate_train_ids:
+            candidate_ids = set(network_snapshot.candidate_train_ids)
+            filtered_trains = [
+                t for t in trains
+                if (hasattr(t, 'train_id') and t.train_id in candidate_ids)
+                or (isinstance(t, dict) and t.get('train_id') in candidate_ids)
+            ]
+            if filtered_trains:
+                logger.info(
+                    f"[L3] Snapshot 列车裁剪: {len(filtered_trains)} 列 (原 {len(trains)} 列)"
+                )
+            else:
+                logger.warning(
+                    f"[L3] Snapshot 列车裁剪后为空，回退到全量 {len(trains)} 列"
+                )
+                filtered_trains = trains
+
+        # 筛选车站：使用 snapshot.stations 中的 station_code
+        filtered_stations = stations
+        if hasattr(network_snapshot, 'stations') and network_snapshot.stations:
+            window_codes = set()
+            for s in network_snapshot.stations:
+                if isinstance(s, dict):
+                    code = s.get('station_code')
+                    if code:
+                        window_codes.add(code)
+                elif hasattr(s, 'station_code'):
+                    window_codes.add(s.station_code)
+
+            if window_codes:
+                filtered_stations = [
+                    s for s in stations
+                    if (hasattr(s, 'station_code') and s.station_code in window_codes)
+                    or (isinstance(s, dict) and s.get('station_code') in window_codes)
+                ]
+                if filtered_stations:
+                    logger.info(
+                        f"[L3] Snapshot 车站裁剪: {len(filtered_stations)} 个 (原 {len(stations)} 个)"
+                    )
+                else:
+                    logger.warning(
+                        f"[L3] Snapshot 车站裁剪后为空，回退到全量 {len(stations)} 个"
+                    )
+                    filtered_stations = stations
+
+        return filtered_trains, filtered_stations
 
     # ================================================================
     # 调度器加载（使用 Scheduler 系统）

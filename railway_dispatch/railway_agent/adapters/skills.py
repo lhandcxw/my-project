@@ -26,6 +26,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scheduler_comparison.scheduler_interface import SchedulerRegistry, DelayInjection, SchedulerResult
+from railway_agent.solver_selector import SolverSelector
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,8 @@ class BaseDispatchSkill:
         train_ids: List[str],
         station_codes: List[str],
         delay_injection: Dict[str, Any],
-        optimization_objective: str = "min_total_delay"
+        optimization_objective: str = "min_total_delay",
+        **kwargs
     ) -> DispatchSkillOutput:
         """执行调度Skill"""
         raise NotImplementedError
@@ -149,7 +151,8 @@ class DispatchSolveSkill(BaseDispatchSkill):
         train_ids: List[str],
         station_codes: List[str],
         delay_injection: Dict[str, Any],
-        optimization_objective: str = "min_total_delay"
+        optimization_objective: str = "min_total_delay",
+        **kwargs
     ) -> DispatchSkillOutput:
         start_time = time.time()
 
@@ -263,15 +266,22 @@ class CompareStrategiesSkill(BaseDispatchSkill):
         strategies = kwargs.get("strategies") or delay_injection.get("solver_config", {}).get("strategies")
         time_budget = kwargs.get("time_budget", 300)
 
-        # 自动选择策略
+        # 自动选择策略（与 layer2_planner._tool_compare_strategies 对齐）
         if not strategies:
             scenario_type = delay_injection.get("scenario_type", "")
-            if scenario_type == "section_interrupt":
+            affected_count = len(train_ids)
+            delay_mins = delay_injection.get("expected_duration", 10)
+            is_large = affected_count > 10 or delay_mins > 30
+            is_emergency = delay_mins > 60 or scenario_type == "section_interrupt"
+
+            if is_emergency:
                 strategies = ["fcfs"]
-            elif len(train_ids) <= 10:
-                strategies = ["fcfs", "mip"]
+            elif is_large:
+                # 大规模：分层求解器自动选择 + FCFS 保底
+                strategies = ["hierarchical", "fcfs"]
             else:
-                strategies = ["fcfs", "max_delay_first"]
+                # 小规模：MIP 全局最优 + 分层求解器 + FCFS 保底
+                strategies = ["mip", "hierarchical", "fcfs"]
 
         delay_info = self._build_delay_injection(delay_injection)
 
@@ -301,34 +311,46 @@ class CompareStrategiesSkill(BaseDispatchSkill):
             except Exception as e:
                 results.append({"scheduler": scheduler_name, "success": False, "error": str(e)})
 
-        # 按最大延误排序
+        # 多目标评分与Pareto分析
         successful = [r for r in results if r.get("success")]
-        successful.sort(key=lambda r: r.get("max_delay_minutes", 9999))
-        best = successful[0] if successful else None
+        scored_successful = [
+            SolverSelector.score_result(r, optimization_objective)
+            for r in successful
+        ]
+        pareto_results = SolverSelector.find_pareto_front(scored_successful)
+
+        # 按综合得分排序（越低越好）
+        scored_successful.sort(key=lambda r: r.get("composite_score", 9999))
+        best = scored_successful[0] if scored_successful else None
 
         computation_time = time.time() - start_time
 
+        # 构建摘要（成功+失败）
         summary_lines = []
+        for r in scored_successful:
+            summary_lines.append(
+                f"{r['scheduler']}: 总延误{r.get('total_delay_minutes')}分, "
+                f"最大延误{r.get('max_delay_minutes')}分, 耗时{r.get('solving_time_seconds')}秒, "
+                f"综合得分={r.get('composite_score', 'N/A')}"
+            )
         for r in results:
-            if r.get("success"):
-                summary_lines.append(
-                    f"{r['scheduler']}: 总延误{r.get('total_delay_minutes')}分, "
-                    f"最大延误{r.get('max_delay_minutes')}分, 耗时{r.get('solving_time_seconds')}秒"
-                )
-            else:
+            if not r.get("success"):
                 summary_lines.append(f"{r['scheduler']}: 失败({r.get('error', '')})")
+
+        pareto_names = [p["solver"] for p in pareto_results] if pareto_results else []
 
         return DispatchSkillOutput(
             optimized_schedule={},
             delay_statistics={
                 "strategies_tested": len(results),
-                "results": results,
-                "best_scheduler": best["scheduler"] if best else None,
+                "results": scored_successful + [r for r in results if not r.get("success")],
+                "best_scheduler": best["solver"] if best else None,
+                "pareto_solvers": pareto_names,
                 "comparison_summary": " | ".join(summary_lines)
             },
             computation_time=computation_time,
             success=best is not None,
-            message=f"策略对比完成。最优: {best['scheduler'] if best else '无'}",
+            message=f"策略对比完成。最优: {best['solver'] if best else '无'}, Pareto集: {pareto_names}",
             skill_name=self.name
         )
 
@@ -644,7 +666,8 @@ class GetTrainStatusSkill(BaseDispatchSkill):
                         stops = t.schedule.stops
                         if isinstance(stops, (list, tuple)):
                             train_info["total_stops"] = len(stops)
-                            train_info["stops"] = [
+                            # 返回全部站点，同时提供前3站摘要供快速预览
+                            all_stops = [
                                 {
                                     "station_code": s.station_code,
                                     "station_name": s.station_name,
@@ -652,8 +675,10 @@ class GetTrainStatusSkill(BaseDispatchSkill):
                                     "departure_time": s.departure_time,
                                     "is_stopped": s.is_stopped
                                 }
-                                for s in stops[:5]
+                                for s in stops
                             ]
+                            train_info["stops"] = all_stops
+                            train_info["stops_preview"] = all_stops[:3]
                     break
 
         computation_time = time.time() - start_time
@@ -762,6 +787,510 @@ class QueryTimetableSkill(BaseDispatchSkill):
 
 
 # ============================================
+# L2 Agent 工具类（迁入 SkillRegistry，统一工具层）
+# ============================================
+
+class AssessImpactSkill(BaseDispatchSkill):
+    """
+    事故态势感知技能
+    分析直接影响列车数、延误传播风险、紧急程度
+    """
+    name = "assess_impact"
+    description = "评估事故的全局影响。分析直接影响列车数、延误传播风险、即将到达的列车数，返回量化的紧急程度和策略建议。建议在决策前首先调用此工具获取数据支撑。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        from datetime import datetime
+
+        accident_card = kwargs.get("accident_card")
+        if not accident_card:
+            return DispatchSkillOutput(
+                optimized_schedule={}, delay_statistics={},
+                computation_time=0.0, success=False,
+                message="缺少 accident_card 上下文", skill_name=self.name
+            )
+
+        user_mentioned = set(getattr(accident_card, 'affected_train_ids', None) or [])
+        location = getattr(accident_card, 'location_code', None) or ""
+        delay = getattr(accident_card, 'expected_duration', None) or 10
+        network_snapshot = kwargs.get("network_snapshot")
+
+        search_scope = self.trains
+        if network_snapshot and hasattr(network_snapshot, 'candidate_train_ids'):
+            candidate_ids = set(network_snapshot.candidate_train_ids)
+            search_scope = [
+                t for t in self.trains
+                if (hasattr(t, 'train_id') and t.train_id in candidate_ids)
+                or (isinstance(t, dict) and t.get('train_id') in candidate_ids)
+            ]
+
+        trains_at_location = []
+        initially_delayed = []
+        nearby_not_mentioned = []
+
+        if location and search_scope:
+            for train in search_scope:
+                train_id = getattr(train, 'train_id', None) if hasattr(train, 'train_id') else train.get('train_id')
+                if not train_id:
+                    continue
+                passes_location = False
+                schedule = getattr(train, 'schedule', None) if hasattr(train, 'schedule') else train.get('schedule')
+                if schedule:
+                    stops = getattr(schedule, 'stops', None) if hasattr(schedule, 'stops') else schedule.get('stops')
+                    if stops:
+                        for stop in stops:
+                            station_code_val = getattr(stop, 'station_code', None) if hasattr(stop, 'station_code') else stop.get('station_code')
+                            if station_code_val == location:
+                                passes_location = True
+                                break
+                if passes_location:
+                    trains_at_location.append(train_id)
+                    if train_id in user_mentioned:
+                        initially_delayed.append(train_id)
+                    else:
+                        nearby_not_mentioned.append(train_id)
+
+        for tid in user_mentioned:
+            if tid not in trains_at_location:
+                initially_delayed.append(tid)
+                trains_at_location.append(tid)
+
+        exposed_count = len(trains_at_location)
+        hour = datetime.now().hour
+        is_peak = 9 <= hour <= 18
+        is_window = 0 <= hour < 6
+        density_factor = 1.5 if is_peak else (0.5 if is_window else 1.0)
+        estimated_propagation = int((delay / 10) * (exposed_count / 5) * density_factor)
+        estimated_propagation = min(estimated_propagation, exposed_count * 2)
+        estimated_propagation = max(0, estimated_propagation)
+        total_impact = exposed_count + estimated_propagation
+
+        if is_window:
+            urgency = "low"
+        elif total_impact <= 3 and delay <= 15:
+            urgency = "low"
+        elif total_impact <= 8 and delay <= 30:
+            urgency = "medium"
+        elif total_impact <= 15 and delay <= 60:
+            urgency = "high"
+        else:
+            urgency = "critical"
+        if is_peak and urgency in ("low", "medium") and total_impact > 5:
+            urgency = "high"
+
+        trains_at_location_detail = []
+        for tid in trains_at_location[:15]:
+            for t in (self.trains or []):
+                t_id = getattr(t, 'train_id', None) if hasattr(t, 'train_id') else t.get('train_id')
+                if t_id == tid:
+                    train_type = getattr(t, 'train_type', '未知') if hasattr(t, 'train_type') else t.get('train_type', '未知')
+                    trains_at_location_detail.append({"train_id": tid, "train_type": train_type, "initially_delayed": tid in user_mentioned})
+                    break
+
+        result = {
+            "success": True,
+            "initially_delayed_trains": len(initially_delayed),
+            "initially_delayed_ids": initially_delayed[:10],
+            "trains_at_location": exposed_count,
+            "trains_at_location_ids": trains_at_location[:10],
+            "nearby_not_mentioned": len(nearby_not_mentioned),
+            "nearby_not_mentioned_ids": nearby_not_mentioned[:10],
+            "estimated_propagation": estimated_propagation,
+            "total_potentially_affected": total_impact,
+            "directly_affected": exposed_count,
+            "approaching_trains": len(nearby_not_mentioned) + estimated_propagation,
+            "nearby_train_ids": (nearby_not_mentioned + [f"传播~{i}" for i in range(estimated_propagation)])[:10],
+            "base_delay_minutes": delay,
+            "is_peak_hours": is_peak,
+            "is_window_period": is_window,
+            "urgency_reference": urgency,
+            "affected_trains_detail": trains_at_location_detail,
+            "scene_category": getattr(accident_card, 'scene_category', ''),
+            "location_type": getattr(accident_card, 'location_type', ''),
+            "is_complete": getattr(accident_card, 'is_complete', True),
+            "methodology_note": (
+                f"受影响列车基于运行图分析（非仅用户输入）。"
+                f"{exposed_count}列会经过事故位置，"
+                f"其中{len(initially_delayed)}列被注入初始延误，"
+                f"估算{estimated_propagation}列可能受传播影响。"
+            )
+        }
+
+        return DispatchSkillOutput(
+            optimized_schedule={}, delay_statistics=result,
+            computation_time=time.time() - start_time, success=True,
+            message=f"态势感知完成，紧急度: {urgency}", skill_name=self.name
+        )
+
+
+class QuickLineOverviewSkill(BaseDispatchSkill):
+    """线路快速概览技能"""
+    name = "quick_line_overview"
+    description = "线路快速概览：统计全线密度、高峰区间、当前时段。纯数据统计，不调用求解器，毫秒级响应。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        from datetime import datetime
+
+        total = len(self.trains) if self.trains else 0
+        station_counts = {}
+        for t in self.trains:
+            if hasattr(t, 'schedule') and t.schedule and hasattr(t.schedule, 'stops'):
+                for s in t.schedule.stops:
+                    code = getattr(s, 'station_code', None)
+                    if code:
+                        station_counts[code] = station_counts.get(code, 0) + 1
+
+        densest = max(station_counts.items(), key=lambda x: x[1]) if station_counts else ("", 0)
+        hour = datetime.now().hour
+        if 0 <= hour < 6:
+            period, period_note = "天窗期", "列车稀疏，适合维修作业"
+        elif 6 <= hour < 9:
+            period, period_note = "早高峰前", "密度逐步增加"
+        elif 9 <= hour < 14:
+            period, period_note = "日间运营", "密度较高"
+        elif 14 <= hour < 18:
+            period, period_note = "下午高峰", "全天密度最高"
+        elif 18 <= hour < 22:
+            period, period_note = "晚间运营", "密度逐步下降"
+        else:
+            period, period_note = "深夜", "即将进入天窗期"
+
+        result = {
+            "success": True,
+            "total_trains": total,
+            "period": period,
+            "period_note": period_note,
+            "densest_station_code": densest[0],
+            "densest_station_trains": densest[1],
+            "station_count": len(station_counts),
+            "summary": f"当前{period}，全线共{total}列运行图，{densest[0]}站密度最高({densest[1]}列停靠)"
+        }
+        return DispatchSkillOutput(
+            optimized_schedule={}, delay_statistics=result,
+            computation_time=time.time() - start_time, success=True,
+            message="线路概览完成", skill_name=self.name
+        )
+
+
+class CheckImpactCascadeSkill(BaseDispatchSkill):
+    """延误传播快速检查技能"""
+    name = "check_impact_cascade"
+    description = "延误传播快速检查：基于运行图静态分析，不调用求解器。回答某列车在某站晚点会堵多少车。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        from datetime import datetime
+
+        train_id = kwargs.get("train_id", "")
+        station_code = kwargs.get("station_code", "")
+        delay_mins = kwargs.get("delay_minutes", 0)
+
+        if not train_id or not station_code:
+            return DispatchSkillOutput(
+                optimized_schedule={}, delay_statistics={"success": False, "error": "缺少train_id或station_code参数"},
+                computation_time=0.0, success=False,
+                message="缺少参数", skill_name=self.name
+            )
+
+        affected_stations = []
+        for t in self.trains:
+            if getattr(t, 'train_id', None) == train_id:
+                found = False
+                schedule = getattr(t, 'schedule', None)
+                stops = getattr(schedule, 'stops', []) if schedule else []
+                for s in stops:
+                    code = getattr(s, 'station_code', None)
+                    if found and code:
+                        affected_stations.append(code)
+                    if code == station_code:
+                        found = True
+                        affected_stations.append(code)
+                break
+
+        impacted = []
+        for t in self.trains:
+            tid = getattr(t, 'train_id', None)
+            if not tid or tid == train_id:
+                continue
+            schedule = getattr(t, 'schedule', None)
+            stops = getattr(schedule, 'stops', []) if schedule else []
+            for s in stops:
+                code = getattr(s, 'station_code', None)
+                if code in affected_stations:
+                    impacted.append({"train_id": tid, "station": code})
+                    break
+
+        density_factor = 1.5 if 9 <= datetime.now().hour <= 18 else 1.0
+        estimated_propagation = int((delay_mins / 10) * (len(impacted) / 5) * density_factor)
+        estimated_propagation = min(estimated_propagation, len(impacted) * 2)
+        estimated_propagation = max(0, estimated_propagation)
+
+        result = {
+            "success": True,
+            "source_train": train_id,
+            "source_station": station_code,
+            "delay_minutes": delay_mins,
+            "downstream_stations": len(affected_stations),
+            "downstream_station_ids": affected_stations[:10],
+            "potentially_impacted_trains": len(impacted),
+            "impacted_trains_sample": [i["train_id"] for i in impacted[:15]],
+            "estimated_propagation": estimated_propagation,
+            "note": (
+                f"静态分析：基于运行图前后顺序。"
+                f"{train_id}在{station_code}及之后共经{len(affected_stations)}站，"
+                f"这些站上有{len(impacted)}列其他列车可能受传播影响。"
+            )
+        }
+        return DispatchSkillOutput(
+            optimized_schedule={}, delay_statistics=result,
+            computation_time=time.time() - start_time, success=True,
+            message="传播检查完成", skill_name=self.name
+        )
+
+
+class GenerateDispatchNoticeSkill(BaseDispatchSkill):
+    """生成正式调度通知文本技能"""
+    name = "generate_dispatch_notice"
+    description = "生成正式的铁路调度通知文本。纯LLM调用，不跑求解器。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        accident_card = kwargs.get("accident_card")
+        if not accident_card:
+            return DispatchSkillOutput(
+                optimized_schedule={}, delay_statistics={},
+                computation_time=0.0, success=False,
+                message="缺少 accident_card 上下文", skill_name=self.name
+            )
+
+        audience = kwargs.get("audience", "station")
+        audience_label = {"station": "车站值班员", "driver": "列车司机", "control_center": "行车调度台"}.get(audience, "车站值班员")
+
+        prompt_lines = [
+            f"请生成一份正式的铁路调度通知，受众：{audience_label}。",
+            f"事故类型：{getattr(accident_card, 'scene_category', '未知')}，故障：{getattr(accident_card, 'fault_type', '未知')}。",
+            f"位置：{getattr(accident_card, 'location_name', '') or getattr(accident_card, 'location_code', '') or '未知'}，预计持续{getattr(accident_card, 'expected_duration', '未知')}分钟。",
+            f"受影响列车：{', '.join((getattr(accident_card, 'affected_train_ids', None) or [])[:8]) if getattr(accident_card, 'affected_train_ids', None) else '待排查'}。",
+            "要求：",
+            "1. 包含命令编号占位符[命令编号]、发令时间占位符[发令时间]、受令处所占位符[受令处所]",
+            "2. 语气正式、简洁、准确，符合中国铁路调度命令规范",
+            "3. 明确限速值、起止时间、影响范围",
+            "4. 不超过200字"
+        ]
+        prompt = "\n".join(prompt_lines)
+
+        try:
+            from railway_agent.adapters.llm_adapter import get_llm_caller
+            llm = get_llm_caller()
+            response = llm.call(prompt, max_tokens=512, temperature=0.3)
+            text = response.get("content", "") if isinstance(response, dict) else str(response)
+        except Exception as e:
+            logger.warning(f"[generate_dispatch_notice] LLM生成失败: {e}")
+            text = (
+                f"【调度通知草案，请人工完善】\n"
+                f"因{getattr(accident_card, 'fault_type', getattr(accident_card, 'scene_category', ''))}，"
+                f"{getattr(accident_card, 'location_name', '') or getattr(accident_card, 'location_code', '')}起限速运行，"
+                f"预计持续{getattr(accident_card, 'expected_duration', '未知')}分钟，"
+                f"请相关列车注意。"
+            )
+
+        result = {
+            "success": True,
+            "audience": audience,
+            "audience_label": audience_label,
+            "notice_text": text,
+            "can_copy": True,
+            "scene_category": getattr(accident_card, 'scene_category', ''),
+            "location": getattr(accident_card, 'location_name', '') or getattr(accident_card, 'location_code', '')
+        }
+        return DispatchSkillOutput(
+            optimized_schedule={}, delay_statistics=result,
+            computation_time=time.time() - start_time, success=True,
+            message="调度通知生成完成", skill_name=self.name
+        )
+
+
+class RunSolverSkill(BaseDispatchSkill):
+    """执行单个求解器技能（L2 Agent专用）"""
+    name = "run_solver"
+    description = "执行单个求解器进行调度优化。可精确控制求解器类型、优化目标和参数。MIP适合小规模非紧急场景（全局最优但慢），FCFS适合紧急响应（秒级）。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        accident_card = kwargs.get("accident_card")
+        if not accident_card:
+            return DispatchSkillOutput(
+                optimized_schedule={}, delay_statistics={},
+                computation_time=0.0, success=False,
+                message="缺少 accident_card 上下文", skill_name=self.name
+            )
+
+        solver_name = kwargs.get("solver", "fcfs")
+        objective = kwargs.get("optimization_objective", "min_total_delay")
+        time_limit = kwargs.get("time_limit", 120)
+        gap = kwargs.get("optimality_gap", 0.05)
+
+        time_limit = max(30, min(600, int(time_limit)))
+        gap = max(0.01, min(0.1, round(float(gap), 2)))
+        if objective not in ["min_max_delay", "min_total_delay", "min_avg_delay"]:
+            objective = "min_max_delay"
+
+        # 使用现有 SkillRegistry 的 dispatch_solve_skill 执行
+        # 先构建 delay_injection
+        location_code = getattr(accident_card, 'location_code', "") or ""
+        delay_seconds = int(getattr(accident_card, 'expected_duration', 0) * 60) if getattr(accident_card, 'expected_duration', None) else 600
+        affected_train_ids = getattr(accident_card, 'affected_train_ids', None) or []
+
+        from models.data_models import InjectedDelay, DelayLocation, DelayInjection
+        injected_delays = []
+        loc_type = getattr(accident_card, 'location_type', "station") or "station"
+        for train_id in affected_train_ids:
+            injected_delays.append(InjectedDelay(
+                train_id=train_id,
+                location=DelayLocation(location_type=loc_type, station_code=location_code),
+                initial_delay_seconds=delay_seconds,
+                timestamp=datetime.now().isoformat()
+            ))
+
+        inner_delay_injection = DelayInjection(
+            scenario_type=getattr(accident_card, 'scene_type', 'sudden_failure'),
+            scenario_id=getattr(accident_card, 'scene_id', 'default'),
+            injected_delays=injected_delays,
+            affected_trains=affected_train_ids
+        )
+
+        # 调用 dispatch_solve_skill
+        solver = DispatchSolveSkill(self.trains, self.stations)
+        solve_result = solver.execute(
+            train_ids=affected_train_ids,
+            station_codes=[location_code] if location_code else [],
+            delay_injection={
+                "scenario_type": getattr(accident_card, 'scene_type', 'sudden_failure'),
+                "scenario_id": getattr(accident_card, 'scene_id', 'default'),
+                "injected_delays": [
+                    {
+                        "train_id": tid,
+                        "location_type": loc_type,
+                        "station_code": location_code,
+                        "initial_delay_seconds": delay_seconds
+                    } for tid in affected_train_ids
+                ],
+                "solver_config": {
+                    "solver": solver_name,
+                    "optimization_objective": objective,
+                    "time_limit": time_limit,
+                    "optimality_gap": gap
+                }
+            },
+            optimization_objective=objective
+        )
+
+        # 转换为 L2 期望的 Dict 格式
+        stats = solve_result.delay_statistics
+        result = {
+            "solver": solver_name,
+            "success": solve_result.success,
+            "total_delay_minutes": round(stats.get("total_delay_seconds", 0) / 60, 2),
+            "max_delay_minutes": round(stats.get("max_delay_seconds", 0) / 60, 2),
+            "avg_delay_minutes": round(stats.get("avg_delay_seconds", 0) / 60, 2),
+            "solving_time_seconds": round(solve_result.computation_time, 2),
+            "affected_trains_count": stats.get("affected_trains_count", len(affected_train_ids)),
+            "optimized_schedule": solve_result.optimized_schedule,
+            "error": solve_result.message if not solve_result.success else None
+        }
+        return DispatchSkillOutput(
+            optimized_schedule=result.get("optimized_schedule", {}),
+            delay_statistics=result,
+            computation_time=time.time() - start_time,
+            success=solve_result.success,
+            message=f"求解器 {solver_name} 执行完成" if solve_result.success else f"求解失败: {solve_result.message}",
+            skill_name=self.name
+        )
+
+
+class CompareStrategiesToolSkill(BaseDispatchSkill):
+    """多策略对比技能（L2 Agent专用）"""
+    name = "compare_strategies"
+    description = "基于场景特征和优化目标，通过规则推荐最优求解器及参数配置。不实际执行求解器，只做智能推荐，将推荐结果供下游调度引擎执行。适用于需要快速确定求解策略的场景。"
+
+    def execute(self, train_ids, station_codes, delay_injection, optimization_objective="min_total_delay", **kwargs):
+        start_time = time.time()
+        accident_card = kwargs.get("accident_card")
+        if not accident_card:
+            return DispatchSkillOutput(
+                optimized_schedule={}, delay_statistics={},
+                computation_time=0.0, success=False,
+                message="缺少 accident_card 上下文", skill_name=self.name
+            )
+
+        strategies = kwargs.get("strategies")
+        objective = kwargs.get("optimization_objective", "min_total_delay")
+        time_budget = kwargs.get("time_budget", 300)
+
+        affected_count = len(getattr(accident_card, 'affected_train_ids', None) or [])
+        expected_delay = getattr(accident_card, 'expected_duration', None) or 10
+        is_large_scale = affected_count > 10 or expected_delay > 30
+        is_emergency = expected_delay > 60 or getattr(accident_card, 'scene_category', '') == "区间封锁"
+
+        if strategies is None:
+            if getattr(accident_card, 'scene_category', '') == "区间封锁" or is_emergency:
+                strategies = ["fcfs"]
+            elif objective == "min_max_delay":
+                strategies = ["max_delay_first", "hierarchical", "fcfs"] if is_large_scale else ["max_delay_first", "mip", "fcfs"]
+            elif objective in ("min_total_delay", "min_avg_delay"):
+                strategies = ["hierarchical", "mip", "fcfs"] if is_large_scale else ["mip", "hierarchical", "fcfs"]
+            else:
+                strategies = ["hierarchical", "mip", "fcfs"] if is_large_scale else ["mip", "hierarchical", "fcfs"]
+
+        # 复用已有的 compare_strategies_skill 执行核心逻辑
+        compare_skill = CompareStrategiesSkill(self.trains, self.stations)
+        inner_delay_inj = {
+            "scenario_type": getattr(accident_card, 'scene_type', 'sudden_failure'),
+            "scenario_id": getattr(accident_card, 'scene_id', 'default'),
+            "injected_delays": [
+                {
+                    "train_id": tid,
+                    "location_type": getattr(accident_card, 'location_type', 'station'),
+                    "station_code": getattr(accident_card, 'location_code', ''),
+                    "initial_delay_seconds": int(getattr(accident_card, 'expected_duration', 0) * 60) if getattr(accident_card, 'expected_duration', None) else 600
+                } for tid in (getattr(accident_card, 'affected_train_ids', None) or [])
+            ],
+            "solver_config": {
+                "strategies": strategies,
+                "optimization_objective": objective
+            }
+        }
+
+        compare_result = compare_skill.execute(
+            train_ids=getattr(accident_card, 'affected_train_ids', None) or [],
+            station_codes=[getattr(accident_card, 'location_code', '')] if getattr(accident_card, 'location_code', '') else [],
+            delay_injection=inner_delay_inj,
+            optimization_objective=objective,
+            strategies=strategies,
+            time_budget=time_budget
+        )
+
+        stats = compare_result.delay_statistics
+        result = {
+            "success": compare_result.success,
+            "strategies_tested": stats.get("strategies_tested", 0),
+            "results": stats.get("results", []),
+            "best_solution": stats.get("results", [{}])[0] if stats.get("results") else None,
+            "best_solver": stats.get("best_scheduler", None),
+            "comparison_summary": stats.get("comparison_summary", ""),
+            "optimization_objective": objective,
+            "reasoning": f"根据优化目标'{objective}'对比{len(strategies)}个策略"
+        }
+        return DispatchSkillOutput(
+            optimized_schedule={}, delay_statistics=result,
+            computation_time=time.time() - start_time,
+            success=compare_result.success,
+            message=compare_result.message, skill_name=self.name
+        )
+
+
+# ============================================
 # 工厂函数
 # ============================================
 
@@ -792,7 +1321,14 @@ def create_skills(trains=None, stations=None) -> Dict[str, BaseDispatchSkill]:
         "delay_propagation_skill": DelayPropagationSkill(trains, stations),
         # 查询类技能
         "get_train_status": GetTrainStatusSkill(trains, stations),
-        "query_timetable": QueryTimetableSkill(trains, stations)
+        "query_timetable": QueryTimetableSkill(trains, stations),
+        # L2 Agent 工具类技能（统一迁入 SkillRegistry）
+        "assess_impact": AssessImpactSkill(trains, stations),
+        "quick_line_overview": QuickLineOverviewSkill(trains, stations),
+        "check_impact_cascade": CheckImpactCascadeSkill(trains, stations),
+        "generate_dispatch_notice": GenerateDispatchNoticeSkill(trains, stations),
+        "run_solver": RunSolverSkill(trains, stations),
+        "compare_strategies": CompareStrategiesToolSkill(trains, stations),
     }
 
 

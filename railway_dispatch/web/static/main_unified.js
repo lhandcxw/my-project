@@ -7,8 +7,11 @@ let currentResult = null;
 let thinkingBuffer = [];
 let thinkingTimer = null;
 let workflowSessionId = null;
+let chatSessionId = null;
 
 const quickPrompts = {
+    'query_train': '查询G1563列车的运行情况',
+    'query_station': '查询石家庄站的时刻表',
     'limit_speed': 'G1563在石家庄站因大风临时限速，预计延误15分钟',
     'failure': 'G1565在保定东站发生设备故障，预计延误30分钟',
     'block': '涿州东到高碑店东区间因施工封锁，预计影响多列列车',
@@ -47,7 +50,7 @@ async function sendChat() {
     const input = document.getElementById('chatInput');
     const prompt = input.value.trim();
     if (!prompt) {
-        showToast('请输入调度需求信息（建议包含：车次号、车站或区间名称、故障类型、预计延误时间）', 'warning');
+        showToast('请输入您的问题（查询车次、调度场景、高铁知识等）', 'warning');
         return;
     }
     appendChatMessage('user', prompt);
@@ -58,10 +61,14 @@ async function sendChat() {
     resetProgress();
 
     try {
+        // 确保有会话ID，用于多轮对话记忆
+        if (!chatSessionId) {
+            chatSessionId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
         const response = await fetch('/api/agent_chat_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: prompt })
+            body: JSON.stringify({ prompt: prompt, session_id: chatSessionId })
         });
         if (!response.ok) throw new Error(`服务器响应异常 (HTTP ${response.status})`);
 
@@ -97,7 +104,7 @@ function handleStreamEvent(event) {
     switch (event.type) {
         case 'start':
             flushThinkingMessages();
-            appendChatMessage('thinking', '开始处理调度需求...');
+            appendChatMessage('thinking', '开始处理...');
             break;
         case 'thinking':
             thinkingBuffer.push(event.content);
@@ -111,8 +118,17 @@ function handleStreamEvent(event) {
         case 'result':
             flushThinkingMessages();
             currentResult = event.data;
-            displayResult(event.data);
-            appendChatMessage('agent', '调度方案已生成，请查看右侧信息面板和详细方案。');
+            // 后端已决策展示方式，前端只负责按指令渲染
+            const uiAction = event.data.ui_action || 'render_dispatch';
+            const chatMessage = event.data.chat_message || '处理完成';
+            if (uiAction === 'render_chat') {
+                displayChatResult(event.data);
+            } else if (uiAction === 'render_query') {
+                displayQueryResult(event.data);
+            } else {
+                displayResult(event.data);
+            }
+            appendChatMessage('agent', chatMessage);
             break;
         case 'error':
             flushThinkingMessages();
@@ -159,7 +175,7 @@ function updateSendButton(processing) {
         sendBtn.style.opacity = '0.7';
     } else {
         sendBtn.disabled = false;
-        sendBtn.innerHTML = '提交需求';
+        sendBtn.innerHTML = '发送';
         sendBtn.style.opacity = '1';
     }
 }
@@ -169,7 +185,7 @@ function resetProgress() {
         const step = document.getElementById(`step${i}`);
         if (step) { step.className = 'progress-step'; }
     }
-    document.getElementById('progressText').textContent = '等待输入调度需求...';
+    document.getElementById('progressText').textContent = '等待输入...';
     document.getElementById('metricTotalDelay').textContent = '-';
     document.getElementById('metricMaxDelay').textContent = '-';
     document.getElementById('metricAvgDelay').textContent = '-';
@@ -326,6 +342,113 @@ function displayResult(data) {
         }
     } catch (error) {
         console.error('显示结果失败:', error);
+    }
+}
+
+function displayQueryResult(data) {
+    try {
+        // 清空调度指标
+        document.getElementById('metricTotalDelay').textContent = '-';
+        document.getElementById('metricMaxDelay').textContent = '-';
+        document.getElementById('metricAvgDelay').textContent = '-';
+        document.getElementById('metricOnTime').textContent = '-';
+        document.getElementById('metricGrade').textContent = '-';
+        document.getElementById('metricAffected').textContent = '-';
+        document.getElementById('metricTerminalOnTime').textContent = '-';
+        document.getElementById('metricRecoveryRate').textContent = '-';
+        document.getElementById('metricStationPressure').textContent = '-';
+        ['mb-total','mb-max','mb-avg'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.className = 'metric-box';
+        });
+        document.getElementById('riskWarnings').innerHTML = '<div class="risk-empty"><span style="font-size:18px;">&#128270;</span> 查询模式 - 无调度风险</div>';
+
+        // 显示查询结果
+        const detailSection = document.getElementById('detailSection');
+        if (detailSection) detailSection.classList.add('visible');
+
+        const naturalPlanSection = document.getElementById('naturalPlanSection');
+        const naturalPlanContent = document.getElementById('naturalPlanContent');
+        if (naturalPlanSection && naturalPlanContent) {
+            naturalPlanSection.style.display = 'block';
+            const queryTypeLabel = {
+                timetable: '列车时刻表查询',
+                status: '列车状态查询',
+                station_load: '车站负荷查询'
+            }[data.query_type] || '信息查询';
+            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#1565c0;font-weight:600;">&#128270; ${escapeHtml(queryTypeLabel)}</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
+        }
+
+        // 隐藏操作指南
+        const opsGuideSection = document.getElementById('opsGuideSection');
+        if (opsGuideSection) opsGuideSection.style.display = 'none';
+
+        // 如果有原始数据，尝试展示为表格
+        const raw = data.raw_data || {};
+        let tableHtml = '';
+        if (raw.stops && Array.isArray(raw.stops) && raw.stops.length > 0) {
+            // 列车时刻表
+            tableHtml = '<table class="data-table"><thead><tr><th>车站</th><th>到达</th><th>发车</th><th>停车</th></tr></thead><tbody>';
+            for (const stop of raw.stops) {
+                tableHtml += `<tr><td>${escapeHtml(stop.station_name || stop.station_code || '-')}</td><td style="text-align:center;">${escapeHtml(stop.arrival_time || '-')}</td><td style="text-align:center;">${escapeHtml(stop.departure_time || '-')}</td><td style="text-align:center;">${stop.is_stopped ? '是' : '通过'}</td></tr>`;
+            }
+            tableHtml += '</tbody></table>';
+        } else if (raw.trains && Array.isArray(raw.trains) && raw.trains.length > 0) {
+            // 车站时刻表
+            tableHtml = '<table class="data-table"><thead><tr><th>车次</th><th>到达</th><th>发车</th><th>停车</th></tr></thead><tbody>';
+            for (const t of raw.trains) {
+                tableHtml += `<tr><td>${escapeHtml(t.train_id || '-')}</td><td style="text-align:center;">${escapeHtml(t.arrival_time || '-')}</td><td style="text-align:center;">${escapeHtml(t.departure_time || '-')}</td><td style="text-align:center;">${t.is_stopped ? '是' : '通过'}</td></tr>`;
+            }
+            tableHtml += '</tbody></table>';
+        }
+        document.getElementById('scheduleTable').innerHTML = tableHtml || '<p style="color:#9e9e9e;text-align:center;padding:20px;">无结构化数据</p>';
+
+        // 隐藏运行图
+        const diagramContainer = document.getElementById('diagramContainer');
+        if (diagramContainer) diagramContainer.innerHTML = '';
+
+    } catch (error) {
+        console.error('显示查询结果失败:', error);
+    }
+}
+
+function displayChatResult(data) {
+    try {
+        // 清空调度指标
+        document.getElementById('metricTotalDelay').textContent = '-';
+        document.getElementById('metricMaxDelay').textContent = '-';
+        document.getElementById('metricAvgDelay').textContent = '-';
+        document.getElementById('metricOnTime').textContent = '-';
+        document.getElementById('metricGrade').textContent = '-';
+        document.getElementById('metricAffected').textContent = '-';
+        document.getElementById('metricTerminalOnTime').textContent = '-';
+        document.getElementById('metricRecoveryRate').textContent = '-';
+        document.getElementById('metricStationPressure').textContent = '-';
+        ['mb-total','mb-max','mb-avg'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.className = 'metric-box';
+        });
+        document.getElementById('riskWarnings').innerHTML = '<div class="risk-empty"><span style="font-size:18px;">&#128172;</span> 对话模式 - 无调度风险</div>';
+
+        // 显示回答
+        const detailSection = document.getElementById('detailSection');
+        if (detailSection) detailSection.classList.add('visible');
+
+        const naturalPlanSection = document.getElementById('naturalPlanSection');
+        const naturalPlanContent = document.getElementById('naturalPlanContent');
+        if (naturalPlanSection && naturalPlanContent) {
+            naturalPlanSection.style.display = 'block';
+            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#1565c0;font-weight:600;">&#128172; 知识问答</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
+        }
+
+        const opsGuideSection = document.getElementById('opsGuideSection');
+        if (opsGuideSection) opsGuideSection.style.display = 'none';
+        document.getElementById('scheduleTable').innerHTML = '';
+        const diagramContainer = document.getElementById('diagramContainer');
+        if (diagramContainer) diagramContainer.innerHTML = '';
+
+    } catch (error) {
+        console.error('显示聊天结果失败:', error);
     }
 }
 

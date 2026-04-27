@@ -16,6 +16,13 @@ from .skills import (
     BaseDispatchSkill
 )
 
+try:
+    from scheduler_comparison.scheduler_interface import SchedulerRegistry
+    _SCHEDULER_REGISTRY_AVAILABLE = True
+except ImportError:
+    _SCHEDULER_REGISTRY_AVAILABLE = False
+    SchedulerRegistry = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +45,24 @@ class SkillRegistry:
         self.trains = trains
         self.stations = stations
         self.skills: Dict[str, BaseDispatchSkill] = create_skills(trains, stations)
-        logger.info(f"技能注册表初始化完成，共 {len(self.skills)} 个技能")
+        self._available_schedulers = self._discover_schedulers()
+        logger.info(f"技能注册表初始化完成，共 {len(self.skills)} 个技能，可用调度器: {self._available_schedulers}")
+
+    def _discover_schedulers(self) -> List[str]:
+        """动态发现可用调度器列表"""
+        if _SCHEDULER_REGISTRY_AVAILABLE and SchedulerRegistry is not None:
+            try:
+                schedulers = SchedulerRegistry.list_available()
+                # 去重并过滤掉不可用的
+                unique = sorted(set(schedulers))
+                # 排除已废弃或暂不可用的
+                excluded = {"rl", "reinforcement_learning", "spt", "srpt", "fsfs", "custom",
+                            "baseline", "no-op", "max_delay_first", "eaf", "earliest_arrival"}
+                return [s for s in unique if s not in excluded]
+            except Exception as e:
+                logger.warning(f"从 SchedulerRegistry 发现调度器失败: {e}")
+        # 兜底：仅返回实际部署的调度器
+        return ["fcfs", "hierarchical", "max-delay-first", "mip", "noop"]
 
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """获取 Tools JSON Schema"""
@@ -66,7 +90,7 @@ class SkillRegistry:
                                     "solver_config": {
                                         "type": "object",
                                         "properties": {
-                                            "solver": {"type": "string", "enum": ["mip", "fcfs", "fsfs", "max_delay_first", "srpt", "spt", "noop"]},
+                                            "solver": {"type": "string", "enum": self._available_schedulers},
                                             "optimization_objective": {"type": "string", "enum": ["min_max_delay", "min_total_delay", "min_avg_delay"]},
                                             "time_limit": {"type": "integer"},
                                             "optimality_gap": {"type": "number"}
@@ -156,6 +180,123 @@ class SkillRegistry:
                         }
                     }
                 }
+            },
+            # ---- L2 Agent 工具类技能（统一迁入）----
+            {
+                "type": "function",
+                "function": {
+                    "name": "assess_impact",
+                    "description": (
+                        "评估事故的全局影响。分析直接影响列车数、延误传播风险、"
+                        "即将到达的列车数，返回量化的紧急程度和策略建议。"
+                        "建议在决策前首先调用此工具获取数据支撑。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "quick_line_overview",
+                    "description": "线路快速概览：统计全线密度、高峰区间、当前时段。纯数据统计，不调用求解器，毫秒级响应。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_impact_cascade",
+                    "description": "延误传播快速检查：基于运行图静态分析，不调用求解器。回答某列车在某站晚点会堵多少车。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "train_id": {"type": "string"},
+                            "station_code": {"type": "string"},
+                            "delay_minutes": {"type": "integer"}
+                        },
+                        "required": ["train_id", "station_code"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "generate_dispatch_notice",
+                    "description": "生成正式的铁路调度通知文本。纯LLM调用，不跑求解器。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "audience": {
+                                "type": "string",
+                                "enum": ["station", "driver", "control_center"],
+                                "description": "通知受众：station(车站值班员), driver(列车司机), control_center(行车调度台)"
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_solver",
+                    "description": (
+                        "执行单个求解器进行调度优化。可精确控制求解器类型、优化目标和参数。"
+                        "MIP适合小规模非紧急场景（全局最优但慢），FCFS适合紧急响应（秒级）。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "solver": {
+                                "type": "string",
+                                "enum": self._available_schedulers,
+                                "description": "求解器类型"
+                            },
+                            "optimization_objective": {
+                                "type": "string",
+                                "enum": ["min_max_delay", "min_total_delay", "min_avg_delay"]
+                            },
+                            "time_limit": {"type": "integer"},
+                            "optimality_gap": {"type": "number"}
+                        },
+                        "required": ["solver"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "compare_strategies",
+                    "description": (
+                        "基于场景特征和优化目标，通过规则推荐最优求解器及参数配置。"
+                        "不实际执行求解器，只做智能推荐，将推荐结果供下游调度引擎执行。"
+                        "适用于需要快速确定求解策略的场景。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "strategies": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "要对比的求解器列表，不传则自动选择"
+                            },
+                            "optimization_objective": {
+                                "type": "string",
+                                "enum": ["min_max_delay", "min_total_delay", "min_avg_delay"]
+                            },
+                            "time_budget": {"type": "integer"}
+                        },
+                        "required": []
+                    }
+                }
             }
         ]
 
@@ -167,20 +308,18 @@ class SkillRegistry:
             return self.skills[tool_name].description
         return None
 
-    def execute(self, tool_name: str, arguments: Dict[str, Any]) -> DispatchSkillOutput:
+    def execute(self, tool_name: str, arguments: Dict[str, Any], **kwargs) -> DispatchSkillOutput:
         """执行指定的工具"""
         train_ids = arguments.get("train_ids", [])
         station_codes = arguments.get("station_codes", [])
         delay_injection = arguments.get("delay_injection", {})
         optimization_objective = arguments.get("optimization_objective", "min_max_delay")
 
-        extra_kwargs = {}
-        for key in ["train_id", "station_code", "from_station", "to_station",
-                    "delay_minutes", "propagation_depth", "timetable_type",
-                    "time_range", "include_position", "include_delay",
-                    "strategies", "time_budget", "location_code"]:
-            if key in arguments:
-                extra_kwargs[key] = arguments[key]
+        # 自动收集所有非标准参数作为 extra_kwargs
+        known_keys = {"train_ids", "station_codes", "delay_injection", "optimization_objective"}
+        extra_kwargs = {k: v for k, v in arguments.items() if k not in known_keys}
+        # 合并外部传入的 kwargs（如 accident_card、network_snapshot）
+        extra_kwargs.update(kwargs)
 
         return execute_skill(
             skill_name=tool_name,

@@ -993,19 +993,17 @@ class SRPTSchedulerAdapter(BaseScheduler):
 
 
 
-# 注册内置调度器
+# 注册内置调度器（只注册实际可用的，避免别名重复出现在列表中）
 SchedulerRegistry.register("fcfs", FCFSSchedulerAdapter)
 SchedulerRegistry.register("mip", MIPSchedulerAdapter)
-SchedulerRegistry.register("rl", ReinforcementLearningSchedulerAdapter)
-SchedulerRegistry.register("reinforcement_learning", ReinforcementLearningSchedulerAdapter)
 SchedulerRegistry.register("noop", NoOpSchedulerAdapter)
-SchedulerRegistry.register("no-op", NoOpSchedulerAdapter)
-SchedulerRegistry.register("baseline", NoOpSchedulerAdapter)
-SchedulerRegistry.register("max_delay_first", MaxDelayFirstSchedulerAdapter)
 SchedulerRegistry.register("max-delay-first", MaxDelayFirstSchedulerAdapter)
-SchedulerRegistry.register("eaf", EarliestArrivalFirstScheduler)
-SchedulerRegistry.register("earliest_arrival", EarliestArrivalFirstScheduler)
 SchedulerRegistry.register("hierarchical", HierarchicalSchedulerAdapter)
+# 以下已移除注册，避免在可用调度器列表中出现重复或不可用的名称：
+# - "no-op" / "baseline": noop 的别名
+# - "max_delay_first": max-delay-first 的别名
+# - "eaf" / "earliest_arrival": 该调度器未实际部署
+# - "rl" / "reinforcement_learning": 强化学习模型尚未加载，不可用
 # FSFS已移除：与noop行为相似，不符合高铁实际调度场景
 # SPT、SRPT已移除：不符合高铁按图行车原则，已在solver_registry中说明
 

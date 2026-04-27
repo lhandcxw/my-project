@@ -936,6 +936,12 @@
                     <div class="card-body" style="padding:0;display:flex;flex-direction:column;">
                         <div style="padding:16px 16px 0;">
                             <div class="quick-actions-bar">
+                                <div class="quick-chip" onclick="fillQuickPrompt('query_train')">
+                                    <span>&#128270;</span> 查列车
+                                </div>
+                                <div class="quick-chip" onclick="fillQuickPrompt('query_station')">
+                                    <span>&#128204;</span> 查车站
+                                </div>
                                 <div class="quick-chip" onclick="fillQuickPrompt('limit_speed')">
                                     <span>&#9889;</span> 临时限速
                                 </div>
@@ -953,17 +959,17 @@
                         <div class="chat-messages" id="chatMessages">
                             <div class="msg msg-system">
                                 <div class="msg-bubble">
-                                    <strong>欢迎使用京广高铁调度辅助系统</strong><br><br>
-                                    请输入您的调度需求，系统将自动识别场景并生成调度方案。<br><br>
+                                    <strong>欢迎使用京广高铁智能助手</strong><br><br>
+                                    我可以帮您查询列车信息、车站时刻、处理调度场景，或解答高铁领域问题。<br><br>
                                     <strong>示例：</strong><br>
-                                    G1563在石家庄站因大风临时限速，预计延误15分钟<br>
-                                    G1565在保定东站发生设备故障，预计延误30分钟
+                                    查询G1563列车的运行情况<br>
+                                    G1563在石家庄站因大风临时限速，预计延误15分钟
                                 </div>
                             </div>
                         </div>
                         <div class="chat-input-wrap">
-                            <textarea id="chatInput" class="chat-textarea" placeholder="请输入调度需求（车次、车站、故障类型、预计延误时间）..." rows="1"></textarea>
-                            <button id="sendBtn" class="btn-send" onclick="sendChat()">提交需求</button>
+                            <textarea id="chatInput" class="chat-textarea" placeholder="请输入您的问题（查询车次、调度场景、高铁知识等）..." rows="1"></textarea>
+                            <button id="sendBtn" class="btn-send" onclick="sendChat()">发送</button>
                         </div>
                     </div>
                 </div>
@@ -994,7 +1000,7 @@
                                     <div class="step-label">方案评估</div>
                                 </div>
                             </div>
-                            <div class="progress-status" id="progressText">等待输入调度需求...</div>
+                            <div class="progress-status" id="progressText">等待输入...</div>
                         </div>
                     </div>
 

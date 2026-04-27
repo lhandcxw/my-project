@@ -5,8 +5,9 @@
 
   态势感知 → 策略制定 → 求解执行 → 方案对比 → 最终决策
 
-工具集设计（三大类、5个工具）：
+工具集设计（三大类、8个工具）：
   感知工具：assess_impact, get_train_status, query_timetable
+  辅助工具：quick_line_overview, check_impact_cascade, generate_dispatch_notice
   求解工具：run_solver, compare_strategies
 
 无需微调。Agent 通过工具调用链自主完成从分析到求解的全流程。
@@ -27,6 +28,7 @@ from datetime import datetime
 from models.workflow_models import AccidentCard
 from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.rag_retriever import get_retriever
+from railway_agent.solver_selector import SolverSelector
 from config import LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -44,11 +46,13 @@ class Layer2Planner:
 
     MAX_AGENT_STEPS = 8
 
-    def __init__(self, trains=None, stations=None):
+    def __init__(self, trains=None, stations=None, skill_registry=None):
         self.trains = trains
         self.stations = stations
+        self._skill_registry = skill_registry
         self._llm_caller = None
         self._accident_card = None
+        self._network_snapshot = None
         self._tools = self._build_tools_schema()
         self._system_prompt = self._build_system_prompt()
 
@@ -236,27 +240,34 @@ class Layer2Planner:
         return "analyze_only"
 
     def _rule_fallback(self, accident_card: AccidentCard) -> Dict[str, Any]:
-        """规则回退（LLM不可用时）"""
-        logger.info("[L2 Agent] 使用规则回退模式")
+        """规则回退（LLM不可用时）—— 使用 SolverSelector 基于特征智能推荐"""
+        logger.info("[L2 Agent] 使用规则回退模式（SolverSelector）")
 
-        # 根据场景类型选择求解器
-        scene = accident_card.scene_category
-        if "临时限速" in scene:
-            skill_dispatch = "mip_scheduler"
-        elif "突发故障" in scene:
-            skill_dispatch = "fcfs_scheduler"
-        elif "区间封锁" in scene:
-            skill_dispatch = "noop_scheduler"
-        else:
-            skill_dispatch = "fcfs_scheduler"
+        card_dict = {
+            "scene_category": accident_card.scene_category,
+            "expected_duration": accident_card.expected_duration,
+            "is_complete": accident_card.is_complete,
+            "location_type": accident_card.location_type,
+            "affected_train_ids": accident_card.affected_train_ids or [],
+        }
+        rec = SolverSelector.recommend_solver(card_dict, urgency="medium")
+
+        skill_dispatch = f"{rec['solver']}_scheduler"
 
         return {
             "success": True,
-            "planning_intent": f"规则模式：选择{skill_dispatch}进行求解",
+            "planning_intent": f"规则模式：{rec['reasoning']}",
             "skill_dispatch": skill_dispatch,
             "planner_decision": {
                 "mode": "rule_fallback",
-                "agent_executed_solve": False
+                "preferred_solver": rec["solver"],
+                "solver_config": {
+                    "optimization_objective": rec["optimization_objective"],
+                    "time_limit": rec["time_limit"],
+                    "optimality_gap": rec["optimality_gap"],
+                },
+                "agent_executed_solve": False,
+                "reasoning": rec["reasoning"],
             },
             "agent_executed_solve": False,
         }
@@ -265,9 +276,12 @@ class Layer2Planner:
     # 对外接口
     # ================================================================
 
-    def execute(self, accident_card: AccidentCard, enable_rag: bool = True, previous_feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(self, accident_card: AccidentCard, enable_rag: bool = True,
+                previous_feedback: Optional[Dict[str, Any]] = None,
+                network_snapshot: Optional[Any] = None) -> Dict[str, Any]:
         logger.info("[L2 Agent] 启动专家级 Agent 规划")
         self._accident_card = accident_card
+        self._network_snapshot = network_snapshot
         self._ensure_data_loaded()
 
         # 构建初始消息
@@ -496,6 +510,70 @@ class Layer2Planner:
                         "required": []
                     }
                 }
+            },
+            # ---- 辅助工具（增强交互性） ----
+            {
+                "type": "function",
+                "function": {
+                    "name": "quick_line_overview",
+                    "description": (
+                        "获取当前线路整体运行状态概览：列车总数、高峰区间、当前时段密度等级。"
+                        "调度员在决策前或日常监控时经常使用，Agent在制定策略前也应先了解全局背景。"
+                        "无参数，直接调用即可。"
+                    ),
+                    "parameters": {"type": "object", "properties": {}, "required": []}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_impact_cascade",
+                    "description": (
+                        "快速检查某列车在某站的延误会向后续列车传播多少。"
+                        "基于运行图前后车关系做静态分析，不实际运行求解器，毫秒级响应。"
+                        "适用于调度员想快速预估传播影响，或Agent在assess_impact后做更精确的传播判断。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "train_id": {
+                                "type": "string",
+                                "description": "列车号，如G1563"
+                            },
+                            "station_code": {
+                                "type": "string",
+                                "description": "延误发生站代码，如SJP、BDD"
+                            },
+                            "delay_minutes": {
+                                "type": "integer",
+                                "description": "预计延误分钟数"
+                            }
+                        },
+                        "required": ["train_id", "station_code", "delay_minutes"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "generate_dispatch_notice",
+                    "description": (
+                        "根据当前事故信息和已确定的调度方案，生成正式的调度通知文本。"
+                        "可直接复制给车站值班员、列车司机或调度台。"
+                        "适用于方案确定后需要下达正式指令的场景。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "audience": {
+                                "type": "string",
+                                "enum": ["station", "driver", "control_center"],
+                                "description": "受众：station(车站值班员), driver(列车司机), control_center(行车调度台)"
+                            }
+                        },
+                        "required": ["audience"]
+                    }
+                }
             }
         ]
 
@@ -509,10 +587,11 @@ class Layer2Planner:
 ## 工作流程
 
 **第一步：态势感知** — 调用 assess_impact 获取事故影响的量化分析
-**第二步：信息补充** — 如需了解更多细节，调用 get_train_status 或 query_timetable
-**第三步：策略执行** — 调用 run_solver 或 compare_strategies 执行求解
-**第四步：审查结果** — 检查求解结果，不满意可换策略重试
-**第五步：总结** — 用文字说明你的决策过程、选择的理由、最终结果
+**第二步：全局背景** — 在制定策略前，建议调用 quick_line_overview 了解当前线路整体密度和时段特征，帮助判断是高峰还是平峰
+**第三步：信息补充** — 如需了解更多细节，调用 get_train_status 或 query_timetable；如需快速预估延误传播，调用 check_impact_cascade
+**第四步：策略执行** — 调用 run_solver 或 compare_strategies 执行求解
+**第五步：方案落地** — 方案确定后，调用 generate_dispatch_notice 生成正式调度通知文本（受众可选 station/driver/control_center）
+**第六步：总结** — 用文字说明你的决策过程、选择的理由、最终结果
 
 ## 求解器特点（基于真实高铁调度场景）
 
@@ -672,10 +751,32 @@ class Layer2Planner:
     # ================================================================
 
     def _execute_tool(self, name: str, args: Dict) -> Dict:
+        """
+        工具执行分发（统一走 SkillRegistry）
+        L2 Agent 不再持有工具实现，所有能力通过 SkillRegistry 调用
+        """
+        if self._skill_registry and self._skill_registry.has_tool(name):
+            try:
+                skill_output = self._skill_registry.execute(
+                    tool_name=name,
+                    arguments=args,
+                    accident_card=self._accident_card,
+                    network_snapshot=self._network_snapshot
+                )
+                # 适配：将 DispatchSkillOutput 转换为 L2 Agent 期望的 Dict 格式
+                return self._adapt_skill_output(skill_output, name)
+            except Exception as e:
+                logger.error(f"[L2 Agent] SkillRegistry 执行工具 {name} 失败: {e}")
+                return {"success": False, "error": f"SkillRegistry 执行失败: {str(e)}"}
+
+        # 兜底回退（兼容模式，理论上不应进入）
         dispatch = {
             "assess_impact": self._tool_assess_impact,
             "get_train_status": self._tool_get_train_status,
             "query_timetable": self._tool_query_timetable,
+            "quick_line_overview": self._tool_quick_line_overview,
+            "check_impact_cascade": self._tool_check_impact_cascade,
+            "generate_dispatch_notice": self._tool_generate_dispatch_notice,
             "run_solver": self._tool_run_solver,
             "compare_strategies": self._tool_compare_strategies,
         }
@@ -683,6 +784,28 @@ class Layer2Planner:
         if handler:
             return handler(args)
         return {"success": False, "error": f"未知工具: {name}"}
+
+    def _adapt_skill_output(self, skill_output, tool_name: str) -> Dict:
+        """
+        将 SkillRegistry 的 DispatchSkillOutput 适配为 L2 Agent 内部使用的 Dict 格式
+        新 Skill 类的 delay_statistics 已保持和原 L2 工具一致的扁平 Dict 格式
+        只有旧 Skill（get_train_status / query_timetable）需要额外包装
+        """
+        if not skill_output.success:
+            return {"success": False, "error": skill_output.message}
+
+        data = skill_output.delay_statistics if skill_output.delay_statistics else {}
+
+        # 旧查询类 Skill 的 delay_statistics 是纯数据，需要包装为 {"success": True, "data": ...}
+        if tool_name in ("get_train_status", "query_timetable"):
+            return {"success": True, "data": data}
+
+        # 新迁入的 L2 工具类 Skill，delay_statistics 已经是完整的返回 Dict
+        if isinstance(data, dict) and "success" in data:
+            return data
+
+        # 兜底：直接返回
+        return {"success": True, **(data if isinstance(data, dict) else {})}
 
     # ================================================================
     # 感知工具
@@ -692,92 +815,160 @@ class Layer2Planner:
         """
         事故态势感知（返回定性事实，由 Agent 自主推理决策）
 
-        设计原则：
-        - 返回客观事实和数据，不做决策建议
-        - urgency 等级作为参考指标保留，但不绑定策略
-        - 新增 affected_trains_detail 提供 Agent 推理所需的列车信息
+        【专家修正】关于"受影响列车"的判定逻辑：
+        ======================================
+        用户输入的 affected_train_ids 只是**初始延误注入点**，不代表全部受影响列车。
+        真正的"受影响列车"应通过运行图分析确定：
+
+        1. 直接受影响（trains_at_location）:
+           所有时刻表包含事故位置的列车，不论用户是否提到。
+           只要经过延误位置，就一定会受到直接影响。
+
+        2. 初始延误注入（initially_delayed）:
+           用户明确提到被注入延误的列车，是延误传播的"源头"。
+
+        3. 估算传播范围（estimated_propagation）:
+           基于延误时长和线路密度，估算会被传播延误的后续列车数。
+           这是一个经验估算，供 Agent 参考。
+
+        4. urgency 计算应基于 trains_at_location + estimated_propagation，
+           而非仅基于用户提到的列车数。
+        ======================================
         """
         card = self._accident_card
-        affected = card.affected_train_ids or []
+        user_mentioned = set(card.affected_train_ids or [])
         location = card.location_code or ""
         delay = card.expected_duration or 10
-        direct_count = len(affected)
 
-        # 统计即将到达事故地点的列车
-        approaching = 0
-        nearby_trains = []
-        if location and self.trains:
-            for train in self.trains:
-                # 获取列车ID（支持对象和字典两种格式）
+        # 【新增】确定分析范围：优先使用 snapshot 的候选列车集，否则回退到全量
+        search_scope = self.trains
+        if self._network_snapshot and hasattr(self._network_snapshot, 'candidate_train_ids'):
+            candidate_ids = set(self._network_snapshot.candidate_train_ids)
+            search_scope = [
+                t for t in self.trains
+                if (hasattr(t, 'train_id') and t.train_id in candidate_ids)
+                or (isinstance(t, dict) and t.get('train_id') in candidate_ids)
+            ]
+            logger.debug(f"[L2 assess_impact] 使用 Snapshot 候选集: {len(search_scope)} 列 (全量 {len(self.trains)} 列)")
+
+        # ========== 核心修正：基于运行图识别真正受影响列车 ==========
+        trains_at_location = []        # 所有时刻表包含事故位置的列车（直接受影响）
+        initially_delayed = []         # 用户明确注入延误的列车
+        nearby_not_mentioned = []      # 会经过事故位置但用户未提到的列车
+
+        if location and search_scope:
+            for train in search_scope:
                 train_id = getattr(train, 'train_id', None) if hasattr(train, 'train_id') else train.get('train_id')
                 if not train_id:
                     continue
 
-                if train_id in affected:
-                    continue
-
-                # 获取schedule（支持对象和字典两种格式）
+                # 检查列车是否经过事故位置
+                passes_location = False
                 schedule = getattr(train, 'schedule', None) if hasattr(train, 'schedule') else train.get('schedule')
                 if schedule:
                     stops = getattr(schedule, 'stops', None) if hasattr(schedule, 'stops') else schedule.get('stops')
                     if stops:
                         for stop in stops:
-                            # 获取站点代码
                             station_code = getattr(stop, 'station_code', None) if hasattr(stop, 'station_code') else stop.get('station_code')
                             if station_code == location:
-                                approaching += 1
-                                nearby_trains.append(train_id)
+                                passes_location = True
                                 break
 
-        total = direct_count + approaching
+                if passes_location:
+                    trains_at_location.append(train_id)
+                    if train_id in user_mentioned:
+                        initially_delayed.append(train_id)
+                    else:
+                        nearby_not_mentioned.append(train_id)
 
-        # 时段判断
+        # 如果用户提到的列车不在 search_scope 的候选集中（可能因为 snapshot 裁剪），
+        # 仍然将其计入 initially_delayed，但 trains_at_location 以运行图分析为准
+        for tid in user_mentioned:
+            if tid not in trains_at_location:
+                initially_delayed.append(tid)
+                trains_at_location.append(tid)
+                logger.debug(f"[L2 assess_impact] 用户提到列车 {tid} 不在 snapshot 候选集中，强制加入")
+
+        exposed_count = len(trains_at_location)
+
+        # ========== 传播延误估算（经验公式） ==========
+        # 逻辑：延误越长、暴露列车越多，传播范围越大
+        # 简化模型：每 10 分钟延误 + 每 5 列暴露列车 ≈ 1 列传播延误
+        # 在高峰时段（密度高），传播系数增加
         hour = datetime.now().hour
         is_peak = 9 <= hour <= 18
         is_window = 0 <= hour < 6
 
-        # 参考性紧急程度（仅作为数据维度之一，不做决策绑定）
+        # 传播系数（高峰 1.5，平峰 1.0，天窗 0.5）
+        density_factor = 1.5 if is_peak else (0.5 if is_window else 1.0)
+        # 估算传播列车数
+        estimated_propagation = int((delay / 10) * (exposed_count / 5) * density_factor)
+        # 上限：传播不会超过暴露列车数的 2 倍（保守估计）
+        estimated_propagation = min(estimated_propagation, exposed_count * 2)
+        # 下限：至少为 0
+        estimated_propagation = max(0, estimated_propagation)
+
+        total_impact = exposed_count + estimated_propagation
+
+        # ========== urgency 计算（基于真正的影响面） ==========
         if is_window:
             urgency = "low"
-        elif total <= 3 and delay <= 15:
+        elif total_impact <= 3 and delay <= 15:
             urgency = "low"
-        elif total <= 8 and delay <= 30:
+        elif total_impact <= 8 and delay <= 30:
             urgency = "medium"
-        elif total <= 15 and delay <= 60:
+        elif total_impact <= 15 and delay <= 60:
             urgency = "high"
         else:
             urgency = "critical"
-        if is_peak and urgency in ("low", "medium") and total > 5:
+        if is_peak and urgency in ("low", "medium") and total_impact > 5:
             urgency = "high"
 
-        # 受影响列车详情（供 Agent 推理使用）
-        affected_detail = []
-        for tid in affected[:10]:
+        # ========== 受影响列车详情 ==========
+        # 优先提供会经过事故位置的列车详情（对 Agent 决策最有用）
+        trains_at_location_detail = []
+        for tid in trains_at_location[:15]:
             for t in (self.trains or []):
-                # 获取列车ID（支持对象和字典两种格式）
                 t_id = getattr(t, 'train_id', None) if hasattr(t, 'train_id') else t.get('train_id')
                 if t_id == tid:
                     train_type = getattr(t, 'train_type', '未知') if hasattr(t, 'train_type') else t.get('train_type', '未知')
-                    affected_detail.append({
+                    trains_at_location_detail.append({
                         "train_id": tid,
-                        "train_type": train_type
+                        "train_type": train_type,
+                        "initially_delayed": tid in user_mentioned
                     })
                     break
 
         return {
             "success": True,
-            "directly_affected": direct_count,
-            "approaching_trains": approaching,
-            "nearby_train_ids": nearby_trains[:10],
-            "total_potentially_affected": total,
+            # === 核心修正：新的字段语义 ===
+            "initially_delayed_trains": len(initially_delayed),
+            "initially_delayed_ids": initially_delayed[:10],
+            "trains_at_location": exposed_count,
+            "trains_at_location_ids": trains_at_location[:10],
+            "nearby_not_mentioned": len(nearby_not_mentioned),
+            "nearby_not_mentioned_ids": nearby_not_mentioned[:10],
+            "estimated_propagation": estimated_propagation,
+            "total_potentially_affected": total_impact,
+            # === 兼容性字段（保留旧字段名，但值已修正） ===
+            "directly_affected": exposed_count,
+            "approaching_trains": len(nearby_not_mentioned) + estimated_propagation,
+            "nearby_train_ids": (nearby_not_mentioned + [f"传播~{i}" for i in range(estimated_propagation)])[:10],
+            # === 基础信息 ===
             "base_delay_minutes": delay,
             "is_peak_hours": is_peak,
             "is_window_period": is_window,
             "urgency_reference": urgency,
-            "affected_trains_detail": affected_detail,
+            "affected_trains_detail": trains_at_location_detail,
             "scene_category": card.scene_category,
             "location_type": card.location_type,
-            "is_complete": card.is_complete
+            "is_complete": card.is_complete,
+            "methodology_note": (
+                "受影响列车基于运行图分析（非仅用户输入）。"
+                f"{exposed_count}列会经过事故位置，"
+                f"其中{len(initially_delayed)}列被注入初始延误，"
+                f"估算{estimated_propagation}列可能受传播影响。"
+            )
         }
 
     def _tool_get_train_status(self, args: Dict) -> Dict:
@@ -840,6 +1031,173 @@ class Layer2Planner:
                 "is_dense": len(trains_at) > 15,
                 "trains": trains_at[:30]
             }
+        }
+
+    # ================================================================
+    # 辅助工具（增强交互性）
+    # ================================================================
+
+    def _tool_quick_line_overview(self, args: Dict) -> Dict:
+        """
+        线路快速概览：统计全线密度、高峰区间、当前时段
+        纯数据统计，不调用求解器，毫秒级响应
+        """
+        total = len(self.trains) if self.trains else 0
+
+        # 统计每站停靠密度
+        station_counts: Dict[str, int] = {}
+        for t in self.trains:
+            if hasattr(t, 'schedule') and t.schedule and hasattr(t.schedule, 'stops'):
+                for s in t.schedule.stops:
+                    code = getattr(s, 'station_code', None)
+                    if code:
+                        station_counts[code] = station_counts.get(code, 0) + 1
+
+        densest = max(station_counts.items(), key=lambda x: x[1]) if station_counts else ("", 0)
+
+        # 当前时段判断
+        hour = datetime.now().hour
+        if 0 <= hour < 6:
+            period = "天窗期"
+            period_note = "列车稀疏，适合维修作业"
+        elif 6 <= hour < 9:
+            period = "早高峰前"
+            period_note = "密度逐步增加"
+        elif 9 <= hour < 14:
+            period = "日间运营"
+            period_note = "密度较高"
+        elif 14 <= hour < 18:
+            period = "下午高峰"
+            period_note = "全天密度最高"
+        elif 18 <= hour < 22:
+            period = "晚间运营"
+            period_note = "密度逐步下降"
+        else:
+            period = "深夜"
+            period_note = "即将进入天窗期"
+
+        return {
+            "success": True,
+            "total_trains": total,
+            "period": period,
+            "period_note": period_note,
+            "densest_station_code": densest[0],
+            "densest_station_trains": densest[1],
+            "station_count": len(station_counts),
+            "summary": f"当前{period}，全线共{total}列运行图，{densest[0]}站密度最高({densest[1]}列停靠)"
+        }
+
+    def _tool_check_impact_cascade(self, args: Dict) -> Dict:
+        """
+        延误传播快速检查：基于运行图静态分析，不调用求解器
+        回答"G1563在石家庄晚点20分钟，后面会被堵多少车"
+        """
+        train_id = args.get("train_id", "")
+        station_code = args.get("station_code", "")
+        delay_mins = args.get("delay_minutes", 0)
+
+        if not train_id or not station_code:
+            return {"success": False, "error": "缺少train_id或station_code参数"}
+
+        # 找到该列车在该站及之后的所有站
+        affected_stations: List[str] = []
+        for t in self.trains:
+            if getattr(t, 'train_id', None) == train_id:
+                found = False
+                schedule = getattr(t, 'schedule', None)
+                stops = getattr(schedule, 'stops', []) if schedule else []
+                for s in stops:
+                    code = getattr(s, 'station_code', None)
+                    if found and code:
+                        affected_stations.append(code)
+                    if code == station_code:
+                        found = True
+                        affected_stations.append(code)
+                break
+
+        # 统计这些后续站上，有哪些其他列车会在之后到达（可能被传播延误）
+        impacted: List[Dict[str, str]] = []
+        for t in self.trains:
+            tid = getattr(t, 'train_id', None)
+            if not tid or tid == train_id:
+                continue
+            schedule = getattr(t, 'schedule', None)
+            stops = getattr(schedule, 'stops', []) if schedule else []
+            for s in stops:
+                code = getattr(s, 'station_code', None)
+                if code in affected_stations:
+                    impacted.append({"train_id": tid, "station": code})
+                    break
+
+        # 传播估算
+        density_factor = 1.5 if 9 <= datetime.now().hour <= 18 else 1.0
+        estimated_propagation = int((delay_mins / 10) * (len(impacted) / 5) * density_factor)
+        estimated_propagation = min(estimated_propagation, len(impacted) * 2)
+        estimated_propagation = max(0, estimated_propagation)
+
+        return {
+            "success": True,
+            "source_train": train_id,
+            "source_station": station_code,
+            "delay_minutes": delay_mins,
+            "downstream_stations": len(affected_stations),
+            "downstream_station_ids": affected_stations[:10],
+            "potentially_impacted_trains": len(impacted),
+            "impacted_trains_sample": [i["train_id"] for i in impacted[:15]],
+            "estimated_propagation": estimated_propagation,
+            "note": (
+                "静态分析：基于运行图前后顺序。"
+                f"{train_id}在{station_code}及之后共经{len(affected_stations)}站，"
+                f"这些站上有{len(impacted)}列其他列车可能受传播影响。"
+            )
+        }
+
+    def _tool_generate_dispatch_notice(self, args: Dict) -> Dict:
+        """
+        生成正式调度通知文本
+        纯LLM调用，不跑求解器
+        """
+        audience = args.get("audience", "station")
+        card = self._accident_card
+
+        audience_label = {"station": "车站值班员", "driver": "列车司机", "control_center": "行车调度台"}.get(audience, "车站值班员")
+
+        # 构建提示
+        prompt_lines = [
+            f"请生成一份正式的铁路调度通知，受众：{audience_label}。",
+            f"事故类型：{card.scene_category}，故障：{card.fault_type or '未知'}。",
+            f"位置：{card.location_name or card.location_code or '未知'}，预计持续{card.expected_duration or '未知'}分钟。",
+            f"受影响列车：{', '.join(card.affected_train_ids[:8]) if card.affected_train_ids else '待排查'}。",
+            "要求：",
+            "1. 包含命令编号占位符[命令编号]、发令时间占位符[发令时间]、受令处所占位符[受令处所]",
+            "2. 语气正式、简洁、准确，符合中国铁路调度命令规范",
+            "3. 明确限速值、起止时间、影响范围",
+            "4. 不超过200字"
+        ]
+        prompt = "\n".join(prompt_lines)
+
+        try:
+            llm = self._get_llm_caller()
+            response = llm.call(prompt, max_tokens=512, temperature=0.3)
+            text = response.get("content", "") if isinstance(response, dict) else str(response)
+        except Exception as e:
+            logger.warning(f"[generate_dispatch_notice] LLM生成失败: {e}")
+            text = (
+                f"【调度通知草案，请人工完善】\n"
+                f"因{card.fault_type or card.scene_category}，"
+                f"{card.location_name or card.location_code}起限速运行，"
+                f"预计持续{card.expected_duration or '未知'}分钟，"
+                f"请相关列车注意。"
+            )
+
+        return {
+            "success": True,
+            "audience": audience,
+            "audience_label": audience_label,
+            "notice_text": text,
+            "can_copy": True,
+            "scene_category": card.scene_category,
+            "location": card.location_name or card.location_code
         }
 
     # ================================================================
@@ -969,46 +1327,14 @@ class Layer2Planner:
                 "reasoning": "所有求解器执行失败"
             }
 
+        # 使用 SolverSelector 进行多目标评分和 Pareto 分析
         for r in successful:
-            max_delay = r.get("max_delay_minutes", 0)
-            avg_delay = r.get("avg_delay_minutes", 0)
-            total_delay = r.get("total_delay_minutes", 0)
-            affected_count = r.get("affected_trains_count", 0)
-            on_time_rate = r.get("on_time_rate", 1.0)
+            scored = SolverSelector.score_result(r, objective)
+            r["composite_score"] = scored["composite_score"]
+            r["_score_breakdown"] = scored["_score_breakdown"]
 
-            # 归一化得分（0-100，越低越好），阈值与 comparator.py 对齐
-            max_delay_score = min(max_delay / 30 * 100, 100)
-            avg_delay_score = min(avg_delay / 30 * 100, 100)
-            total_delay_score = min(total_delay / 120 * 100, 100)
-            affected_score = min(affected_count / 10 * 100, 100)
-            on_time_score = (1 - on_time_rate) * 100
-
-            if objective == "min_max_delay":
-                composite_score = (
-                    max_delay_score * 0.40 +
-                    total_delay_score * 0.15 +
-                    avg_delay_score * 0.10 +
-                    affected_score * 0.15 +
-                    on_time_score * 0.20
-                )
-            elif objective == "min_avg_delay":
-                composite_score = (
-                    avg_delay_score * 0.35 +
-                    total_delay_score * 0.20 +
-                    max_delay_score * 0.10 +
-                    affected_score * 0.15 +
-                    on_time_score * 0.20
-                )
-            else:  # min_total_delay 或默认
-                composite_score = (
-                    total_delay_score * 0.35 +
-                    max_delay_score * 0.15 +
-                    avg_delay_score * 0.10 +
-                    affected_score * 0.15 +
-                    on_time_score * 0.25
-                )
-
-            r["composite_score"] = round(composite_score, 2)
+        pareto_results = SolverSelector.find_pareto_front(successful)
+        pareto_solvers = [p["solver"] for p in pareto_results]
 
         # 按综合得分排序（越低越好）
         successful.sort(key=lambda r: r.get("composite_score", 9999))
@@ -1031,8 +1357,10 @@ class Layer2Planner:
                 summary_parts.append(f"{r['solver']}: 失败({r.get('error', '未知')})")
 
         if best:
-            logger.info(f"[智能对比结论] 最优方案: {best['solver']} (综合得分={best.get('composite_score', 0):.1f}, "
-                       f"优化目标={objective})")
+            logger.info(
+                f"[智能对比结论] 最优方案: {best['solver']} (综合得分={best.get('composite_score', 0):.1f}, "
+                f"优化目标={objective}), Pareto集={pareto_solvers}"
+            )
 
         return {
             "success": True,
@@ -1040,6 +1368,7 @@ class Layer2Planner:
             "results": results,
             "best_solution": best,
             "best_solver": best["solver"] if best else None,
+            "pareto_solvers": pareto_solvers,
             "comparison_summary": " | ".join(summary_parts),
             "optimization_objective": objective,
             "reasoning": f"根据优化目标'{objective}'对比{len(strategies)}个策略，{best['solver'] if best else '无'}最优"

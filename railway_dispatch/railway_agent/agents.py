@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .adapters.skill_registry import SkillRegistry, get_skill_registry
 from .adapters.skills import DispatchSkillOutput
+from .workflow.intent_router import IntentRouter
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +74,27 @@ class LLMAgent:
             stations: 车站列表
         """
         from config import LLMConfig
+        from railway_agent.workflow import Layer1DataModeling
 
         self.trains = trains
         self.stations = stations
         self.skill_registry: SkillRegistry = get_skill_registry(trains, stations)
         self.provider = LLMConfig.PROVIDER
         self.model_name = LLMConfig.get_model_name()
+        self._layer1 = Layer1DataModeling()
+        self._intent_router = IntentRouter()
+        self._workflow_engine = None
 
-        logger.debug(f"LLM驱动 Agent 初始化完成")
+        # 跨模式会话状态（Fix #8）
+        self.session_state: Dict[str, Any] = {
+            "history": [],           # 自动累积的对话历史
+            "last_accident_card": None,
+            "last_dispatch_result": None,
+            "last_mode": None,
+            "turn_count": 0,
+        }
+
+        logger.debug(f"RailwayDispatchAgent 初始化完成")
         logger.debug(f"  - 提供商: {LLMConfig.get_provider_name()}")
         logger.debug(f"  - 模型: {self.model_name}")
 
@@ -769,6 +783,391 @@ class LLMAgent:
                 "can_proceed": False
             }
     
+    # ================================================================
+    # UAO-RD 统一入口（新增）
+    # ================================================================
+
+    def handle(self, user_input: str, session_history: Optional[List[Dict[str, str]]] = None,
+               time_budget_seconds: float = 120.0) -> Dict[str, Any]:
+        """
+        全局Agent统一入口（UAO-RD架构）
+
+        流程：
+        1. L1提取 + 意图分类
+        2. 根据 intent 进入 Light Mode 或 Heavy Mode
+
+        Args:
+            time_budget_seconds: 全局时间预算（秒），默认120秒
+        """
+        start_time = time.time()
+        deadline = start_time + time_budget_seconds
+
+        def _check_timeout(label: str):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError(f"[{label}] 全局超时，已用尽 {time_budget_seconds} 秒时间预算")
+            return remaining
+
+        # Fix #8: 合并外部历史与内部会话状态
+        merged_history = list(self.session_state.get("history", []))
+        if session_history:
+            for msg in session_history:
+                if msg not in merged_history:
+                    merged_history.append(msg)
+        # 截断到最近10轮，防止过长
+        merged_history = merged_history[-20:]
+
+        try:
+            # Step 0: 意图识别前置（轻量拦截，避免非调度请求进入L1）
+            _check_timeout("意图识别")
+            router_result = self._intent_router.classify_with_fallback(user_input)
+            intent = router_result.get("intent", "dispatch")
+            logger.info(f"[Agent] 意图分类: {intent} (classifier={router_result.get('classifier', 'unknown')}, confidence={router_result.get('confidence', 0)})")
+
+            # Step 1: 非调度意图直接短路，不调用L1数据建模
+            if intent in ("query", "chat", "overview"):
+                l1_result = {"intent": intent, "accident_card": None, "can_solve": False}
+                result = self._light_mode(user_input, l1_result, merged_history, deadline)
+                self._update_session_state(user_input, result, None)
+                return result
+
+            # Step 2: 只有 dispatch 才执行 L1 数据建模
+            _check_timeout("L1提取")
+            logger.debug(f"[Agent] 执行L1提取，输入: {user_input[:50]}...")
+            l1_result = self._layer1.execute(user_input=user_input)
+            accident_card = l1_result.get("accident_card")
+
+            if not accident_card:
+                return {
+                    "success": False,
+                    "mode": "error",
+                    "ui_action": "render_chat",
+                    "chat_message": "L1提取失败，无法识别用户意图",
+                    "message": "L1提取失败，无法识别用户意图",
+                    "computation_time": time.time() - start_time
+                }
+
+            # 将正确意图写回 accident_card，供后续流程使用
+            if hasattr(accident_card, 'intent'):
+                accident_card.intent = intent
+
+            # Step 3: Heavy Mode
+            result = self._heavy_mode(user_input, l1_result, merged_history, deadline)
+
+            # Fix #8: 更新跨模式会话状态
+            self._update_session_state(user_input, result, accident_card)
+            return result
+
+        except TimeoutError as e:
+            logger.warning(str(e))
+            return {
+                "success": False,
+                "mode": "timeout",
+                "ui_action": "render_chat",
+                "chat_message": f"请求处理超时: {str(e)}",
+                "message": f"请求处理超时: {str(e)}",
+                "computation_time": time.time() - start_time
+            }
+        except Exception as e:
+            logger.exception(f"[Agent] handle 执行错误: {e}")
+            return {
+                "success": False,
+                "mode": "error",
+                "ui_action": "render_chat",
+                "chat_message": f"处理失败: {str(e)}",
+                "message": f"处理失败: {str(e)}",
+                "computation_time": time.time() - start_time
+            }
+
+    def _update_session_state(self, user_input: str, result: Dict[str, Any], accident_card: Any):
+        """更新内部会话状态（Fix #8）"""
+        mode = result.get("mode", "unknown")
+        self.session_state["turn_count"] = self.session_state.get("turn_count", 0) + 1
+        self.session_state["last_mode"] = mode
+        self.session_state["last_accident_card"] = accident_card
+
+        # 累积对话历史
+        history = self.session_state.get("history", [])
+        history.append({"role": "user", "content": user_input})
+        assistant_content = result.get("content") or result.get("message", "")
+        history.append({"role": "assistant", "content": assistant_content})
+        # 截断保留最近10轮（20条消息）
+        self.session_state["history"] = history[-20:]
+
+        # 如果是调度模式，保存结果快照
+        if mode == "heavy" and result.get("success"):
+            self.session_state["last_dispatch_result"] = {
+                "dispatch_metrics": result.get("dispatch_metrics"),
+                "selected_solver": result.get("selected_solver"),
+                "optimized_schedule": result.get("optimized_schedule"),
+                "eval_grade": result.get("eval_grade"),
+                "timestamp": time.time(),
+            }
+        logger.debug(f"[Agent] 会话状态更新: turn={self.session_state['turn_count']}, mode={mode}")
+
+    def _light_mode(self, user_input: str, l1_result: Dict[str, Any],
+                    session_history: Optional[List[Dict[str, str]]] = None,
+                    deadline: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Light Mode：轻量查询/分析，单次 Function Calling
+        """
+        if deadline and time.time() > deadline:
+            raise TimeoutError("Light Mode 全局超时")
+        start_time = time.time()
+        from railway_agent.adapters.llm_adapter import get_llm_caller
+
+        # 轻量工具集（查询/分析类，不含调度求解）
+        light_tool_names = {
+            "get_train_status", "query_timetable", "station_load_skill",
+            "delay_propagation_skill", "quick_line_overview", "check_impact_cascade"
+        }
+        all_tools = self.skill_registry.get_tools_schema()
+        light_tools = [t for t in all_tools if t.get("function", {}).get("name", "") in light_tool_names]
+
+        # Fix #8: 如果有上一次的调度结果，注入上下文
+        context_hint = ""
+        if self.session_state.get("last_dispatch_result"):
+            last = self.session_state["last_dispatch_result"]
+            metrics = last.get("dispatch_metrics", {})
+            context_hint = (
+                f"[上下文] 最近一次调度结果: 求解器={last.get('selected_solver','未知')}, "
+                f"最大延误={metrics.get('max_delay_minutes',0)}分钟, "
+                f"受影响列车={metrics.get('affected_trains_count',0)}列, "
+                f"等级={last.get('eval_grade','N')}。"
+                f"用户可能询问此前结果，可直接引用上述数据。"
+            )
+
+        system_prompt = (
+            "你是京广高铁智能调度系统的信息查询助手。"
+            "你可以调用工具查询列车状态、时刻表、车站负荷、延误传播等信息。"
+            "请根据用户问题选择合适的工具获取数据，然后以专业、简洁的方式回答。"
+            "回复控制在200字以内。"
+            + (f"\n{context_hint}" if context_hint else "")
+        )
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # 注入会话历史
+        if session_history:
+            for msg in session_history[-4:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant"):
+                    messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": user_input})
+
+        try:
+            llm = get_llm_caller()
+            response = llm.call_with_tools(
+                messages=messages,
+                tools=light_tools,
+                max_tokens=1024,
+                temperature=0.3
+            )
+        except Exception as e:
+            logger.error(f"[Agent Light Mode] LLM调用失败: {e}")
+            # 降级：直接调用LLM回答，不用工具
+            try:
+                text, _ = llm.call(user_input, max_tokens=1024, temperature=0.3)
+                content = text.get("content", "") if isinstance(text, dict) else str(text)
+            except Exception as e2:
+                content = f"查询服务暂不可用: {e2}"
+            intent = l1_result.get("intent", "chat")
+            return {
+                "success": True,
+                "mode": "light",
+                "ui_action": "render_query" if intent == "query" else "render_chat",
+                "chat_message": content,
+                "content": content,
+                "tool_calls": [],
+                "computation_time": time.time() - start_time
+            }
+
+        assistant_msg = response.get("assistant_message", {})
+        content = assistant_msg.get("content", "")
+        tool_calls = response.get("tool_calls", [])
+
+        # 执行工具调用
+        tool_results = []
+        if tool_calls:
+            for tc in tool_calls:
+                tool_name = tc.get("name", "")
+                try:
+                    args = json.loads(tc.get("arguments", "{}")) if isinstance(tc.get("arguments"), str) else tc.get("arguments", {})
+                except json.JSONDecodeError:
+                    args = {}
+
+                try:
+                    skill_output = self.skill_registry.execute(tool_name, args)
+                    tool_result = {
+                        "tool": tool_name,
+                        "success": skill_output.success,
+                        "data": skill_output.delay_statistics if skill_output.success else {"error": skill_output.message}
+                    }
+                except Exception as e:
+                    tool_result = {"tool": tool_name, "success": False, "error": str(e)}
+
+                tool_results.append(tool_result)
+
+                # 将工具结果追加到messages，让LLM总结
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": json.dumps(tool_result, ensure_ascii=False, default=str)
+                })
+
+            # 再次调用LLM生成最终回答
+            try:
+                final_resp = llm.call_with_tools(
+                    messages=messages,
+                    tools=[],
+                    max_tokens=1024,
+                    temperature=0.3
+                )
+                final_msg = final_resp.get("assistant_message", {})
+                content = final_msg.get("content", content)
+            except Exception as e:
+                logger.warning(f"[Agent Light Mode] 最终总结失败: {e}")
+
+        intent = l1_result.get("intent", "chat")
+        return {
+            "success": True,
+            "mode": "light",
+            "ui_action": "render_query" if intent == "query" else "render_chat",
+            "chat_message": content,
+            "content": content,
+            "tool_calls": [t["tool"] for t in tool_results],
+            "tool_results": tool_results,
+            "computation_time": time.time() - start_time
+        }
+
+    def _heavy_mode(self, user_input: str, l1_result: Dict[str, Any],
+                    session_history: Optional[List[Dict[str, str]]] = None,
+                    deadline: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Heavy Mode：应急调度，走完整 L1-L4 工作流
+        """
+        if deadline and time.time() > deadline:
+            raise TimeoutError("Heavy Mode 全局超时")
+        start_time = time.time()
+
+        try:
+            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+
+            workflow_engine = create_workflow_engine()
+            remaining_budget = max(0, deadline - time.time()) if deadline else None
+            workflow_result = workflow_engine.execute_full_workflow(
+                user_input=user_input,
+                canonical_request=None,
+                enable_rag=True,
+                time_budget_seconds=remaining_budget
+            )
+
+            if not workflow_result.success:
+                return {
+                    "success": False,
+                    "mode": "heavy",
+                    "message": f"工作流执行失败: {workflow_result.message}",
+                    "computation_time": time.time() - start_time
+                }
+
+            accident_card_data = workflow_result.debug_trace.get("accident_card", {})
+            policy_decision = workflow_result.debug_trace.get("policy_decision", {})
+            decision_value = "unknown"
+            if isinstance(policy_decision, dict):
+                decision_value = policy_decision.get("decision", "unknown")
+            elif hasattr(policy_decision, "decision"):
+                decision_value = str(policy_decision.decision)
+
+            reasoning_parts = [
+                f"【场景识别】{accident_card_data.get('scene_category', '未知')} - {accident_card_data.get('fault_type', '未知')}",
+                f"【位置信息】{accident_card_data.get('location_name', '未知')} ({accident_card_data.get('location_code', '未知')})",
+                f"【影响列车】{', '.join(accident_card_data.get('affected_train_ids', []))}",
+                f"【评估结果】{decision_value}"
+            ]
+
+            solver_result = workflow_result.solver_result
+            dispatch_metrics = {}
+            optimized_schedule = {}
+            selected_solver = "unknown"
+            skill_message = workflow_result.message
+            affected_trains = []
+            affected_trains_count = 0
+
+            if solver_result and solver_result.success:
+                m = solver_result.metrics if isinstance(solver_result.metrics, dict) else {}
+                dispatch_metrics = {
+                    "max_delay_minutes": round(m.get("max_delay_seconds", 0) / 60, 2),
+                    "avg_delay_minutes": round(m.get("avg_delay_seconds", 0) / 60, 2),
+                    "total_delay_minutes": round(m.get("total_delay_seconds", 0) / 60, 2),
+                    "affected_trains_count": m.get("affected_trains_count", 0),
+                    "affected_trains": m.get("affected_trains", []),
+                    "computation_time": round(solver_result.solving_time_seconds, 2),
+                    "on_time_rate": m.get("on_time_rate", 1.0),
+                    "punctuality_strict": m.get("punctuality_strict", 1.0),
+                    "delay_std_dev": m.get("delay_std_dev", 0.0),
+                    "delay_propagation_depth": m.get("delay_propagation_depth", 0),
+                    "delay_propagation_breadth": m.get("delay_propagation_breadth", 0),
+                    "evaluation_grade": m.get("evaluation_grade", "N"),
+                }
+                optimized_schedule = solver_result.schedule if isinstance(solver_result.schedule, dict) else {}
+                selected_solver = solver_result.solver_type
+                affected_trains = m.get("affected_trains", [])
+                affected_trains_count = m.get("affected_trains_count", 0)
+                skill_message = solver_result.error_message or workflow_result.message
+
+            # 提取对比结果（如果L2做了多求解器对比）
+            comparison_results = None
+            planner_decision = workflow_result.debug_trace.get("planner_decision", {})
+            if planner_decision and planner_decision.get("solver_results"):
+                for sr in planner_decision["solver_results"]:
+                    if sr.get("strategies_tested"):
+                        comparison_results = {
+                            "strategies_tested": sr.get("strategies_tested", 0),
+                            "best_solver": sr.get("best_solver", ""),
+                            "comparison_summary": sr.get("comparison_summary", ""),
+                            "results": sr.get("results", [])
+                        }
+                        break
+
+            # 提取评估报告中的指标
+            eval_report = workflow_result.debug_trace.get("evaluation_report", {})
+            eval_grade = "N"
+            if hasattr(eval_report, "evaluation_grade"):
+                eval_grade = eval_report.evaluation_grade
+            elif isinstance(eval_report, dict):
+                eval_grade = eval_report.get("evaluation_grade", "N")
+
+            return {
+                "success": True,
+                "mode": "heavy",
+                "message": skill_message or workflow_result.message,
+                "reasoning": "\n".join(reasoning_parts),
+                "accident_card": accident_card_data,
+                "evaluation_report": eval_report,
+                "natural_language_plan": workflow_result.debug_trace.get("natural_language_plan", ""),
+                "operations_guide": workflow_result.debug_trace.get("dispatcher_operations", {}),
+                "dispatch_metrics": dispatch_metrics,
+                "computation_time": time.time() - start_time,
+                "recognized_scenario": accident_card_data.get("scene_category", "unknown") if isinstance(accident_card_data, dict) else getattr(accident_card_data, "scene_category", "unknown"),
+                "selected_skill": "dispatch_solve_skill",
+                "selected_solver": selected_solver,
+                "delay_statistics": dispatch_metrics,
+                "optimized_schedule": optimized_schedule,
+                "comparison_results": comparison_results,
+                "eval_grade": eval_grade,
+            }
+
+        except Exception as e:
+            logger.exception(f"[Agent Heavy Mode] 执行错误: {e}")
+            return {
+                "success": False,
+                "mode": "heavy",
+                "message": f"调度执行失败: {str(e)}",
+                "computation_time": time.time() - start_time
+            }
+
     def _solver_result_to_dict(self, solver_result) -> Optional[Dict[str, Any]]:
         """将SolverResult转换为字典"""
         if solver_result is None:

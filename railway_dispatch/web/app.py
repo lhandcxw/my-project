@@ -6,6 +6,8 @@
 import os
 os.environ["RULE_AGENT_USE_WORKFLOW"] = "1"
 
+from typing import Dict, Any
+
 from flask import Flask, render_template, request, jsonify, Response, redirect, url_for
 from flask_cors import CORS
 import json
@@ -33,6 +35,12 @@ from visualization.simple_diagram import create_train_diagram, create_comparison
 
 # 导入统一LLM驱动 Agent
 from railway_agent import LLMAgent, create_llm_agent, ToolRegistry
+
+# 导入意图路由（新增：支持query/chat/dispatch多分支）
+
+
+# 导入RAG检索器（新增：chat分支知识增强）
+from railway_agent.rag_retriever import get_retriever
 
 # 导入比较模块蓝图并注册
 from scheduler_comparison.comparison_api import register_comparison_routes
@@ -78,6 +86,79 @@ logger.info(get_config_summary())
 
 # Agent实例
 llm_agent = None
+
+# 短期对话记忆（多轮对话上下文）
+# 格式: {session_id: {"entities": {"train_id": "G1563", "station_name": "石家庄"}, "last_intent": "query", "timestamp": ...}}
+_chat_memory: Dict[str, Dict[str, Any]] = {}
+
+
+def _get_chat_context(session_id: str) -> Dict[str, Any]:
+    """获取指定会话的上下文记忆"""
+    if not session_id or session_id not in _chat_memory:
+        return {}
+    return _chat_memory.get(session_id, {})
+
+
+def _get_chat_messages(session_id: str, max_turns: int = 0) -> list:
+    """
+    获取指定会话的对话历史消息
+
+    Args:
+        session_id: 会话ID
+        max_turns: 最大轮数，0表示返回全部
+
+    Returns:
+        list: OpenAI格式的消息列表 [{"role": "user", "content": "..."}, ...]
+    """
+    if not session_id or session_id not in _chat_memory:
+        return []
+    messages = _chat_memory[session_id].get("messages", [])
+    if max_turns > 0:
+        # 每轮 = user + assistant = 2条消息
+        return messages[-max_turns * 2:]
+    return messages
+
+
+def _save_chat_context(session_id: str, entities: Dict[str, Any], intent: str = "", user_msg: str = "", assistant_msg: str = ""):
+    """保存会话上下文记忆"""
+    if not session_id:
+        return
+
+    # 读取现有记忆
+    existing = _chat_memory.get(session_id, {})
+    messages = existing.get("messages", [])
+
+    # 追加当前轮对话
+    if user_msg:
+        messages.append({"role": "user", "content": user_msg})
+    if assistant_msg:
+        messages.append({"role": "assistant", "content": assistant_msg})
+
+    # 限制历史长度：最多保留20轮（40条消息），防止token超限
+    if len(messages) > 40:
+        messages = messages[-40:]
+
+    _chat_memory[session_id] = {
+        "entities": entities,
+        "last_intent": intent,
+        "messages": messages,
+        "timestamp": datetime.now().isoformat()
+    }
+    # 清理超过100条的旧记忆
+    if len(_chat_memory) > 100:
+        oldest = sorted(_chat_memory.items(), key=lambda x: x[1].get("timestamp", ""))[0][0]
+        _chat_memory.pop(oldest, None)
+
+
+def _append_assistant_message(session_id: str, assistant_msg: str):
+    """单独追加assistant回复到对话历史（用于在yield之后保存）"""
+    if not session_id or session_id not in _chat_memory:
+        return
+    _chat_memory[session_id].setdefault("messages", [])
+    _chat_memory[session_id]["messages"].append({"role": "assistant", "content": assistant_msg})
+    # 限制长度
+    if len(_chat_memory[session_id]["messages"]) > 40:
+        _chat_memory[session_id]["messages"] = _chat_memory[session_id]["messages"][-40:]
 
 def get_agent():
     """
@@ -475,58 +556,54 @@ def agent_chat():
         # 直接传递原始prompt给Agent，由工作流引擎内部处理
         logger.info("使用LLM驱动工作流进行实体提取和场景识别（无规则解析）")
 
-        # 调用Agent分析（LLM驱动，传入原始prompt）
-        # Agent内部使用WorkflowEngine执行L1-L4完整工作流
-        result = agent.analyze(delay_injection={}, user_prompt=prompt)
+        # UAO-RD: 统一调用全局Agent入口
+        result = agent.handle(user_input=prompt)
 
-        if result.success and result.dispatch_result:
-            dispatch = result.dispatch_result
-
-            # 获取原始时刻表
-            original_schedule = get_original_schedule()
-
-            logger.info("Agent分析成功，返回结果")
-            
-            # 构建评估报告（包含高铁专用指标）
-            evaluation_report = {}
-            if result.evaluation_report:
-                eval_report = result.evaluation_report
-                # 如果是对象，转换为字典
-                if hasattr(eval_report, 'model_dump'):
-                    evaluation_report = eval_report.model_dump()
-                elif hasattr(eval_report, '__dict__'):
-                    evaluation_report = eval_report.__dict__
-                else:
-                    evaluation_report = eval_report
-            
-            # 构建返回数据
-            response_data = {
-                "success": True,
-                "recognized_scenario": result.recognized_scenario,
-                "selected_skill": result.selected_skill,
-                "selected_solver": result.selected_solver,
-                "reasoning": result.reasoning,
-                "llm_summary": result.llm_summary or "",
-                "delay_statistics": dispatch.delay_statistics,
-                "message": dispatch.message,
-                "computation_time": result.computation_time,
-                "optimized_schedule": dispatch.optimized_schedule,
-                "original_schedule": original_schedule,
-                "evaluation_report": evaluation_report
-            }
-
-            # 添加调度员操作指南
-            if hasattr(result, 'operations_guide') and result.operations_guide:
-                response_data["operations_guide"] = result.operations_guide
-                logger.info(f"添加调度员操作指南: {result.operations_guide.get('scene_name', '未知场景')}")
-
-            return jsonify(response_data)
-        else:
-            logger.error(f"Agent分析失败: {result.error_message}")
+        if not result.get("success"):
+            logger.error(f"Agent处理失败: {result.get('message')}")
             return jsonify({
                 "success": False,
-                "message": result.error_message or "Agent执行失败"
+                "message": result.get("message", "Agent执行失败")
             })
+
+        mode = result.get("mode", "heavy")
+        if mode == "light":
+            return jsonify({
+                "success": True,
+                "mode": "light",
+                "content": result.get("content", ""),
+                "message": result.get("content", ""),
+                "computation_time": result.get("computation_time", 0)
+            })
+
+        # Heavy Mode（调度求解）
+        accident_card = result.get("accident_card", {})
+        evaluation_report = result.get("evaluation_report", {})
+        if hasattr(evaluation_report, 'model_dump'):
+            evaluation_report = evaluation_report.model_dump()
+        elif hasattr(evaluation_report, '__dict__'):
+            evaluation_report = evaluation_report.__dict__
+
+        response_data = {
+            "success": True,
+            "mode": "heavy",
+            "recognized_scenario": accident_card.get("scene_category", "unknown") if isinstance(accident_card, dict) else getattr(accident_card, "scene_category", "unknown"),
+            "selected_skill": "dispatch_solve_skill",
+            "reasoning": result.get("reasoning", ""),
+            "llm_summary": result.get("natural_language_plan", ""),
+            "delay_statistics": result.get("dispatch_metrics", {}),
+            "message": result.get("message", ""),
+            "computation_time": result.get("computation_time", 0),
+            "optimized_schedule": {},
+            "original_schedule": get_original_schedule(),
+            "evaluation_report": evaluation_report
+        }
+
+        operations_guide = result.get("operations_guide")
+        if operations_guide:
+            response_data["operations_guide"] = operations_guide
+
+        return jsonify(response_data)
 
     except Exception as e:
         logger.exception(f"agent_chat处理异常: {str(e)}")
@@ -561,26 +638,37 @@ def general_chat():
             })
 
         # 构建通用对话Prompt（不包含Tools，自由的对话）
-        general_prompt = f"""你是一个友好的铁路调度助手。请用通俗易懂的语言回答用户的问题。
+        general_prompt = f"""你是京广高铁智能调度系统的专业顾问。请基于铁路运输专业知识，准确、清晰地回答用户问题。
 
 用户问题: {prompt}
 
 回答要求：
-- 简洁明了
-- 如果是技术术语，请简单解释
-- 如果不知道，请如实说明"""
+- 专业严谨，体现技术权威性
+- 涉及技术术语时，给出准确的专业解释
+- 对无法确认的内容，明确说明"该信息暂无法核实"，禁止编造"""
 
-        # 调用模型（不使用Tool）
-        messages = [
-            {"role": "system", "content": "你是一个友好、专业的铁路调度助手。"},
-            {"role": "user", "content": general_prompt}
-        ]
+        # UAO-RD: 统一调用全局Agent入口
+        result = agent.handle(user_input=prompt)
 
-        response = agent.chat_direct(messages)
+        if not result.get("success"):
+            return jsonify({
+                "success": False,
+                "message": result.get("message", "处理失败")
+            })
 
+        mode = result.get("mode", "light")
+        if mode == "light":
+            return jsonify({
+                "success": True,
+                "mode": "light",
+                "response": result.get("content", "")
+            })
+
+        # Heavy Mode 不应在 general_chat 中出现，但做兜底
         return jsonify({
             "success": True,
-            "response": response
+            "mode": mode,
+            "response": result.get("message", result.get("content", ""))
         })
 
     except Exception as e:
@@ -609,166 +697,131 @@ def agent_chat_stream():
     try:
         data = request.json
         prompt = data.get('prompt', '')
+        session_id = data.get('session_id', '')
 
         if not prompt:
             def error_gen():
-                yield f"data: {json.dumps({'type': 'error', 'message': '请输入调度需求'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'message': '请输入您的问题'}, ensure_ascii=False)}\n\n"
             return Response(error_gen(), mimetype='text/event-stream')
 
-        logger.info(f"[流式API] 收到请求，prompt: {prompt[:50]}...")
+        logger.info(f"[流式API] 收到请求，session_id={session_id}, prompt: {prompt[:50]}...")
 
         def generate():
             try:
-                # 发送开始信号
                 yield f"data: {json.dumps({'type': 'start', 'timestamp': datetime.now().isoformat()}, ensure_ascii=False)}\n\n"
 
-                # 获取LLM驱动Agent
                 agent = get_agent()
                 if agent is None:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Agent未初始化，请检查配置'}, ensure_ascii=False)}\n\n"
                     return
 
-                # 总计时开始
                 total_start = time.time()
                 stage_times = {}
 
-                # L1: 数据建模
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '🤔 正在分析输入信息...'}, ensure_ascii=False)}\n\n"
+                context = _get_chat_context(session_id)
+                if context:
+                    logger.info(f"[对话记忆] 恢复上下文: {context.get('entities', {})}")
 
-                from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-                workflow_engine = create_workflow_engine()
+                # UAO-RD: 统一调用全局Agent入口
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析用户意图...'}, ensure_ascii=False)}\n\n"
 
-                # 先执行L1层
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '📝 识别场景类型、位置、列车信息...'}, ensure_ascii=False)}\n\n"
+                result = agent.handle(user_input=prompt, session_history=context.get("messages") if context else None)
 
+                if not result.get("success"):
+                    yield f"data: {json.dumps({'type': 'error', 'message': result.get('message', '处理失败')}, ensure_ascii=False)}\n\n"
+                    return
+
+                mode = result.get("mode", "heavy")
+
+                if mode == "light":
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': '正在查询相关信息...'}, ensure_ascii=False)}\n\n"
+                    tool_calls = result.get("tool_calls", [])
+                    if tool_calls:
+                        tool_call_str = ", ".join(tool_calls)
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'已调用工具: {tool_call_str}'}, ensure_ascii=False)}\n\n"
+                    content = result.get("content", "")
+                    if content:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': content}, ensure_ascii=False)}\n\n"
+                    light_result = {
+                        "success": True,
+                        "mode": "light",
+                        "ui_action": result.get("ui_action", "render_chat"),
+                        "chat_message": content,
+                        "response": content,
+                        "computation_time": result.get("computation_time", 0)
+                    }
+                    yield f"data: {json.dumps({'type': 'result', 'data': light_result}, ensure_ascii=False)}\n\n"
+                    _save_chat_context(session_id, {}, "query", user_msg=prompt, assistant_msg=content)
+                    return
+
+                # Heavy Mode: 基于Agent返回结果重构L1-L4进度事件
+                accident_card = result.get("accident_card", {})
+
+                # L1
                 t0 = time.time()
-                l1_result = workflow_engine.layer1.execute(
-                    user_input=prompt,
-                    enable_rag=True
-                )
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析调度场景...'}, ensure_ascii=False)}\n\n"
+                if accident_card:
+                    scene_cat = accident_card.get("scene_category", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "scene_category", "未知")
+                    fault_type = accident_card.get("fault_type", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "fault_type", "未知")
+                    loc_name = accident_card.get("location_name", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "location_name", "未知")
+                    loc_code = accident_card.get("location_code", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "location_code", "未知")
+                    affected = accident_card.get("affected_train_ids", []) if isinstance(accident_card, dict) else getattr(accident_card, "affected_train_ids", [])
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'场景识别：{scene_cat} - {fault_type}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'位置：{loc_name} ({loc_code})'}, ensure_ascii=False)}\n\n"
+                    train_count = len(affected)
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'受影响列车：{train_count}列'}, ensure_ascii=False)}\n\n"
+                    if affected:
+                        affected_str = ", ".join(affected[:10])
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'   车次：{affected_str}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 1, 'message': '数据建模完成'}, ensure_ascii=False)}\n\n"
                 stage_times['L1数据建模'] = time.time() - t0
 
-                accident_card = l1_result.get('accident_card')
-                if accident_card:
-                    scene_content = f'✅ 场景识别：{accident_card.scene_category} - {accident_card.fault_type}'
-                    location_content = f'📍 位置：{accident_card.location_name} ({accident_card.location_code})'
-                    train_count = len(accident_card.affected_train_ids or [])
-                    trains_content = f'🚂 受影响列车：{train_count}列'
-                    
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': scene_content}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': location_content}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': trains_content}, ensure_ascii=False)}\n\n"
-                    
-                    if accident_card.affected_train_ids:
-                        train_list = ', '.join(accident_card.affected_train_ids[:10])
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'   车次：{train_list}'}, ensure_ascii=False)}\n\n"
-
-                yield f"data: {json.dumps({'type': 'progress', 'layer': 1, 'message': '数据建模完成'}, ensure_ascii=False)}\n\n"
-
-                # L2: Agent 规划
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '🎯 正在制定调度策略...'}, ensure_ascii=False)}\n\n"
-
+                # L2
                 t0 = time.time()
-                l2_result = workflow_engine.layer2.execute(
-                    accident_card=accident_card
-                )
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在制定调度策略...'}, ensure_ascii=False)}\n\n"
+                selected_solver = result.get("selected_solver", "fcfs")
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'选择求解器：{selected_solver}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 2, 'message': '策略制定完成'}, ensure_ascii=False)}\n\n"
                 stage_times['L2策略规划'] = time.time() - t0
 
-                preferred_solver = l2_result.get('planner_decision', {}).get('preferred_solver', 'fcfs')
-                solver_content = f'🎯 选择求解器：{preferred_solver}'
-                yield f"data: {json.dumps({'type': 'thinking', 'content': solver_content}, ensure_ascii=False)}\n\n"
-
-                yield f"data: {json.dumps({'type': 'progress', 'layer': 2, 'message': '策略制定完成'}, ensure_ascii=False)}\n\n"
-
-                # L3: 求解执行
-                agent_executed_solve = l2_result.get('agent_executed_solve', False)
-                if agent_executed_solve and l2_result.get('skill_execution_result'):
-                    # L2 Agent 已完成求解（如 compare_strategies 执行了多个求解器），跳过 L3
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': '✅ L2 Agent 已完成求解，直接使用最优结果'}, ensure_ascii=False)}\n\n"
-                    l3_result = {
-                        'skill_execution_result': l2_result['skill_execution_result'],
-                        'solver_response': l2_result.get('solver_response')
-                    }
-                    stage_times['L3求解执行'] = 0.0
-                else:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': '⚙️ 正在执行调度算法...'}, ensure_ascii=False)}\n\n"
-
-                    t0 = time.time()
-                    l3_result = workflow_engine.layer3.execute(
-                        planning_intent=l2_result.get('planning_intent', ''),
-                        accident_card=accident_card,
-                        trains=workflow_engine.trains_pydantic,
-                        stations=workflow_engine.stations_pydantic,
-                        planner_decision=l2_result.get('planner_decision')
-                    )
-                    stage_times['L3求解执行'] = time.time() - t0
-
-                skill_result = l3_result.get('skill_execution_result', {})
-                if skill_result.get('success'):
-                    skill_name = skill_result.get('skill_name', '未知')
-                    total_delay = skill_result.get('total_delay_minutes', 0)
-                    max_delay = skill_result.get('max_delay_minutes', 0)
-                    solving_time = skill_result.get('solving_time', 0)
-                    
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'✓ 求解完成：{skill_name}'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   总延误：{total_delay}分钟'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   最大延误：{max_delay}分钟'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'   求解器耗时：{solving_time:.2f}秒'}, ensure_ascii=False)}\n\n"
-
-                yield f"data: {json.dumps({'type': 'progress', 'layer': 3, 'message': '求解完成'}, ensure_ascii=False)}\n\n"
-
-                # L4: 评估与方案生成
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '📊 正在生成调度方案...'}, ensure_ascii=False)}\n\n"
-
+                # L3
                 t0 = time.time()
-                l4_result = workflow_engine.layer4.execute(
-                    skill_execution_result=skill_result,
-                    solver_response=l3_result.get('solver_response'),
-                    enable_rag=True
-                )
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在执行调度算法...'}, ensure_ascii=False)}\n\n"
+                dispatch_metrics = result.get("dispatch_metrics", {})
+                total_delay = dispatch_metrics.get("total_delay_minutes", 0)
+                max_delay = dispatch_metrics.get("max_delay_minutes", 0)
+                solving_time = dispatch_metrics.get("computation_time", 0)
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'求解完成：{selected_solver}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'   总延误：{total_delay}分钟'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'   最大延误：{max_delay}分钟'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'   求解器耗时：{solving_time:.2f}秒'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 3, 'message': '求解完成'}, ensure_ascii=False)}\n\n"
+                stage_times['L3求解执行'] = time.time() - t0
+
+                # L4
+                t0 = time.time()
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在生成调度方案...'}, ensure_ascii=False)}\n\n"
+                eval_grade = result.get("eval_grade", "N")
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'评估完成：综合评级 {eval_grade}'}, ensure_ascii=False)}\n\n"
+                llm_summary = result.get("natural_language_plan", "")
+                if llm_summary:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'评估摘要：{llm_summary}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'layer': 4, 'message': '评估与方案生成完成'}, ensure_ascii=False)}\n\n"
                 stage_times['L4评估方案'] = time.time() - t0
 
-                eval_report = l4_result.get('evaluation_report')
-                llm_summary = l4_result.get('llm_summary', '')
-                natural_plan = l4_result.get('natural_language_plan', '')
-
-                # evaluation_report 是 Pydantic 对象，使用属性访问
-                eval_grade = getattr(eval_report, 'evaluation_grade', 'N')
-                eval_content = f'📊 评估完成：综合评级 {eval_grade}'
-                yield f"data: {json.dumps({'type': 'thinking', 'content': eval_content}, ensure_ascii=False)}\n\n"
-
-                if llm_summary:
-                    summary_content = f'📝 评估摘要：{llm_summary}'
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': summary_content}, ensure_ascii=False)}\n\n"
-
-                # 检查是否需要反射重规划（自适应反射架构）
-                rollback = l4_result.get('rollback_feedback')
-                needs_rerun = False
-                if rollback:
-                    if hasattr(rollback, 'needs_rerun'):
-                        needs_rerun = rollback.needs_rerun
-                    elif isinstance(rollback, dict):
-                        needs_rerun = rollback.get('needs_rerun', False)
-                if needs_rerun:
-                    reason = getattr(rollback, 'rollback_reason', '') if hasattr(rollback, 'rollback_reason') else rollback.get('rollback_reason', '')
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'⚠️ 评估发现方案可优化：{reason}，建议在非流式模式下启用反射重规划以获取更优解'}, ensure_ascii=False)}\n\n"
-
-                yield f"data: {json.dumps({'type': 'progress', 'layer': 4, 'message': '评估与方案生成完成'}, ensure_ascii=False)}\n\n"
-
-                # 【性能分析】输出各环节耗时
+                # 性能摘要
                 stage_times['总耗时'] = time.time() - total_start
                 timing_summary = " | ".join([f"{k}: {v:.1f}s" for k, v in stage_times.items()])
                 logger.info(f"[流式API性能] {timing_summary}")
-                yield f"data: {json.dumps({'type': 'thinking', 'content': f'⏱️ 各环节耗时：{timing_summary}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'各环节耗时：{timing_summary}'}, ensure_ascii=False)}\n\n"
 
-                # 构建 evaluation_report 字典（供前端使用）
+                # 构建 evaluation_report 字典
+                eval_report = result.get("evaluation_report", {})
                 eval_report_dict = None
                 if eval_report:
                     try:
-                        # Pydantic 对象转字典
                         eval_report_dict = eval_report.model_dump() if hasattr(eval_report, 'model_dump') else eval_report.dict()
                     except:
-                        # 如果转字典失败，使用默认值
                         eval_report_dict = {
                             'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N'),
                             'on_time_rate': getattr(eval_report, 'on_time_rate', 0.0),
@@ -780,70 +833,47 @@ def agent_chat_stream():
                             'constraint_check': getattr(eval_report, 'constraint_check', {})
                         }
 
-                # 构建优化前后时刻表对比
-                opt_schedule = skill_result.get('optimized_schedule', {})
-                if not opt_schedule:
-                    opt_schedule = l3_result.get('solver_response', {}).get('optimized_schedule', {})
-
-                # 提取对比结果（如果L2做了多求解器对比）
-                comparison_results = None
-                planner_decision = l2_result.get('planner_decision', {})
-                if planner_decision and planner_decision.get('solver_results'):
-                    for sr in planner_decision['solver_results']:
-                        if sr.get('strategies_tested'):
-                            comparison_results = {
-                                'strategies_tested': sr.get('strategies_tested', 0),
-                                'best_solver': sr.get('best_solver', ''),
-                                'comparison_summary': sr.get('comparison_summary', ''),
-                                'results': sr.get('results', [])
-                            }
-                            break
-
-                # 计算调度员关心的现实场景指标
+                opt_schedule = result.get("optimized_schedule", {})
                 original_schedule = get_original_schedule()
                 dispatcher_metrics = compute_dispatcher_metrics(original_schedule, opt_schedule)
+                comparison_results = result.get("comparison_results")
 
-                # 构建最终结果
                 final_result = {
                     'success': True,
-                    'recognized_scenario': accident_card.scene_category if accident_card else 'unknown',
-                    'selected_skill': 'dispatch_solve_skill',
-                    'selected_solver': preferred_solver,
-                    'reasoning': f'使用{preferred_solver}求解器，完成{len(accident_card.affected_train_ids or [])}列列车的调度优化',
+                    'ui_action': 'render_dispatch',
+                    'chat_message': '调度方案已生成，请查看右侧信息面板和详细方案。',
+                    'recognized_scenario': accident_card.get("scene_category", "unknown") if isinstance(accident_card, dict) else getattr(accident_card, "scene_category", "unknown"),
+                    'selected_skill': result.get("selected_skill", "dispatch_solve_skill"),
+                    'selected_solver': selected_solver,
+                    'reasoning': result.get("reasoning", ""),
                     'llm_summary': llm_summary,
-                    'natural_language_plan': natural_plan,
-                    'delay_statistics': {
-                        'max_delay_minutes': skill_result.get('max_delay_minutes', 0),
-                        'avg_delay_minutes': skill_result.get('avg_delay_minutes', 0),
-                        'total_delay_minutes': skill_result.get('total_delay_minutes', 0),
-                        'affected_trains_count': skill_result.get('affected_trains_count', 0),
-                        'affected_trains': skill_result.get('affected_trains', []),
-                        'computation_time': skill_result.get('solving_time', 0),
-                        'on_time_rate': getattr(eval_report, 'on_time_rate', 1.0) if eval_report else 1.0,
-                        'punctuality_strict': getattr(eval_report, 'punctuality_strict', 1.0) if eval_report else 1.0,
-                        'delay_std_dev': getattr(eval_report, 'delay_std_dev', 0.0) if eval_report else 0.0,
-                        'delay_propagation_depth': getattr(eval_report, 'delay_propagation_depth', 0) if eval_report else 0,
-                        'delay_propagation_breadth': getattr(eval_report, 'delay_propagation_breadth', 0) if eval_report else 0,
-                        'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N') if eval_report else 'N',
-                        'terminal_on_time_rate': dispatcher_metrics.get('terminal_on_time_rate', 1.0),
-                        'delay_recovery_rate': dispatcher_metrics.get('delay_recovery_rate', 1.0),
-                        'adjustment_ratio': dispatcher_metrics.get('adjustment_ratio', 0.0),
-                        'station_pressure_max': dispatcher_metrics.get('station_pressure_max', 0),
-                        'station_pressure_max_name': dispatcher_metrics.get('station_pressure_max_name', '-'),
-                        'delay_concentration_index': dispatcher_metrics.get('delay_concentration_index', 0.0)
-                    },
-                    'message': skill_result.get('message', ''),
-                    'computation_time': skill_result.get('solving_time', 0),
+                    'natural_language_plan': llm_summary,
+                    'delay_statistics': {**dispatch_metrics, **dispatcher_metrics},
+                    'message': result.get("message", ""),
+                    'computation_time': result.get("computation_time", 0),
                     'optimized_schedule': opt_schedule,
                     'original_schedule': original_schedule,
-                    'evaluation_report': eval_report_dict,
-                    'operations_guide': l1_result.get('dispatcher_operations'),
+                    'evaluation_report': eval_report_dict or eval_report,
+                    'operations_guide': result.get("operations_guide"),
                     'comparison_results': comparison_results,
                     'dispatcher_metrics': dispatcher_metrics
                 }
 
                 yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False)}\n\n"
 
+                # 保存调度分支的对话上下文
+                dispatch_entities = {}
+                if accident_card:
+                    affected = accident_card.get("affected_train_ids", []) if isinstance(accident_card, dict) else getattr(accident_card, "affected_train_ids", [])
+                    if affected:
+                        dispatch_entities["train_id"] = affected[0]
+                    loc_name = accident_card.get("location_name", "") if isinstance(accident_card, dict) else getattr(accident_card, "location_name", "")
+                    if loc_name:
+                        dispatch_entities["station_name"] = loc_name
+                dispatch_summary = f"调度完成：{accident_card.get('scene_category', '未知场景') if isinstance(accident_card, dict) else getattr(accident_card, 'scene_category', '未知场景')}，"
+                dispatch_summary += f"使用{selected_solver}求解器，"
+                dispatch_summary += f"评估评级{eval_grade}"
+                _save_chat_context(session_id, dispatch_entities, "dispatch", user_msg=prompt, assistant_msg=dispatch_summary)
             except Exception as e:
                 logger.exception(f"[流式API] 处理异常: {str(e)}")
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"

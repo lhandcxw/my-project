@@ -527,10 +527,14 @@ def reload_data():
 
 def get_trains_pydantic():
     """
-    获取Pydantic模型格式的列车数据
+    获取Pydantic模型格式的列车数据（带缓存）
     Returns:
         List of Train objects
     """
+    cache_key = "trains_pydantic"
+    if cache_key in _cache:
+        return _cache[cache_key]
+
     from models.data_models import Train, TrainSchedule, TrainStop
 
     trains_data = load_trains()
@@ -617,10 +621,35 @@ def get_trains_pydantic():
         else:
             logger.warning(f"列车 {t.get('train_id', 'UNKNOWN')} 没有有效的停靠站，跳过")
 
+    _cache[cache_key] = trains
     return trains
 
 
 def get_stations_pydantic():
+    """
+    获取Pydantic模型格式的车站数据（带缓存）
+    Returns:
+        List of Station objects
+    """
+    cache_key = "stations_pydantic"
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    from models.data_models import Station
+
+    stations_data = load_stations()
+    stations = []
+
+    for s in stations_data:
+        station = Station(
+            station_code=s["station_code"],
+            station_name=s["station_name"],
+            track_count=s.get("track_count", 1)
+        )
+        stations.append(station)
+
+    _cache[cache_key] = stations
+    return stations
     """
     获取Pydantic模型格式的车站数据
     Returns:

@@ -5,6 +5,21 @@
 
 ---
 
+## 文档索引
+
+本文档为总览性技术文档。以下专项文档提供更详细的说明：
+
+| 文档 | 内容 | 适用场景 |
+|------|------|----------|
+| [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) | 系统架构、模块职责、技术栈、部署说明 | 快速了解系统全貌 |
+| [ALGORITHM_SPEC.md](ALGORITHM_SPEC.md) | MIP/FCFS/Hierarchical的数学模型、伪代码、复杂度分析 | 论文Methods章节 |
+| [LLM_AGENT_WORKFLOW.md](LLM_AGENT_WORKFLOW.md) | L1-L4工作流、ARDO反射机制、Function Calling设计、Prompt工程 | 论文AI架构章节 |
+| [DATASET_AND_MODELING.md](DATASET_AND_MODELING.md) | 真实数据集说明、线路拓扑、约束标定、数据加载器 | 论文实验设置章节 |
+| [EVALUATION_FRAMEWORK.md](EVALUATION_FRAMEWORK.md) | 评估指标体系、多算法对比协议、统计检验方法 | 论文Evaluation章节 |
+| [PAPER_PREPARATION_GUIDE.md](PAPER_PREPARATION_GUIDE.md) | 投稿策略、写作规范、审稿预判、时间规划 | 论文写作全程 |
+
+---
+
 ## 摘要
 
 本文提出 LLM-TTRA (Large Language Model-assisted Train Timetable Rescheduling Assistant)，首个面向京广高铁真实运营场景、融合大语言模型认知能力与运筹优化技术的列车运行调整智能决策支持系统。系统以北京西至安阳东段（13站、147列高速动车组）的真实时刻表数据为基础，构建了四层LLM-Agent工作流（L1数据建模-L2策略规划-L3求解执行-L4方案评估），集成FCFS、MIP、MaxDelayFirst及分层混合求解器等调度算法，支持基于自然语言的调度指令输入、多算法对比评估与可视化决策输出。

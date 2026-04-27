@@ -27,18 +27,20 @@ v2.1 修正：
 
 from typing import Dict, Any, Optional, List
 import logging
+import time
 from datetime import datetime
 import uuid
 
 from models.workflow_models import WorkflowResult, DispatchContextMetadata, SolverResult
-from models.preprocess_models import WorkflowResponse
-from models.common_enums import RequestSourceType  # 添加导入
+from models.preprocess_models import WorkflowResponse, CanonicalDispatchRequest, LocationInfo, CompletenessInfo
+from models.common_enums import RequestSourceType, SceneTypeCode, FaultTypeCode
 from railway_agent.workflow import (
     Layer1DataModeling,
     Layer2Planner,
     Layer3Solver,
     Layer4Evaluation
 )
+from railway_agent.snapshot_builder import build_network_snapshot
 from models.data_loader import load_trains, load_stations, get_trains_pydantic, get_stations_pydantic
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,13 @@ class LLMWorkflowEngineV2:
         self.stations_pydantic = get_stations_pydantic()
 
         # L2 Agent 需要列车和车站数据来执行工具调用
-        self.layer2 = Layer2Planner(trains=self.trains, stations=self.stations)
+        from railway_agent.adapters.skill_registry import get_skill_registry
+        skill_registry = get_skill_registry()
+        self.layer2 = Layer2Planner(
+            trains=self.trains,
+            stations=self.stations,
+            skill_registry=skill_registry
+        )
 
         # 对话状态存储（用于多轮对话）
         self._dialogue_states: Dict[str, Dict[str, Any]] = {}
@@ -102,11 +110,12 @@ class LLMWorkflowEngineV2:
             if dialogue_id and dialogue_id in self._dialogue_states:
                 logger.debug(f"[对话工作流] 恢复对话状态: {dialogue_id}")
                 previous_state = self._dialogue_states[dialogue_id]
-                # 合并用户新输入到之前的信息中
+                # 合并用户新输入到之前的信息中（结构化融合）
                 combined_input = self._merge_user_input(
                     previous_state.get("original_input", ""),
                     previous_state.get("missing_info", []),
-                    user_input
+                    user_input,
+                    previous_state.get("accident_card")
                 )
             else:
                 # 新对话
@@ -234,27 +243,68 @@ class LLMWorkflowEngineV2:
     def _merge_user_input(
         self,
         original_input: str,
-        missing_fields: List[str],
-        new_input: str
+        missing_fields: List[Any],
+        new_input: str,
+        previous_card: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        合并用户原始输入和新补充的信息
+        智能合并用户原始输入和新补充的信息
+
+        将多轮对话中的信息结构化组织，帮助 L1 准确理解：
+        - 原始描述是什么
+        - 哪些信息已确认
+        - 哪些信息待补充
+        - 用户的新输入是补充还是修正
 
         Args:
             original_input: 原始输入
-            missing_fields: 之前缺失的字段
+            missing_fields: 之前缺失的字段（字符串或字典列表）
             new_input: 新输入
+            previous_card: 上一轮提取的 AccidentCard 字典（可选）
 
         Returns:
-            str: 合并后的输入
+            str: 结构化合并后的输入
         """
-        # 简单合并：原始输入 + 新输入
-        # 可以根据missing_fields做更智能的合并
         if not original_input:
             return new_input
         if not new_input:
             return original_input
-        return f"{original_input} {new_input}"
+
+        # 解析缺失字段名
+        field_names = []
+        for f in (missing_fields or []):
+            if isinstance(f, dict):
+                field_names.append(f.get("field", f.get("question", str(f))))
+            else:
+                field_names.append(str(f))
+
+        parts = []
+        parts.append(f"【原始描述】{original_input}")
+
+        # 加入已确认的关键信息，帮助 L1 识别修正
+        if previous_card:
+            confirmed = []
+            if previous_card.get("scene_category"):
+                confirmed.append(f"场景类型：{previous_card['scene_category']}")
+            if previous_card.get("affected_train_ids"):
+                confirmed.append(f"涉及列车：{', '.join(previous_card['affected_train_ids'])}")
+            if previous_card.get("location_name") or previous_card.get("location_code"):
+                loc = previous_card.get("location_name") or previous_card.get("location_code")
+                confirmed.append(f"位置：{loc}")
+            if previous_card.get("expected_duration"):
+                confirmed.append(f"预计延误：{previous_card['expected_duration']}分钟")
+            if previous_card.get("fault_type") and previous_card["fault_type"] != "未知":
+                confirmed.append(f"故障类型：{previous_card['fault_type']}")
+            if confirmed:
+                parts.append(f"【已确认信息】{'；'.join(confirmed)}")
+
+        if field_names:
+            parts.append(f"【待补充信息】{', '.join(field_names)}")
+
+        parts.append(f"【用户补充/修正】{new_input}")
+        parts.append("请基于以上全部信息，提取完整准确的事故信息。如果用户补充与已确认信息冲突，以最新补充为准。")
+
+        return "\n".join(parts)
 
     def _generate_questions(self, missing_fields: List[str]) -> List[str]:
         """
@@ -293,7 +343,8 @@ class LLMWorkflowEngineV2:
         self,
         user_input: str,
         canonical_request: Optional[Any] = None,
-        enable_rag: bool = True
+        enable_rag: bool = True,
+        time_budget_seconds: Optional[float] = None
     ) -> WorkflowResult:
         """
         执行完整工作流（自适应反射架构：L1 → L2 → L3 → L4 → [反射 → 重规划]）
@@ -308,10 +359,18 @@ class LLMWorkflowEngineV2:
             user_input: 用户输入
             canonical_request: L0预处理结果（可选）
             enable_rag: 是否启用RAG
+            time_budget_seconds: 全局时间预算（秒），None表示无限制
 
         Returns:
             WorkflowResult: 工作流结果
         """
+        workflow_start = time.time()
+        deadline = workflow_start + time_budget_seconds if time_budget_seconds else None
+
+        def _check_timeout(label: str):
+            if deadline and time.time() > deadline:
+                raise TimeoutError(f"[{label}] 工作流全局超时，预算 {time_budget_seconds} 秒")
+
         try:
             # 步骤1：L1 - 数据建模层
             logger.debug("========== 步骤1：L1 数据建模层 ==========")
@@ -332,20 +391,35 @@ class LLMWorkflowEngineV2:
                     accident_card.missing_fields
                 )
 
+            # ========== 步骤1.5：构建 NetworkSnapshot ==========
+            network_snapshot = None
+            try:
+                canonical_request = self._build_canonical_request(accident_card, user_input)
+                network_snapshot = build_network_snapshot(canonical_request)
+                logger.info(
+                    f"[Snapshot] 构建成功: 候选列车 {len(network_snapshot.candidate_train_ids)} 列, "
+                    f"走廊 {network_snapshot.solving_window.get('observation_corridor', 'N/A')}"
+                )
+            except Exception as e:
+                logger.warning(f"[Snapshot] 构建失败，使用全量数据回退: {e}")
+
             # 多轮迭代求解（反射架构核心）
             iteration_results = []
             max_iterations = 3
             previous_feedback = None
 
             for iteration in range(max_iterations):
+                _check_timeout(f"反射迭代 {iteration + 1}")
                 logger.info(f"========== 迭代 {iteration + 1}/{max_iterations} ==========")
 
                 # L2 - Agent规划层
+                _check_timeout(f"L2规划层 迭代 {iteration + 1}")
                 logger.debug(f"========== L2 Agent 规划层 (迭代 {iteration + 1}) ==========")
                 l2_result = self.layer2.execute(
                     accident_card=accident_card,
                     enable_rag=enable_rag,
-                    previous_feedback=previous_feedback
+                    previous_feedback=previous_feedback,
+                    network_snapshot=network_snapshot
                 )
 
                 planning_intent = l2_result["planning_intent"]
@@ -353,6 +427,7 @@ class LLMWorkflowEngineV2:
                 agent_executed_solve = l2_result.get("agent_executed_solve", False)
 
                 # L3 - Solver执行层
+                _check_timeout(f"L3求解层 迭代 {iteration + 1}")
                 if agent_executed_solve and l2_result.get("skill_execution_result"):
                     logger.info(f"[工作流 迭代 {iteration + 1}] L2 Agent 已完成求解，跳过 L3")
                     l3_result = {
@@ -366,10 +441,12 @@ class LLMWorkflowEngineV2:
                         accident_card=accident_card,
                         trains=self.trains_pydantic,
                         stations=self.stations_pydantic,
-                        planner_decision=planner_decision
+                        planner_decision=planner_decision,
+                        network_snapshot=network_snapshot
                     )
 
                 # L4 - 评估层
+                _check_timeout(f"L4评估层 迭代 {iteration + 1}")
                 logger.debug(f"========== L4 评估层 (迭代 {iteration + 1}) ==========")
                 l4_result = self.layer4.execute(
                     skill_execution_result=l3_result["skill_execution_result"],
@@ -399,15 +476,33 @@ class LLMWorkflowEngineV2:
                     fixes = []
                     if hasattr(rollback, 'rollback_reason'):
                         reason = rollback.rollback_reason
-                        fixes = rollback.suggested_fixes if hasattr(rollback, 'suggested_fixes') else []
+                        fixes = list(rollback.suggested_fixes) if hasattr(rollback, 'suggested_fixes') else []
                     elif isinstance(rollback, dict):
                         reason = rollback.get("rollback_reason", "")
-                        fixes = rollback.get("suggested_fixes", [])
+                        fixes = list(rollback.get("suggested_fixes", []))
+
+                    # Fix 5: 将 PolicyEngine 的决策建议合并到 L2 反馈中
+                    policy_decision = l4_result.get("policy_decision", {})
+                    if isinstance(policy_decision, dict):
+                        policy_fixes = policy_decision.get("suggested_fixes", [])
+                        if policy_fixes:
+                            fixes = list(set(fixes + policy_fixes))
+                        policy_reason = policy_decision.get("reason", "")
+                        if policy_reason:
+                            reason = f"{reason} | PolicyEngine: {policy_reason}"
+                    elif hasattr(policy_decision, "suggested_fixes"):
+                        policy_fixes = policy_decision.suggested_fixes or []
+                        if policy_fixes:
+                            fixes = list(set(fixes + policy_fixes))
+                        policy_reason = getattr(policy_decision, "reason", "")
+                        if policy_reason:
+                            reason = f"{reason} | PolicyEngine: {policy_reason}"
 
                     previous_feedback = {
                         "rollback_reason": reason,
                         "suggested_fixes": fixes,
-                        "iteration": iteration + 1
+                        "iteration": iteration + 1,
+                        "policy_override": True
                     }
                     logger.info(f"[反射架构] 触发第 {iteration + 2} 轮重规划，原因: {reason}")
                 else:
@@ -444,6 +539,14 @@ class LLMWorkflowEngineV2:
                 best_iteration=best_iteration + 1
             )
 
+        except TimeoutError as e:
+            logger.warning(f"工作流全局超时: {e}")
+            return WorkflowResult(
+                success=False,
+                message=f"调度超时: {str(e)}",
+                error=str(e),
+                debug_trace={"error": str(e), "timeout": True}
+            )
         except Exception as e:
             logger.error(f"工作流执行失败: {e}", exc_info=True)
             return self._build_error_result(str(e))
@@ -465,13 +568,15 @@ class LLMWorkflowEngineV2:
         self,
         accident_card,
         enable_rag: bool = True,
-        previous_feedback: Optional[Dict[str, Any]] = None
+        previous_feedback: Optional[Dict[str, Any]] = None,
+        network_snapshot: Optional[Any] = None
     ) -> Dict[str, Any]:
         """仅执行L2层"""
         return self.layer2.execute(
             accident_card=accident_card,
             enable_rag=enable_rag,
-            previous_feedback=previous_feedback
+            previous_feedback=previous_feedback,
+            network_snapshot=network_snapshot
         )
 
     def execute_layer3(
@@ -479,7 +584,8 @@ class LLMWorkflowEngineV2:
         planning_intent: str,
         accident_card,
         trains: Optional[List[Any]] = None,
-        stations: Optional[List[Any]] = None
+        stations: Optional[List[Any]] = None,
+        network_snapshot: Optional[Any] = None
     ) -> Dict[str, Any]:
         """仅执行L3层"""
         if trains is None:
@@ -491,7 +597,8 @@ class LLMWorkflowEngineV2:
             planning_intent=planning_intent,
             accident_card=accident_card,
             trains=trains,
-            stations=stations
+            stations=stations,
+            network_snapshot=network_snapshot
         )
 
     def execute_layer4(
@@ -650,8 +757,98 @@ class LLMWorkflowEngineV2:
                     "total_iterations": iteration_count,
                     "best_iteration": best_iteration,
                     "architecture": "Adaptive Reflective Dispatch Orchestrator (ARDO)"
+                },
+                "snapshot_info": {
+                    "used": network_snapshot is not None,
+                    "candidate_train_count": len(network_snapshot.candidate_train_ids) if network_snapshot and hasattr(network_snapshot, 'candidate_train_ids') else 0,
+                    "observation_corridor": network_snapshot.solving_window.get('observation_corridor') if network_snapshot and hasattr(network_snapshot, 'solving_window') else None
                 }
             }
+        )
+
+    # ================================================================
+    # Snapshot 辅助方法（新增）
+    # ================================================================
+
+    def _build_canonical_request(
+        self,
+        accident_card,
+        user_input: str
+    ) -> CanonicalDispatchRequest:
+        """
+        将 AccidentCard 转换为 CanonicalDispatchRequest
+
+        这是连接 L1 和 SnapshotBuilder 的桥梁。
+        SnapshotBuilder 只接收 CanonicalDispatchRequest，不直接处理 AccidentCard。
+        """
+        # 场景类型映射
+        scene_mapping = {
+            "临时限速": (SceneTypeCode.TEMP_SPEED_LIMIT, "临时限速"),
+            "突发故障": (SceneTypeCode.SUDDEN_FAILURE, "突发故障"),
+            "区间封锁": (SceneTypeCode.SECTION_INTERRUPT, "区间封锁"),
+        }
+        scene_code, scene_label = scene_mapping.get(
+            accident_card.scene_category,
+            (SceneTypeCode.UNKNOWN, accident_card.scene_category)
+        )
+
+        # 故障类型映射（简化：只做关键词匹配）
+        fault_code = FaultTypeCode.UNKNOWN
+        fault_lower = (accident_card.fault_type or "").lower()
+        if "雨" in fault_lower or "rain" in fault_lower:
+            fault_code = FaultTypeCode.RAIN
+        elif "风" in fault_lower or "wind" in fault_lower:
+            fault_code = FaultTypeCode.WIND
+        elif "雪" in fault_lower or "snow" in fault_lower:
+            fault_code = FaultTypeCode.SNOW
+        elif "信号" in fault_lower:
+            fault_code = FaultTypeCode.SIGNAL_FAILURE
+        elif "接触网" in fault_lower:
+            fault_code = FaultTypeCode.CATENARY_FAILURE
+        elif "设备" in fault_lower:
+            fault_code = FaultTypeCode.EQUIPMENT_FAILURE
+
+        # 构建位置信息
+        location = None
+        if accident_card.location_code or accident_card.location_name:
+            location = LocationInfo(
+                station_code=accident_card.location_code or None,
+                station_name=accident_card.location_name or None
+            )
+
+        # 时间信息
+        event_time = None
+        if accident_card.start_time:
+            event_time = accident_card.start_time.isoformat()
+
+        # 预计持续时长
+        expected_duration = None
+        if accident_card.expected_duration:
+            try:
+                expected_duration = int(accident_card.expected_duration)
+            except (ValueError, TypeError):
+                expected_duration = None
+
+        # 完整性信息
+        completeness = CompletenessInfo(
+            can_enter_solver=accident_card.is_complete,
+            missing_fields=accident_card.missing_fields or [],
+            reason=None if accident_card.is_complete else f"缺少: {', '.join(accident_card.missing_fields)}"
+        )
+
+        return CanonicalDispatchRequest(
+            source_type=RequestSourceType.NATURAL_LANGUAGE,
+            raw_text=user_input,
+            scene_type_code=scene_code,
+            scene_type_label=scene_label,
+            fault_type=fault_code,
+            event_time=event_time,
+            expected_duration_minutes=expected_duration,
+            location=location,
+            affected_train_ids=accident_card.affected_train_ids or [],
+            fault_severity=accident_card.fault_severity or None,
+            corridor_hint=accident_card.affected_section or None,
+            completeness=completeness
         )
 
     def _build_incomplete_result(
