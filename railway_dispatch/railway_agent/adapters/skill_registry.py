@@ -57,7 +57,7 @@ class SkillRegistry:
                 unique = sorted(set(schedulers))
                 # 排除已废弃或暂不可用的
                 excluded = {"rl", "reinforcement_learning", "spt", "srpt", "fsfs", "custom",
-                            "baseline", "no-op", "max_delay_first", "eaf", "earliest_arrival"}
+                            "baseline", "no-op", "max-delay-first", "eaf", "earliest_arrival"}
                 return [s for s in unique if s not in excluded]
             except Exception as e:
                 logger.warning(f"从 SchedulerRegistry 发现调度器失败: {e}")
@@ -73,7 +73,7 @@ class SkillRegistry:
                 "function": {
                     "name": "dispatch_solve_skill",
                     "description": (
-                        "通用调度求解技能。支持参数化选择求解器（mip/fcfs/fsfs/max_delay_first/srpt/spt/noop）"
+                        "通用调度求解技能。支持参数化选择求解器（mip/fcfs/fsfs/max-delay-first/srpt/spt/noop）"
                         "和配置参数（优化目标、时间限制、最优性间隙）。"
                     ),
                     "parameters": {

@@ -716,7 +716,6 @@ def agent_chat_stream():
                     return
 
                 total_start = time.time()
-                stage_times = {}
 
                 context = _get_chat_context(session_id)
                 if context:
@@ -740,8 +739,6 @@ def agent_chat_stream():
                         tool_call_str = ", ".join(tool_calls)
                         yield f"data: {json.dumps({'type': 'thinking', 'content': f'已调用工具: {tool_call_str}'}, ensure_ascii=False)}\n\n"
                     content = result.get("content", "")
-                    if content:
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': content}, ensure_ascii=False)}\n\n"
                     light_result = {
                         "success": True,
                         "mode": "light",
@@ -757,9 +754,8 @@ def agent_chat_stream():
                 # Heavy Mode: 基于Agent返回结果重构L1-L4进度事件
                 accident_card = result.get("accident_card", {})
 
-                # L1
-                t0 = time.time()
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析调度场景...'}, ensure_ascii=False)}\n\n"
+                # L1-L4 进度事件（基于Agent返回结果重构，供前端展示）
+                # 注意：由于 agent.handle() 是阻塞调用，此处无法精确测量各层真实耗时
                 if accident_card:
                     scene_cat = accident_card.get("scene_category", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "scene_category", "未知")
                     fault_type = accident_card.get("fault_type", "未知") if isinstance(accident_card, dict) else getattr(accident_card, "fault_type", "未知")
@@ -774,19 +770,11 @@ def agent_chat_stream():
                         affected_str = ", ".join(affected[:10])
                         yield f"data: {json.dumps({'type': 'thinking', 'content': f'   车次：{affected_str}'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'progress', 'layer': 1, 'message': '数据建模完成'}, ensure_ascii=False)}\n\n"
-                stage_times['L1数据建模'] = time.time() - t0
 
-                # L2
-                t0 = time.time()
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在制定调度策略...'}, ensure_ascii=False)}\n\n"
                 selected_solver = result.get("selected_solver", "fcfs")
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'选择求解器：{selected_solver}'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'progress', 'layer': 2, 'message': '策略制定完成'}, ensure_ascii=False)}\n\n"
-                stage_times['L2策略规划'] = time.time() - t0
 
-                # L3
-                t0 = time.time()
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在执行调度算法...'}, ensure_ascii=False)}\n\n"
                 dispatch_metrics = result.get("dispatch_metrics", {})
                 total_delay = dispatch_metrics.get("total_delay_minutes", 0)
                 max_delay = dispatch_metrics.get("max_delay_minutes", 0)
@@ -796,24 +784,18 @@ def agent_chat_stream():
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'   最大延误：{max_delay}分钟'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'   求解器耗时：{solving_time:.2f}秒'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'progress', 'layer': 3, 'message': '求解完成'}, ensure_ascii=False)}\n\n"
-                stage_times['L3求解执行'] = time.time() - t0
 
-                # L4
-                t0 = time.time()
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '正在生成调度方案...'}, ensure_ascii=False)}\n\n"
                 eval_grade = result.get("eval_grade", "N")
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'评估完成：综合评级 {eval_grade}'}, ensure_ascii=False)}\n\n"
                 llm_summary = result.get("natural_language_plan", "")
                 if llm_summary:
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'评估摘要：{llm_summary}'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'progress', 'layer': 4, 'message': '评估与方案生成完成'}, ensure_ascii=False)}\n\n"
-                stage_times['L4评估方案'] = time.time() - t0
 
-                # 性能摘要
-                stage_times['总耗时'] = time.time() - total_start
-                timing_summary = " | ".join([f"{k}: {v:.1f}s" for k, v in stage_times.items()])
-                logger.info(f"[流式API性能] {timing_summary}")
-                yield f"data: {json.dumps({'type': 'thinking', 'content': f'各环节耗时：{timing_summary}'}, ensure_ascii=False)}\n\n"
+                # 性能摘要：仅记录总耗时（agent.handle() 为阻塞调用，无法拆分各层耗时）
+                total_elapsed = time.time() - total_start
+                logger.info(f"[流式API性能] 总耗时: {total_elapsed:.1f}s")
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'总耗时：{total_elapsed:.1f}秒'}, ensure_ascii=False)}\n\n"
 
                 # 构建 evaluation_report 字典
                 eval_report = result.get("evaluation_report", {})

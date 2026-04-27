@@ -43,7 +43,7 @@ class LLMConfig:
     # ========== 方式1：阿里云 DashScope API ==========
     # 注意：当前开发阶段使用直接配置，项目结束后将改为环境变量
     DASHSCOPE_API_KEY = "sk-bcf1668108cd4708b2f113d5073e42d4"  # 请在此填写您的DashScope API Key，例如："sk-xxx..."
-    DASHSCOPE_MODEL = "glm-5.1"
+    DASHSCOPE_MODEL = "kimi-k2.5"
     DASHSCOPE_ENABLE_THINKING = False  # qwen3.6-plus 不支持深度思考模式
 
     # ========== 方式2：本地微调模型 ==========

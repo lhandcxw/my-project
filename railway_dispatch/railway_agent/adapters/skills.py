@@ -144,7 +144,7 @@ class DispatchSolveSkill(BaseDispatchSkill):
     """
 
     name = "dispatch_solve_skill"
-    description = "通用调度求解技能，支持参数化选择调度器（mip/fcfs/max_delay_first/noop/hierarchical）和配置参数"
+    description = "通用调度求解技能，支持参数化选择调度器（mip/fcfs/max-delay-first/noop/hierarchical）和配置参数"
 
     def execute(
         self,
@@ -1142,6 +1142,7 @@ class RunSolverSkill(BaseDispatchSkill):
         delay_seconds = int(getattr(accident_card, 'expected_duration', 0) * 60) if getattr(accident_card, 'expected_duration', None) else 600
         affected_train_ids = getattr(accident_card, 'affected_train_ids', None) or []
 
+        from datetime import datetime
         from models.data_models import InjectedDelay, DelayLocation, DelayInjection
         injected_delays = []
         loc_type = getattr(accident_card, 'location_type', "station") or "station"
@@ -1237,7 +1238,7 @@ class CompareStrategiesToolSkill(BaseDispatchSkill):
             if getattr(accident_card, 'scene_category', '') == "区间封锁" or is_emergency:
                 strategies = ["fcfs"]
             elif objective == "min_max_delay":
-                strategies = ["max_delay_first", "hierarchical", "fcfs"] if is_large_scale else ["max_delay_first", "mip", "fcfs"]
+                strategies = ["max-delay-first", "hierarchical", "fcfs"] if is_large_scale else ["max-delay-first", "mip", "fcfs"]
             elif objective in ("min_total_delay", "min_avg_delay"):
                 strategies = ["hierarchical", "mip", "fcfs"] if is_large_scale else ["mip", "hierarchical", "fcfs"]
             else:

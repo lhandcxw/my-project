@@ -459,8 +459,8 @@ class Layer2Planner:
                         "properties": {
                             "solver": {
                                 "type": "string",
-                                "enum": ["mip", "fcfs", "max_delay_first", "hierarchical"],
-                                "description": "求解器类型：mip(混合整数规划全局最优), fcfs(先到先服务快速), max_delay_first(延误优先), hierarchical(分层求解-自动选择)"
+                                "enum": ["mip", "fcfs", "max-delay-first", "hierarchical"],
+                                "description": "求解器类型：mip(混合整数规划全局最优), fcfs(先到先服务快速), max-delay-first(延误优先), hierarchical(分层求解-自动选择)"
                             },
                             "optimization_objective": {
                                 "type": "string",
@@ -495,7 +495,7 @@ class Layer2Planner:
                             "strategies": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "要对比的求解器列表，如 ['fcfs', 'mip', 'max_delay_first']。不传则自动选择。"
+                                "description": "要对比的求解器列表，如 ['fcfs', 'mip', 'max-delay-first']。不传则自动选择。"
                             },
                             "optimization_objective": {
                                 "type": "string",
@@ -599,7 +599,7 @@ class Layer2Planner:
 |--------|------|---------|---------|
 | **mip** | 30-300秒 | 混合整数规划(PuLP/CBC)，9类约束，全局最优 | 列车≤10列，非紧急，有时间等求解 |
 | **fcfs** | <1秒 | 先到先服务+停站/运行冗余恢复，延误自然传播 | 紧急响应，大规模(>10列)，信息不完整 |
-| **max_delay_first** | <1秒 | 迭代压缩延误最大列车的停站时间 | 多列车不同程度延误，需优先减少最大延误 |
+| **max-delay-first** | <1秒 | 迭代压缩延误最大列车的停站时间 | 多列车不同程度延误，需优先减少最大延误 |
 | **hierarchical** | 1-60秒 | 分层求解(FCFS+MIP联动)，自动判断是否需要MIP | 通用场景，推荐作为默认选择，解决MIP规模问题 |
 
 ## 决策建议（基于 assess_impact 返回的 urgency）
@@ -1246,11 +1246,11 @@ class Layer2Planner:
                 logger.info(f"[智能对比] 区间封锁/紧急情况 → 仅FCFS（安全约束）")
             elif objective == "min_max_delay":
                 if is_large_scale:
-                    strategies = ["max_delay_first", "hierarchical", "fcfs"]
-                    logger.info(f"[智能对比] 大规模+min_max_delay → max_delay_first + hierarchical + fcfs")
+                    strategies = ["max-delay-first", "hierarchical", "fcfs"]
+                    logger.info(f"[智能对比] 大规模+min_max_delay → max-delay-first + hierarchical + fcfs")
                 else:
-                    strategies = ["max_delay_first", "mip", "fcfs"]
-                    logger.info(f"[智能对比] 小规模+min_max_delay → max_delay_first + MIP + fcfs")
+                    strategies = ["max-delay-first", "mip", "fcfs"]
+                    logger.info(f"[智能对比] 小规模+min_max_delay → max-delay-first + MIP + fcfs")
             elif objective == "min_total_delay" or objective == "min_avg_delay":
                 if is_large_scale:
                     strategies = ["hierarchical", "mip", "fcfs"]
@@ -1292,7 +1292,7 @@ class Layer2Planner:
                 tl = 60
                 gap = None
                 logger.info(f"[智能对比参数] {solver_name}: time_limit={tl}s, objective={objective}")
-            elif solver_name == "max_delay_first":
+            elif solver_name == "max-delay-first":
                 tl = None
                 gap = None
                 logger.info(f"[智能对比参数] {solver_name}: 无时间限制, objective={objective}")

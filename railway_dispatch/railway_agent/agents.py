@@ -456,7 +456,7 @@ class LLMAgent:
             # 注册多个调度器进行比较
             # 【修复】移除已废弃的fsfs调度器，确保所有可用调度器都被注册
             available_schedulers = [
-                "mip", "fcfs", "hierarchical", "max_delay_first", "noop"
+                "mip", "fcfs", "hierarchical", "max-delay-first", "noop"
                 # 可选：添加 "eaf"（最早到站优先）进行对比
             ]
             logger.debug(f"[Agent] 开始注册调度器: {available_schedulers}")
@@ -636,159 +636,12 @@ class LLMAgent:
                 error_message=str(e)
             )
 
-    def chat_direct(self, messages: List[Dict[str, str]], max_new_tokens: int = 512) -> str:
-        """
-        直接对话接口
-
-        Args:
-            messages: 对话消息列表
-            max_new_tokens: 最大生成token数
-
-        Returns:
-            str: 模型响应
-        """
-        # 提取用户消息
-        user_message = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_message = msg.get("content", "")
-                break
-
-        # 执行快速分析
-        delay_injection = {
-            "raw_input": user_message,
-            "affected_trains": []
-        }
-
-        result = self.analyze(delay_injection, user_message)
-
-        response = f"""您好！我是铁路调度助手（LLM驱动模式）。
-
-根据您的描述，我识别到：
-- 场景类型：{result.recognized_scenario}
-- 相关列车：{', '.join(result.dispatch_result.delay_statistics.get('affected_trains', ['未识别']))}
-- 求解器：{result.selected_solver}
-
-如需执行完整调度，请使用智能调度功能。"""
-
-        return response
-
-    def analyze_with_session(
-        self,
-        user_input: str,
-        session_history: Optional[List[Dict[str, str]]] = None,
-        enable_rag: bool = True
-    ) -> Dict[str, Any]:
-        """
-        支持多轮对话的统一工作流分析
-        
-        与单轮对话的区别：
-        - 支持会话历史，LLM可以理解上下文
-        - 返回结构化结果，便于多轮对话管理
-        - 信息不完整时返回缺失字段，而不是报错
-        
-        Args:
-            user_input: 用户当前输入
-            session_history: 会话历史消息列表
-            enable_rag: 是否启用RAG
-            
-        Returns:
-            Dict[str, Any]: 包含以下字段：
-                - success: 是否成功
-                - needs_more_info: 是否需要更多信息
-                - missing_fields: 缺失字段列表
-                - layer1_result: L1层结果
-                - workflow_result: 完整工作流结果（如果完成）
-                - message: 状态消息
-        """
-        try:
-            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
-
-            logger.debug(f"[Agent] 执行多轮对话工作流，输入: {user_input[:50]}...")
-            
-            # 构建完整输入（包含历史上下文）
-            if session_history:
-                # 将历史对话转换为上下文
-                context_parts = []
-                for msg in session_history[-4:]:  # 只取最近4轮
-                    role = "用户" if msg.get("role") == "user" else "系统"
-                    context_parts.append(f"{role}: {msg.get('content', '')}")
-                context_parts.append(f"用户: {user_input}")
-                full_input = "\n".join(context_parts)
-            else:
-                full_input = user_input
-            
-            # 执行完整工作流
-            workflow_engine = create_workflow_engine()
-            workflow_result = workflow_engine.execute_full_workflow(
-                user_input=full_input,
-                canonical_request=None,
-                enable_rag=enable_rag
-            )
-            
-            # 从工作流结果提取信息
-            accident_card_data = workflow_result.debug_trace.get("accident_card", {})
-            
-            # 检查信息是否完整
-            is_complete = accident_card_data.get("is_complete", True)
-            missing_fields = accident_card_data.get("missing_fields", [])
-            
-            # 构建L1结果
-            layer1_result = {
-                "accident_card": accident_card_data,
-                "can_solve": is_complete,
-                "missing_info": missing_fields,
-                "llm_response_type": "llm_real"
-            }
-            
-            # 如果信息不完整，返回提示
-            if not is_complete and missing_fields:
-                return {
-                    "success": True,
-                    "needs_more_info": True,
-                    "missing_fields": missing_fields,
-                    "layer1_result": layer1_result,
-                    "message": f"请补充以下信息：{', '.join(missing_fields)}",
-                    "can_proceed": False
-                }
-            
-            # 工作流执行成功，返回完整结果
-            return {
-                "success": workflow_result.success,
-                "needs_more_info": False,
-                "missing_fields": [],
-                "layer1_result": layer1_result,
-                "workflow_result": {
-                    "success": workflow_result.success,
-                    "message": workflow_result.message,
-                    "accident_card": accident_card_data,
-                    "planning_intent": workflow_result.debug_trace.get("planning_intent", ""),
-                    "skill_dispatch": workflow_result.debug_trace.get("skill_dispatch", {}),
-                    "solver_result": self._solver_result_to_dict(workflow_result.solver_result),
-                    "policy_decision": workflow_result.debug_trace.get("policy_decision", {}),
-                    "llm_summary": workflow_result.debug_trace.get("llm_summary", "")
-                },
-                "message": "工作流执行完成" if workflow_result.success else workflow_result.message,
-                "can_proceed": True
-            }
-            
-        except Exception as e:
-            logger.exception(f"多轮对话工作流执行错误: {str(e)}")
-            return {
-                "success": False,
-                "needs_more_info": False,
-                "missing_fields": [],
-                "layer1_result": {},
-                "message": f"执行错误: {str(e)}",
-                "can_proceed": False
-            }
-    
     # ================================================================
     # UAO-RD 统一入口（新增）
     # ================================================================
 
     def handle(self, user_input: str, session_history: Optional[List[Dict[str, str]]] = None,
-               time_budget_seconds: float = 120.0) -> Dict[str, Any]:
+               time_budget_seconds: float = 300.0) -> Dict[str, Any]:
         """
         全局Agent统一入口（UAO-RD架构）
 
@@ -831,31 +684,20 @@ class LLMAgent:
                 self._update_session_state(user_input, result, None)
                 return result
 
-            # Step 2: 只有 dispatch 才执行 L1 数据建模
-            _check_timeout("L1提取")
-            logger.debug(f"[Agent] 执行L1提取，输入: {user_input[:50]}...")
-            l1_result = self._layer1.execute(user_input=user_input)
-            accident_card = l1_result.get("accident_card")
+            # Step 2: dispatch 意图进入 Heavy Mode
+            # 【注意】L1 由 workflow_engine.execute_full_workflow() 内部执行，此处不预先调用，避免重复执行
+            _check_timeout("调度求解")
+            result = self._heavy_mode(user_input, None, merged_history, deadline)
 
-            if not accident_card:
-                return {
-                    "success": False,
-                    "mode": "error",
-                    "ui_action": "render_chat",
-                    "chat_message": "L1提取失败，无法识别用户意图",
-                    "message": "L1提取失败，无法识别用户意图",
-                    "computation_time": time.time() - start_time
-                }
-
-            # 将正确意图写回 accident_card，供后续流程使用
-            if hasattr(accident_card, 'intent'):
-                accident_card.intent = intent
-
-            # Step 3: Heavy Mode
-            result = self._heavy_mode(user_input, l1_result, merged_history, deadline)
+            # 将正确意图写回返回结果中的 accident_card
+            accident_card_data = result.get("accident_card")
+            if isinstance(accident_card_data, dict):
+                accident_card_data["intent"] = intent
+            elif hasattr(accident_card_data, 'intent'):
+                accident_card_data.intent = intent
 
             # Fix #8: 更新跨模式会话状态
-            self._update_session_state(user_input, result, accident_card)
+            self._update_session_state(user_input, result, accident_card_data)
             return result
 
         except TimeoutError as e:
@@ -1168,17 +1010,6 @@ class LLMAgent:
                 "computation_time": time.time() - start_time
             }
 
-    def _solver_result_to_dict(self, solver_result) -> Optional[Dict[str, Any]]:
-        """将SolverResult转换为字典"""
-        if solver_result is None:
-            return None
-        if hasattr(solver_result, 'model_dump'):
-            return solver_result.model_dump()
-        elif hasattr(solver_result, '__dict__'):
-            return solver_result.__dict__
-        return None
-
-
 # ============================================
 # 工厂函数
 # ============================================
@@ -1209,15 +1040,6 @@ def create_llm_agent(
 
 
 # ============================================
-# 向后兼容的导出
+# 技能导出（保持外部引用兼容性）
 # ============================================
-
-# 导出LLMAgent作为RuleAgent（兼容旧接口）
-RuleAgent = LLMAgent
-
-# 导出工厂函数
-create_rule_agent = create_llm_agent
-
-# 导出技能相关
 from .adapters.skills import create_skills, execute_skill
-from .adapters.skill_registry import SkillRegistry as ToolRegistry

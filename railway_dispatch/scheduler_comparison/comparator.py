@@ -674,7 +674,7 @@ def create_comparator(
         comparator.register_scheduler_by_name("noop", **kwargs)
 
     if include_max_delay_first:
-        comparator.register_scheduler_by_name("max_delay_first", **kwargs)
+        comparator.register_scheduler_by_name("max-delay-first", **kwargs)
 
     # SPT、SRPT已移除：不符合高铁按图行车原则
     if include_spt or include_srpt:

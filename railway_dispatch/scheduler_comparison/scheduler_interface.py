@@ -30,7 +30,7 @@ class SchedulerType(str, Enum):
     GREEDY = "greedy"
     GENETIC = "genetic"  # 遗传算法
     NOOP = "noop"  # 基线不做调整
-    MAX_DELAY_FIRST = "max_delay_first"  # 最大延误优先
+    MAX_DELAY_FIRST = "max-delay-first"  # 最大延误优先
     EARLIEST_ARRIVAL = "earliest_arrival"  # 最早到站优先
     HIERARCHICAL = "hierarchical"  # 分层求解（FCFS+MIP混合）
     SPT = "spt"  # 最短处理时间优先

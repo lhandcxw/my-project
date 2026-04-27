@@ -85,7 +85,7 @@ class RAGRetriever:
      * 信号故障：影响列车运行安全
      * 列车故障：列车无法正常运行
    - 影响：单列或多列列车延误，可能触发连锁延误
-   - 推荐求解器：fcfs_scheduler（快速响应）或 max_delay_first_scheduler（优先延误列车）
+   - 推荐求解器：fcfs_scheduler（快速响应）或 max-delay-first（优先延误列车）
 
 3. 区间封锁 (SECTION_INTERRUPT)
    - 原因：严重事故、接触网断线、线路损毁、施工
@@ -134,7 +134,7 @@ class RAGRetriever:
      * 临时限速（>10列）：可以使用
      * 区间封锁：不适用
 
-3. max_delay_first_scheduler (最大延误优先调度器)
+3. max-delay-first (最大延误优先调度器)
    - 适用场景：
      * 延误传播场景
      * 需要优先处理延误列车的场景

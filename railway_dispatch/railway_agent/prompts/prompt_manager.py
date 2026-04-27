@@ -423,7 +423,7 @@ class PromptManager:
 3. fsfs（先计划先服务）：严格按原始运行图的计划发车顺序调度，保持原计划的相对优先级和越行关系不变，仅做整体时间平移，适合需要保持原计划顺序的场景。
 4. srpt（最短剩余时间优先）：优先调度剩余运行时间短的列车，快速释放系统容量，适合实时延误调整和局部中断场景。
 5. spt（最短处理时间优先）：优先调度停站少、运行距离短的列车，可以快速完成一些短途列车，适合局部延误场景。
-6. max_delay_first（最大延误优先）：优先压缩延误最大列车的恢复时间，适合多列车不同程度延误的场景。
+6. max-delay-first（最大延误优先）：优先压缩延误最大列车的恢复时间，适合多列车不同程度延误的场景。
 7. 多策略组合：可同时推荐多个求解器，由下游评估层选择最优方案。
 
 【求解参数说明】
@@ -456,7 +456,7 @@ class PromptManager:
    - fsfs：适合需要严格保持原计划顺序和越行关系的场景
    - srpt：适合实时延误调整和局部中断场景，快速释放系统容量
    - spt：适合局部延误场景，优先短途列车
-   - max_delay_first：适合多列车不同程度延误的场景
+   - max-delay-first：适合多列车不同程度延误的场景
 
 3. **候选求解器列表（solver_candidates）**：推荐至少2个求解器供下游评估
    - 例如：["mip", "fcfs"] 或 ["srpt", "spt"]
@@ -509,12 +509,12 @@ class PromptManager:
 2. 临时限速场景 -> solver: "mip" (优化求解)
 3. 突发故障场景 -> solver: "fcfs" (快速响应)
 4. 列车数量>20且临时限速 -> solver: "fcfs" (规模过大)
-5. 延误>30分钟且突发故障 -> solver: "max_delay_first" (优先处理延误)
+5. 延误>30分钟且突发故障 -> solver: "max-delay-first" (优先处理延误)
 
 必须严格按照以下JSON格式输出，不要添加任何额外文字：
 {{"solver": "fcfs", "reasoning": "突发故障场景，需要快速响应", "solver_config": {{"optimization_objective": "min_max_delay"}}}}
 
-solver可选: mip, fcfs, max_delay_first, noop
+solver可选: mip, fcfs, max-delay-first, noop
 
 只输出JSON对象，不要其他内容。""",
             required_output_fields=["solver"],
@@ -564,12 +564,12 @@ solver可选: mip, fcfs, max_delay_first, noop
 1. 区间封锁场景 -> solver: "noop" (不调度)
 2. 临时限速场景 -> solver: "mip" (优化求解)
 3. 突发故障场景 -> solver: "fcfs" (快速响应)
-4. 延误>30分钟 -> solver: "max_delay_first" (优先处理延误)
+4. 延误>30分钟 -> solver: "max-delay-first" (优先处理延误)
 
 必须严格按照以下JSON格式输出，不要添加任何额外文字：
 {"solver": "fcfs", "reasoning": "突发故障场景，需要快速响应", "solver_config": {}}
 
-solver可选: mip, fcfs, max_delay_first, noop
+solver可选: mip, fcfs, max-delay-first, noop
 
 只输出JSON对象，不要其他内容。""",
             required_output_fields=["solver"],

@@ -221,7 +221,7 @@ class Layer3Solver:
         支持的调度器：
         - fcfs: 先到先服务
         - mip: 混合整数规划
-        - max_delay_first: 最大延误优先
+        - max-delay-first: 最大延误优先
         - noop: 基线（无调整）
         - eaf: 最早到站优先（可选）
         """
@@ -420,12 +420,13 @@ class Layer3Solver:
             "solver_response": {
                 "success": True,
                 "skill_name": scheduler_name,
-                "scheduler_name": scheduler_name,
+                "solver_type": scheduler_name,
                 "optimized_schedule": scheduler_result.optimized_schedule,
+                "solving_time_seconds": metrics.computation_time,
                 "metrics": {
-                    "max_delay_minutes": metrics.max_delay_seconds / 60,
-                    "avg_delay_minutes": metrics.avg_delay_seconds / 60,
-                    "total_delay_minutes": metrics.total_delay_seconds / 60,
+                    "max_delay_seconds": metrics.max_delay_seconds,
+                    "avg_delay_seconds": metrics.avg_delay_seconds,
+                    "total_delay_seconds": metrics.total_delay_seconds,
                     "affected_trains_count": metrics.affected_trains_count,
                     "on_time_rate": metrics.on_time_rate,
                     "computation_time": metrics.computation_time
@@ -459,12 +460,13 @@ class Layer3Solver:
             "solver_response": {
                 "success": False,
                 "skill_name": scheduler_name,
-                "scheduler_name": scheduler_name,
+                "solver_type": scheduler_name,
                 "optimized_schedule": {},
+                "solving_time_seconds": 0.0,
                 "metrics": {
-                    "max_delay_minutes": 0,
-                    "avg_delay_minutes": 0,
-                    "total_delay_minutes": 0,
+                    "max_delay_seconds": 0,
+                    "avg_delay_seconds": 0,
+                    "total_delay_seconds": 0,
                     "affected_trains_count": 0,
                     "on_time_rate": 1.0,
                     "computation_time": 0.0

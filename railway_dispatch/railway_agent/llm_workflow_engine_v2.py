@@ -536,7 +536,8 @@ class LLMWorkflowEngineV2:
                 l3_result=best["l3_result"],
                 l4_result=best["l4_result"],
                 iteration_count=len(iteration_results),
-                best_iteration=best_iteration + 1
+                best_iteration=best_iteration + 1,
+                network_snapshot=network_snapshot
             )
 
         except TimeoutError as e:
@@ -702,7 +703,8 @@ class LLMWorkflowEngineV2:
         l3_result: Dict[str, Any],
         l4_result: Dict[str, Any],
         iteration_count: int = 1,
-        best_iteration: int = 1
+        best_iteration: int = 1,
+        network_snapshot: Optional[Any] = None
     ) -> WorkflowResult:
         """构建成功结果"""
         # 处理 solver_response 转换为 SolverResult
