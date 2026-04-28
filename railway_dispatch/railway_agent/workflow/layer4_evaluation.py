@@ -22,6 +22,7 @@ from models.prompts import PromptContext
 from railway_agent.adapters.llm_prompt_adapter import get_llm_prompt_adapter
 from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.policy_engine import PolicyEngine
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
@@ -539,8 +540,9 @@ class Layer4Evaluation:
             if not all_delay_points:
                 return self._get_default_high_speed_metrics()
 
-            # 准点率 = 最大延误 < 5分钟(300秒) 的列车占比（基于所有列车）
-            on_time_rate = sum(1 for d in train_max_delays if d < 300) / total_trains if total_trains > 0 else 1.0
+            # 准点率 = 最大延误 < 准点阈值的列车占比（基于所有列车）
+            on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
+            on_time_rate = sum(1 for d in train_max_delays if d < on_time_threshold) / total_trains if total_trains > 0 else 1.0
             # 严格准点率 = 最大延误 < 3分钟(180秒) 的列车占比
             punctuality_strict = sum(1 for d in train_max_delays if d < 180) / total_trains if total_trains > 0 else 1.0
 
@@ -557,12 +559,14 @@ class Layer4Evaluation:
             propagation_coeff = max_propagation / (avg_delay / 60) if avg_delay > 0 else 0
 
             # 【统一】延误分级统计与 config/dispatch_env.yaml 保持一致
-            # micro: [0,5)min=[0,300)s, small: [5,30)min=[300,1800)s
-            # medium: [30,100)min=[1800,6000)s, large: [100,+∞)min=[6000,+∞)s
-            micro = sum(1 for d in all_delay_points if 0 < d < 300)
-            small = sum(1 for d in all_delay_points if 300 <= d < 1800)
-            medium = sum(1 for d in all_delay_points if 1800 <= d < 6000)
-            large = sum(1 for d in all_delay_points if d >= 6000)
+            levels = DispatchEnvConfig.delay_levels()
+            micro_max = levels.get("micro", {}).get("max_minutes", 5) * 60
+            small_max = levels.get("small", {}).get("max_minutes", 30) * 60
+            medium_max = levels.get("medium", {}).get("max_minutes", 100) * 60
+            micro = sum(1 for d in all_delay_points if 0 < d < micro_max)
+            small = sum(1 for d in all_delay_points if micro_max <= d < small_max)
+            medium = sum(1 for d in all_delay_points if small_max <= d < medium_max)
+            large = sum(1 for d in all_delay_points if d >= medium_max)
 
             grade = self._calculate_evaluation_grade(
                 on_time_rate, punctuality_strict,

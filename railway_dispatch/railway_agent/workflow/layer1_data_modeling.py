@@ -3,6 +3,10 @@
 第一层：数据建模层（整合L0预处理功能）
 从调度员描述中生成事故卡片
 
+【实现类型】LLM 驱动（主）+ 规则兜底（次）
+【实验阶段策略】所有输入均走 LLM 提取；_fallback_extraction、_build_accident_card 中的规则推断仅在 LLM 失败时启用
+【规则部分】_is_simple_input、_fallback_extraction、_build_accident_card（回退逻辑）、DispatcherOperationGuideRetriever（关键词匹配检索）
+
 职责说明（v5.0 整合版）：
 - 整合L0预处理：构建CanonicalDispatchRequest
 - LLM提取事故信息（scene_category, fault_type, location_code等）
@@ -19,7 +23,7 @@ v5.0 整合：
 import logging
 import os
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 import re
 
@@ -34,19 +38,67 @@ from config import LLMConfig, L1Config
 logger = logging.getLogger(__name__)
 
 # L1 微调模型系统提示词
-L1_FINETUNED_SYSTEM_PROMPT = """你是铁路调度数据建模助手。负责从调度员描述中提取关键信息并生成事故卡片。只输出JSON，不要解释。
+L1_FINETUNED_SYSTEM_PROMPT = """你是京广高铁（北京西→安阳东，13站）调度数据建模助手。负责从调度员自然语言描述中提取结构化事故信息。只输出JSON，不要解释。
 
-规则：
-1. 场景：限速/天气→临时限速，故障→突发故障，封锁→区间封锁
-2. 车站：石家庄→SJP,北京西→BJX,保定东→BDD,徐水东→XSD,高邑西→GYX,邢台东→XTD,邯郸东→HDD,安阳东→AYD,高碑店东→GBD,定州东→DZD,正定机场→ZDJ,杜家坎线路所→DJK,涿州东→ZBD
-3. 区间格式：location_type=section, location_code="DJK-ZBD", affected_section="DJK-ZBD"
-4. 车站格式：location_type=station, location_code="SJP", affected_section="SJP-SJP"
-5. 提取列车号(如G1563)、延误分钟数、事件类型
-6. fault_type未知则设"未知"，is_complete：列车号+位置+事件类型+延误时间齐全才为true
+## 提取规则
 
-输出字段：scene_category, fault_type, expected_duration, affected_section, location_type, location_code, location_name, affected_train_ids, is_complete, missing_fields"""
+1. **场景类型(scene_category)** — 仅三种：
+   - "临时限速"：描述中包含限速、大风、暴雨、降雪、冰雹、天气原因、能见度低等
+   - "突发故障"：描述中包含设备故障、信号故障、接触网故障、列车故障、道岔故障等
+   - "区间封锁"：描述中包含封锁、线路中断、施工、禁止通行等
+   - 如果同时出现多种场景，按严重性优先：区间封锁 > 突发故障 > 临时限速
 
-# 调度员操作指南检索器（关键词匹配版）
+2. **故障类型(fault_type)** — 提取具体原因：
+   - 天气类：大风、暴雨、降雪、冰雹、大雾（对应 scene_category="临时限速"）
+   - 设备类：设备故障、信号故障、接触网故障、列车故障、道岔故障（对应 scene_category="突发故障"）
+   - 施工类：施工、应急抢修（对应 scene_category="区间封锁"）
+   - 无法确定时填写"未知"
+
+3. **位置提取规则**：
+   - 车站映射（必须准确）：
+     北京西→BJX, 杜家坎线路所→DJK, 涿州东→ZBD, 高碑店东→GBD, 徐水东→XSD,
+     保定东→BDD, 定州东→DZD, 正定机场→ZDJ, 石家庄→SJP, 高邑西→GYX,
+     邢台东→XTD, 邯郸东→HDD, 安阳东→AYD
+   - location_type判断：
+     * 如果描述明确提到"XX站"、"在XX"、"XX站内" → location_type="station"
+     * 如果描述提到"XX到YY区间"、"XX-YY段"、"XX与YY之间" → location_type="section"
+     * 如果只提到一个地名但未明确是站还是区间，默认按车站处理（location_type="station"）
+   - location_code：
+     * station类型 → 单站编码，如"SJP"
+     * section类型 → 区间两端站编码用"-"连接，按运行方向从小到大（北京西→安阳东），如"DJK-ZBD"
+   - affected_section：
+     * station类型 → "SJP-SJP"（站码-站码）
+     * section类型 → "DJK-ZBD"（与location_code相同）
+   - location_name：填写中文站名或区间名，如"石家庄"或"杜家坎-涿州东区间"
+
+4. **列车号提取**：
+   - 格式：字母(G/D/C) + 1-4位数字，如G1563、D1234
+   - 可提取多个，放入affected_train_ids数组
+   - 未提及则设为空数组[]
+
+5. **延误时间提取(expected_duration)**：
+   - 单位：分钟（数值）
+   - 从描述中提取"预计延误XX分钟"、"晚点约XX分钟"、"限速XX分钟"等
+   - 如果描述为"预计延误15分钟" → expected_duration=15
+   - 如果只有时间范围（如"20-30分钟"），取中间值25
+   - 无法确定时设为0
+
+6. **完整性判断(is_complete)**：
+   - 只有当以下4项全部提取到时，is_complete=true：
+     1) affected_train_ids 非空（至少1个列车号）
+     2) location_code 非空（位置明确）
+     3) scene_category 非空（场景类型明确）
+     4) expected_duration >= 0（延误时间已提取，允许为0）
+   - 任一缺失 → is_complete=false，并在missing_fields中列出缺失字段名
+
+7. **缺失字段(missing_fields)**：
+   - is_complete=false时，列出具体缺失的字段名，如["affected_train_ids", "expected_duration"]
+   - is_complete=true时，设为空数组[]
+
+## 输出格式（严格JSON）
+{"scene_category":"临时限速","fault_type":"大风","expected_duration":15,"affected_section":"SJP-SJP","location_type":"station","location_code":"SJP","location_name":"石家庄","affected_train_ids":["G1563"],"is_complete":true,"missing_fields":[]}"""
+
+# 调度员操作指南检索器（关键词匹配版）【规则方法】
 class DispatcherOperationGuideRetriever:
     """
     调度员操作指南检索器
@@ -59,6 +111,13 @@ class DispatcherOperationGuideRetriever:
             'data', 'knowledge'
         )
         self.knowledge_base = self._load_operation_knowledge()
+        # 初始化混合检索器（多路召回 + 语义增强）
+        try:
+            from .hybrid_operation_retriever import HybridOperationRetriever
+            self._hybrid = HybridOperationRetriever(use_embedding=True)
+        except Exception as e:
+            logger.warning(f"[L1] 混合检索器初始化失败，回退到纯关键词匹配: {e}")
+            self._hybrid = None
 
     def _load_operation_knowledge(self) -> Dict[str, Any]:
         """
@@ -298,11 +357,78 @@ class DispatcherOperationGuideRetriever:
         }
         return knowledge
 
+    # 场景类别到知识库category的映射（解决L1提取的scene_category与知识库category不一致问题）
+    SCENE_CATEGORY_TO_CATEGORIES = {
+        "临时限速": ["自然灾害"],
+        "区间封锁": ["非正常行车", "自然灾害"],
+        "区间中断": ["非正常行车", "自然灾害"],
+        "突发故障": ["设备故障行车", "非正常行车"],
+        "设备故障": ["设备故障行车"],
+        "救援组织": ["救援组织"],
+        "自然灾害": ["自然灾害"],
+    }
+
+    def _extract_match_terms(self, text: str) -> List[str]:
+        """从文本中提取有意义的中文匹配关键词（解决split对中文无效的问题）"""
+        import re
+        text = text.lower()
+        # 提取2-6个连续中文字符作为候选词
+        terms = set(re.findall(r'[\u4e00-\u9fff]{2,6}', text))
+        # 同时提取英文/数字组合（如G1563）
+        terms.update(re.findall(r'[a-z]+\d+', text))
+        # 加入常见铁路术语（如果文本中包含）
+        common_terms = ["暴雨", "大雨", "限速", "封锁", "故障", "延误", "晚点", "设备", "信号", "接触网", "道岔", "大风", "冰雪", "地震", "异物", "火灾", "救援", "备用", "临客"]
+        for term in common_terms:
+            if term in text:
+                terms.add(term)
+        return list(terms)
+
+    def _calc_match_score(self, scene_name: str, knowledge: Dict[str, Any], query: str, fault_type: str, user_input: str) -> int:
+        """计算单条知识库的匹配分数（抽取为独立方法便于复用）"""
+        score = 0
+        query_terms = self._extract_match_terms(query)
+        input_terms = self._extract_match_terms(user_input)
+
+        # primary 关键词匹配（权重3）
+        for kw in knowledge.get("keywords_primary", []):
+            if kw.lower() in query:
+                score += 3
+
+        # secondary 关键词匹配（权重1）
+        for kw in knowledge.get("keywords_secondary", []):
+            if kw.lower() in query:
+                score += 1
+
+        # fault_type 匹配 scene_name（权重5）
+        if fault_type and fault_type.lower() in scene_name.lower():
+            score += 5
+
+        # fault_type 匹配 keywords_primary（权重4，高权重确保故障类型优先）
+        if fault_type:
+            ft = fault_type.lower()
+            for kw in knowledge.get("keywords_primary", []):
+                if ft in kw.lower() or kw.lower() in ft:
+                    score += 4
+
+        # 用户输入关键词匹配 scene_name（权重2）
+        for term in input_terms:
+            if term in scene_name.lower():
+                score += 2
+
+        # key_notes 辅助匹配（权重0.5）
+        for note in knowledge.get("key_notes", []):
+            note_lower = note.lower()
+            for term in query_terms:
+                if term in note_lower:
+                    score += 0.5
+
+        return score
+
     def retrieve_operations(self, scene_category: str, fault_type: str, user_input: str) -> Optional[Dict[str, Any]]:
         """
-        检索调度员操作指南（两层检索策略）
-        Step 1: 用 category 预过滤，将36个场景缩小到候选集
-        Step 2: 在候选集内用 keywords 加权匹配，返回最佳单场景
+        检索调度员操作指南（混合检索策略）
+        优先使用 HybridOperationRetriever（多路召回+语义融合），
+        不可用时回退到传统关键词匹配。
 
         Args:
             scene_category: 场景大类（自然灾害/设备故障行车/非正常行车/救援组织）
@@ -312,66 +438,67 @@ class DispatcherOperationGuideRetriever:
         Returns:
             最佳匹配的操作指南字典
         """
+        # --- 第一优先：混合检索器（语义+统计+关键词融合） ---
+        if self._hybrid is not None:
+            try:
+                result = self._hybrid.retrieve(scene_category, fault_type, user_input)
+                if result is not None:
+                    # 将 match_details 记录到日志，便于调试
+                    details = result.get("match_details", {})
+                    logger.info(
+                        f"[L1] 混合检索命中: {result['scene_name']} "
+                        f"(融合={details.get('fusion_score', 0):.3f}, "
+                        f"语义={details.get('semantic_score', 0):.3f}, "
+                        f"TF-IDF={details.get('tfidf_score', 0):.3f}, "
+                        f"关键词={details.get('keyword_score', 0):.3f})"
+                    )
+                    return result
+            except Exception as e:
+                logger.warning(f"[L1] 混合检索异常，回退到关键词匹配: {e}")
+
+        # --- Fallback: 传统关键词匹配（保留作为保底） ---
         if not self.knowledge_base:
             return None
 
         query = f"{fault_type} {user_input}".lower()
 
-        # Step 1: Category 预过滤
-        # 支持模糊匹配：如 scene_category="突发故障" 可匹配 category="设备故障"
+        # Step 1: Category 预过滤（支持映射表扩展）
         candidates = {}
+        matched_categories = set()
+        if scene_category:
+            matched_categories = set(self.SCENE_CATEGORY_TO_CATEGORIES.get(scene_category, [scene_category]))
+
         for scene_name, knowledge in self.knowledge_base.items():
             cat = knowledge.get("category", "")
             if not scene_category:
                 candidates[scene_name] = knowledge
                 continue
-            # 精确匹配或互相包含
-            if scene_category == cat or scene_category in cat or cat in scene_category:
+            if scene_category == cat or scene_category in cat or cat in scene_category or cat in matched_categories:
                 candidates[scene_name] = knowledge
 
-        # 如果 category 过滤后为空，回退到全库检索（兜底）
         if not candidates:
             candidates = self.knowledge_base
 
-        # Step 2: 在候选集内用 keywords 加权匹配
+        # Step 2: 关键词加权匹配
         best_match = None
-        best_score = 0
+        best_score = -1
+        best_fault_match_count = 0
 
         for scene_name, knowledge in candidates.items():
-            score = 0
-
-            # primary 关键词匹配（权重3）
-            for kw in knowledge.get("keywords_primary", []):
-                if kw.lower() in query:
-                    score += 3
-
-            # secondary 关键词匹配（权重1）
-            for kw in knowledge.get("keywords_secondary", []):
-                if kw.lower() in query:
-                    score += 1
-
-            # scene_name 名称匹配（权重5）
-            if fault_type and fault_type.lower() in scene_name.lower():
-                score += 5
-            # 用 user_input 中的关键词也匹配 scene_name
-            for term in user_input.lower().split():
-                if len(term) >= 2 and term in scene_name.lower():
-                    score += 2
-
-            # key_notes 辅助匹配（权重1，用于处理边缘情况）
-            for note in knowledge.get("key_notes", []):
-                for term in query.split():
-                    if len(term) >= 2 and term in note.lower():
-                        score += 0.5
-
-            if score > best_score:
+            score = self._calc_match_score(scene_name, knowledge, query, fault_type, user_input)
+            fault_match_count = 0
+            if fault_type:
+                ft = fault_type.lower()
+                for kw in knowledge.get("keywords_primary", []) + knowledge.get("keywords_secondary", []):
+                    if ft in kw.lower() or kw.lower() in ft:
+                        fault_match_count += 1
+            if score > best_score or (score == best_score and fault_match_count > best_fault_match_count):
                 best_score = score
-                # 只保留 priority=critical/high 的steps（当前阶段操作），减少冗余
+                best_fault_match_count = fault_match_count
                 filtered_steps = [
                     s for s in knowledge.get("steps", [])
                     if s.get("priority") in ("critical", "high")
                 ]
-                # 如果没有critical/high，取前2个step兜底
                 if not filtered_steps and knowledge.get("steps"):
                     filtered_steps = knowledge["steps"][:2]
                 best_match = {
@@ -384,25 +511,21 @@ class DispatcherOperationGuideRetriever:
                     "match_score": score
                 }
 
-        # Fallback: 如果 category 预过滤后无匹配，回退到全库检索（处理LLM分类偏差）
-        if best_score == 0:
+        # Fallback: 全库二次扫描
+        if best_score <= 0:
             for scene_name, knowledge in self.knowledge_base.items():
                 if scene_name in candidates:
-                    continue  # 已检索过，跳过
-                score = 0
-                for kw in knowledge.get("keywords_primary", []):
-                    if kw.lower() in query:
-                        score += 3
-                for kw in knowledge.get("keywords_secondary", []):
-                    if kw.lower() in query:
-                        score += 1
-                if fault_type and fault_type.lower() in scene_name.lower():
-                    score += 5
-                for term in user_input.lower().split():
-                    if len(term) >= 2 and term in scene_name.lower():
-                        score += 2
-                if score > best_score:
+                    continue
+                score = self._calc_match_score(scene_name, knowledge, query, fault_type, user_input)
+                fault_match_count = 0
+                if fault_type:
+                    ft = fault_type.lower()
+                    for kw in knowledge.get("keywords_primary", []) + knowledge.get("keywords_secondary", []):
+                        if ft in kw.lower() or kw.lower() in ft:
+                            fault_match_count += 1
+                if score > best_score or (score == best_score and fault_match_count > best_fault_match_count):
                     best_score = score
+                    best_fault_match_count = fault_match_count
                     filtered_steps = [
                         s for s in knowledge.get("steps", [])
                         if s.get("priority") in ("critical", "high")
@@ -419,7 +542,6 @@ class DispatcherOperationGuideRetriever:
                         "match_score": score
                     }
 
-        # 设置阈值：score <= 0 视为无有效匹配
         return best_match if best_score > 0 else None
 
     def format_operations_for_display(self, operations_data: Dict[str, Any]) -> str:
@@ -876,56 +998,11 @@ class Layer1DataModeling:
 
     def _is_simple_input(self, user_input: str) -> bool:
         """
-        判断输入是否足够简单，可以用规则直接提取。
-
-        简单输入标准（基于京广高铁真实调度场景）：
-        1. 有明确的场景类型（临时限速/突发故障/区间封锁）
-        2. 有明确的位置信息（车站或区间）
-        3. 有明确的延误/事件信息
-
-        复杂输入需要 LLM 推理的场景：
-        - 模糊的描述，需要理解语义关系
-        - 多列车/大范围影响的复杂场景
-        - 需要从上下文推断信息
+        判断是否为简单输入，适合快速规则提取
+        【实验阶段已禁用】实验阶段所有输入均强制走LLM提取，本方法恒返回False
+        规则兜底仅在LLM调用失败/超时后由外层触发
         """
-        import re
-
-        # 检查是否有明确的场景类型关键词
-        scene_keywords = [
-            '临时限速', '限速', '突发故障', '故障', '区间封锁', '封锁', '区间中断',
-            '大风', '暴雨', '大雪', '冰雪', '设备故障', '信号故障', '接触网故障'
-        ]
-        has_scene = any(kw in user_input for kw in scene_keywords)
-
-        # 检查是否有明确的位置信息（京广高铁13站）
-        location_keywords = [
-            '站', '区间', '北京西', 'BJX', '杜家坎', 'DJK', '涿州东', 'ZBD',
-            '高碑店东', 'GBD', '保定东', 'BDD', '定州东', 'DZD', '正定机场', 'ZDJ',
-            '石家庄', 'SJP', '高邑西', 'GYX', '邢台东', 'XTD', '邯郸东', 'HDD', '安阳东', 'AYD',
-            '徐水东', 'XSD'
-        ]
-        has_location = any(kw in user_input for kw in location_keywords)
-
-        # 检查是否有明确的延误/事件信息
-        event_keywords = [
-            '延误', '晚点', '限速', '故障', '封锁', '分钟', '小时',
-            '恢复', '解除', '预计', '持续'
-        ]
-        has_event = any(kw in user_input for kw in event_keywords)
-
-        # 场景+位置+事件都明确 → 规则可处理（约60%的真实调度场景）
-        if has_scene and has_location and has_event:
-            return True
-
-        # 场景+位置明确，有列车号 → 规则可处理
-        has_train = bool(re.search(r'[GCDZ]\d+', user_input))
-        if has_scene and has_location and has_train:
-            return True
-
-        # 位置+事件明确（可能是标准化的限速场景）→ 规则可处理
-        if has_location and has_event:
-            return True
-
+        # 实验阶段：强制禁用规则快速路径，确保所有认知决策由LLM完成
         return False
 
     def _fallback_extraction(self, user_input: str) -> AccidentCard:

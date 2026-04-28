@@ -402,6 +402,9 @@ class Layer3Solver:
                 )
             ]
 
+        # 提取位置信息（供L4及前端使用）
+        location = accident_card.location_name or accident_card.location_code or "未知位置"
+
         return {
             "success": True,
             "skill_execution_result": {
@@ -413,9 +416,14 @@ class Layer3Solver:
                 "affected_trains_count": metrics.affected_trains_count,
                 "affected_trains": affected_train_ids,
                 "solving_time_seconds": metrics.computation_time,
+                "solving_time": metrics.computation_time,  # L4兼容
                 "scheduler_name": scheduler_name,
                 "adjustments": [],
-                "optimized_schedule": scheduler_result.optimized_schedule
+                "optimized_schedule": scheduler_result.optimized_schedule,
+                "location": location,
+                "location_name": accident_card.location_name or "",
+                "location_code": accident_card.location_code or "",
+                "scenario_type": accident_card.scene_category or ""
             },
             "solver_response": {
                 "success": True,
@@ -454,6 +462,7 @@ class Layer3Solver:
                 "avg_delay_minutes": 0,
                 "affected_trains_count": 0,
                 "solving_time_seconds": 0,
+                "solving_time": 0,  # L4兼容
                 "scheduler_name": scheduler_name,
                 "error": error_message
             },

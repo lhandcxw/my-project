@@ -17,6 +17,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.data_models import Train, Station, DelayInjection
 from scheduler_comparison.metrics import EvaluationMetrics, MetricsDefinition
+from solver.base import BaseSolver as _BaseSolverTools
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,6 @@ class SchedulerType(str, Enum):
     FCFS = "fcfs"
     FSFS = "fsfs"  # 先计划先服务（First Scheduled First Served）
     MIP = "mip"
-    RL = "reinforcement_learning"  # 强化学习
     GREEDY = "greedy"
     GENETIC = "genetic"  # 遗传算法
     NOOP = "noop"  # 基线不做调整
@@ -205,6 +206,9 @@ class MIPSchedulerAdapter(BaseScheduler):
         from config import DispatchEnvConfig
         self.headway_time = headway_time if headway_time is not None else DispatchEnvConfig.headway_time()
         self.min_stop_time = min_stop_time if min_stop_time is not None else DispatchEnvConfig.min_stop_time()
+        # 接收并保存 MIP 求解参数（由 layer2_planner 传入）
+        self.time_limit = kwargs.get("time_limit")
+        self.optimality_gap = kwargs.get("optimality_gap")
 
         self._scheduler = None
 
@@ -232,7 +236,14 @@ class MIPSchedulerAdapter(BaseScheduler):
         scheduler = self._get_scheduler()
         start_time = time.time()
 
-        result = scheduler.solve(delay_injection, objective)
+        # 组装 solver_config，将 layer2_planner 传入的 MIP 参数转发给原始求解器
+        solver_config = {}
+        if self.time_limit is not None:
+            solver_config["time_limit"] = self.time_limit
+        if self.optimality_gap is not None:
+            solver_config["optimality_gap"] = self.optimality_gap
+
+        result = scheduler.solve(delay_injection, objective, solver_config)
 
         # 计算完整指标
         metrics = MetricsDefinition.calculate_metrics(
@@ -373,121 +384,6 @@ class MaxDelayFirstSchedulerAdapter(BaseScheduler):
         )
 
 
-class ReinforcementLearningSchedulerAdapter(BaseScheduler):
-    """
-    强化学习调度器适配器
-    为后续强化学习算法预留接口
-    """
-    
-    def __init__(
-        self,
-        trains: List[Train],
-        stations: List[Station],
-        model_path: Optional[str] = None,
-        **kwargs
-    ):
-        super().__init__(trains, stations, name="强化学习调度器", **kwargs)
-        self.model_path = model_path
-        self._model = None
-        self._is_available = False
-    
-    @property
-    def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.RL
-    
-    @property
-    def is_available(self) -> bool:
-        """检查强化学习模型是否可用"""
-        return self._is_available
-    
-    def load_model(self, model_path: str) -> bool:
-        """
-        加载强化学习模型
-        
-        Args:
-            model_path: 模型路径
-        
-        Returns:
-            是否加载成功
-        """
-        try:
-            # TODO: 实现模型加载逻辑
-            # 这里预留接口，具体实现根据使用的RL框架而定
-            # 例如：使用stable-baselines3加载PPO模型
-            # from stable_baselines3 import PPO
-            # self._model = PPO.load(model_path)
-            # self._is_available = True
-            
-            logger.warning("强化学习模型加载功能尚未实现")
-            self._is_available = False
-            return False
-        except Exception as e:
-            logger.error(f"加载强化学习模型失败: {e}")
-            self._is_available = False
-            return False
-    
-    def solve(
-        self,
-        delay_injection: DelayInjection,
-        objective: str = "min_total_delay"
-    ) -> SchedulerResult:
-        start_time = time.time()
-        
-        if not self._is_available or self._model is None:
-            # 如果模型不可用，返回模拟结果
-            logger.warning("强化学习模型不可用，使用模拟结果")
-            return self._generate_mock_result(delay_injection, start_time)
-        
-        try:
-            # TODO: 实现实际的RL推理逻辑
-            # observation = self._build_observation(delay_injection)
-            # action, _ = self._model.predict(observation)
-            # optimized_schedule = self._apply_action(action)
-            
-            pass
-        except Exception as e:
-            logger.error(f"强化学习推理失败: {e}")
-            return SchedulerResult(
-                success=False,
-                scheduler_name=self.name,
-                scheduler_type=self.scheduler_type,
-                optimized_schedule={},
-                metrics=EvaluationMetrics(),
-                message=f"强化学习推理失败: {e}"
-            )
-    
-    def _generate_mock_result(
-        self,
-        delay_injection: DelayInjection,
-        start_time: float
-    ) -> SchedulerResult:
-        """生成模拟结果（用于测试和演示）"""
-        # 简单模拟：保持原始时刻表
-        schedule = self.get_original_schedule()
-        
-        # 应用初始延误
-        for injected in delay_injection.injected_delays:
-            train_id = injected.train_id
-            station_code = injected.location.station_code
-            delay = injected.initial_delay_seconds
-            
-            if train_id in schedule:
-                for stop in schedule[train_id]:
-                    if stop["station_code"] == station_code:
-                        stop["delay_seconds"] = delay
-                        break
-        
-        computation_time = time.time() - start_time
-        metrics = MetricsDefinition.calculate_metrics(schedule, None, computation_time)
-        
-        return SchedulerResult(
-            success=True,
-            scheduler_name=self.name,
-            scheduler_type=self.scheduler_type,
-            optimized_schedule=schedule,
-            metrics=metrics,
-            message="强化学习调度器（模拟结果）"
-        )
 
 
 class SchedulerRegistry:
@@ -544,7 +440,6 @@ class SchedulerRegistry:
         cls,
         trains: List[Train],
         stations: List[Station],
-        include_rl: bool = False,
         **kwargs
     ) -> Dict[str, BaseScheduler]:
         """
@@ -553,7 +448,6 @@ class SchedulerRegistry:
         Args:
             trains: 列车列表
             stations: 车站列表
-            include_rl: 是否包含强化学习调度器
             **kwargs: 其他参数
         
         Returns:
@@ -561,10 +455,6 @@ class SchedulerRegistry:
         """
         schedulers = {}
         for name, scheduler_class in cls._registry.items():
-            # 跳过RL调度器（如果不需要）
-            if name == "rl" and not include_rl:
-                continue
-            
             try:
                 instance = scheduler_class(trains, stations, **kwargs)
                 schedulers[name] = instance
@@ -612,21 +502,6 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
     def scheduler_type(self) -> SchedulerType:
         return SchedulerType.EARLIEST_ARRIVAL
 
-    def _time_to_seconds(self, time_str: str) -> int:
-        parts = time_str.split(':')
-        if len(parts) == 2:
-            h, m = map(int, parts)
-            return h * 3600 + m * 60
-        else:
-            h, m, s = map(int, parts)
-            return h * 3600 + m * 60 + s
-
-    def _seconds_to_time(self, seconds: int) -> str:
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
-
     def solve(
         self,
         delay_injection: DelayInjection,
@@ -639,7 +514,7 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
         for train in self.trains:
             if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
                 first_stop = train.schedule.stops[0]
-                dep_time = self._time_to_seconds(first_stop.departure_time)
+                dep_time = _BaseSolverTools.time_to_seconds(first_stop.departure_time)
                 train_first_departure.append((train.train_id, dep_time, train))
 
         # 按发车时间排序（最早发车的在前）
@@ -654,8 +529,8 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
             if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
                 for stop in train.schedule.stops:
                     if hasattr(stop, 'station_code'):
-                        arr_sec = self._time_to_seconds(stop.arrival_time)
-                        dep_sec = self._time_to_seconds(stop.departure_time)
+                        arr_sec = _BaseSolverTools.time_to_seconds(stop.arrival_time)
+                        dep_sec = _BaseSolverTools.time_to_seconds(stop.departure_time)
                         stops.append({
                             "station_code": stop.station_code,
                             "station_name": stop.station_name,
@@ -729,7 +604,7 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
                 curr_dep = curr_train["current_dep"]
 
                 # 计算需要的间隔（比FCFS更保守：额外增加1分钟）
-                required_interval = self.headway_time + 60
+                required_interval = self.headway_time + DispatchEnvConfig.eaf_extra_headway_seconds()
                 required_dep = prev_dep + required_interval
 
                 if curr_dep < required_dep:
@@ -750,48 +625,25 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
         # Step 5: 转换时间格式并计算统计
         for train_id in schedule:
             for stop in schedule[train_id]:
-                stop["arrival_time"] = self._seconds_to_time(stop["arrival_seconds"])
-                stop["departure_time"] = self._seconds_to_time(stop["departure_seconds"])
-
-        all_delays = []
-        for train_id, stops in schedule.items():
-            for stop in stops:
-                all_delays.append(stop.get("delay_seconds", 0))
-
-        # 【关键修复】按列车统计受影响数量，与其他求解器口径一致（FCFS/MIP/MaxDelayFirst/NoOp）
-        affected_trains = set()
-        for train_id, stops in schedule.items():
-            for stop in stops:
-                if stop.get("delay_seconds", 0) > 0:
-                    affected_trains.add(train_id)
-                    break
-
-        max_delay_val = max(all_delays) if all_delays else 0
-
-        # 准点率：基于每列车最大延误，延误延误<5分钟(300秒)视为准点，与其他求解器口径一致
-        train_max_delays = []
-        affected_train_max_delays = []
-        for train_id, stops in schedule.items():
-            train_delays = [s.get("delay_seconds", 0) for s in stops]
-            max_d = max(train_delays) if train_delays else 0
-            train_max_delays.append(max_d)
-            if max_d > 0:
-                affected_train_max_delays.append(max_d)
-        on_time_count = sum(1 for d in train_max_delays if d < 300)
-        on_time_rate = on_time_count / len(train_max_delays) if train_max_delays else 1.0
-
-        # 【关键修复】avg_delay = 受影响列车的平均最大延误（晚点列车平均延误）
-        avg_delay = sum(affected_train_max_delays) / len(affected_train_max_delays) if affected_train_max_delays else 0
+                stop["arrival_time"] = _BaseSolverTools.seconds_to_time(stop["arrival_seconds"])
+                stop["departure_time"] = _BaseSolverTools.seconds_to_time(stop["departure_seconds"])
 
         computation_time = time.time() - start_time
 
-        metrics = EvaluationMetrics(
-            max_delay_seconds=int(max_delay_val),
-            avg_delay_seconds=float(avg_delay),
-            total_delay_seconds=int(sum(all_delays)),
-            affected_trains_count=len(affected_trains),
-            on_time_rate=float(on_time_rate),
-            computation_time=computation_time
+        # 统一调用 MetricsDefinition.calculate_metrics 保证指标口径一致
+        metrics = MetricsDefinition.calculate_metrics(
+            schedule,
+            self.get_original_schedule(),
+            computation_time
+        )
+
+        return SchedulerResult(
+            success=True,
+            scheduler_name=self.name,
+            scheduler_type=self.scheduler_type,
+            optimized_schedule=schedule,
+            metrics=metrics,
+            message="最早到站优先调度器：后续列车为之前列车让行（保守策略）"
         )
 
         return SchedulerResult(
@@ -809,7 +661,7 @@ class EarliestArrivalFirstScheduler(BaseScheduler):
             if train.train_id == train_id:
                 for stop in train.schedule.stops:
                     if stop.station_code == station_code:
-                        return self._time_to_seconds(stop.departure_time)
+                        return _BaseSolverTools.time_to_seconds(stop.departure_time)
         return 0
 
 
@@ -846,11 +698,9 @@ class HierarchicalSchedulerAdapter(BaseScheduler):
         self._solver = None
 
     def _get_solver(self):
-        """延迟加载分层求解器"""
-        if self._solver is None:
-            from railway_agent.hierarchical_solver import HierarchicalSolver
-            self._solver = HierarchicalSolver()
-        return self._solver
+        """创建新的分层求解器实例（避免数据污染）"""
+        from railway_agent.hierarchical_solver import HierarchicalSolver
+        return HierarchicalSolver()
 
     @property
     def scheduler_type(self) -> SchedulerType:
@@ -955,43 +805,8 @@ class HierarchicalSchedulerAdapter(BaseScheduler):
 # - solver/README.md
 # - solver_registry.py 注释说明
 #
-# 以下适配器类保留是为了代码完整性，但不会注册到SchedulerRegistry
+# SPT/SRPT 适配器已移除：不符合高铁按图行车原则
 # ============================================================================
-
-class SPTSchedulerAdapter(BaseScheduler):
-    """
-    SPT调度器适配器（Shortest Processing Time - 最短处理时间优先）
-    【已废弃】不符合高铁按图行车原则，请勿使用
-    """
-
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("SPT调度器已废弃，不符合高铁按图行车原则")
-
-    @property
-    def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.SPT
-
-    def solve(self, *args, **kwargs) -> SchedulerResult:
-        raise NotImplementedError("SPT调度器已废弃，不符合高铁按图行车原则")
-
-
-class SRPTSchedulerAdapter(BaseScheduler):
-    """
-    SRPT调度器适配器（Shortest Remaining Processing Time - 最短剩余处理时间优先）
-    【已废弃】不符合高铁按图行车原则，请勿使用
-    """
-
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("SRPT调度器已废弃，不符合高铁按图行车原则")
-
-    @property
-    def scheduler_type(self) -> SchedulerType:
-        return SchedulerType.SRPT
-
-    def solve(self, *args, **kwargs) -> SchedulerResult:
-        raise NotImplementedError("SRPT调度器已废弃，不符合高铁按图行车原则")
-
-
 
 # 注册内置调度器（只注册实际可用的，避免别名重复出现在列表中）
 SchedulerRegistry.register("fcfs", FCFSSchedulerAdapter)
@@ -999,13 +814,7 @@ SchedulerRegistry.register("mip", MIPSchedulerAdapter)
 SchedulerRegistry.register("noop", NoOpSchedulerAdapter)
 SchedulerRegistry.register("max-delay-first", MaxDelayFirstSchedulerAdapter)
 SchedulerRegistry.register("hierarchical", HierarchicalSchedulerAdapter)
-# 以下已移除注册，避免在可用调度器列表中出现重复或不可用的名称：
-# - "no-op" / "baseline": noop 的别名
-# - "max_delay_first": max-delay-first 的别名
-# - "eaf" / "earliest_arrival": 该调度器未实际部署
-# - "rl" / "reinforcement_learning": 强化学习模型尚未加载，不可用
-# FSFS已移除：与noop行为相似，不符合高铁实际调度场景
-# SPT、SRPT已移除：不符合高铁按图行车原则，已在solver_registry中说明
+SchedulerRegistry.register("eaf", EarliestArrivalFirstScheduler)
 
 
 # 测试代码

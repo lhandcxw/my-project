@@ -1,7 +1,7 @@
 # LLM-TTRA：LLM-Agent工作流设计
 
-**文档版本**：1.0  
-**日期**：2026-04-26  
+**文档版本**：2.0  
+**日期**：2026-04-27  
 **用途**：四层LLM-Agent工作流（L1-L4）、自适应反射调度编排器（ARDO）及Function Calling L2规划器的详细设计文档。目标读者：AI+OR混合系统审稿人。
 
 ---
@@ -10,63 +10,136 @@
 
 核心设计问题是：*LLM应该做什么？经典算法应该做什么？*
 
-我们的答案，源自系统迭代版本（v1.0至v8.0）的演进：
+我们的答案，源自系统迭代版本（v1.0至v8.1）的演进：
 
-| 任务 | 分配对象 | 理由 |
-|------|---------|------|
-| 自然语言理解 | LLM（L1） | LLM擅长实体提取、消歧及处理口语化调度员语言 |
-| 策略性求解器选择 | LLM（L2） | 需要结合场景类型、紧急程度、时段、规模进行上下文推理 |
-| 数值优化 | OR求解器（L3） | MIP/FCFS保证约束满足；LLM不擅长精确数值优化 |
-| 解释与报告 | LLM（L4） | 需要将指标综合为自然语言叙述和可执行指令 |
-| 安全关键决策 | 规则引擎（PolicyEngine） | 硬约束（区间封锁→FCFS）不能依赖LLM可靠性 |
+| 任务 | 分配对象 | 理由 | 实现类型 |
+|------|---------|------|----------|
+| 自然语言理解 | LLM（L1） | LLM擅长实体提取、消歧及处理口语化调度员语言 | **LLM驱动** |
+| 策略性求解器选择 | LLM（L2） | 需要结合场景类型、紧急程度、时段、规模进行上下文推理 | **LLM驱动** |
+| 数值优化 | OR求解器（L3） | MIP/FCFS保证约束满足；LLM不擅长精确数值优化 | **数学计算** |
+| 解释与报告 | LLM（L4） | 需要将指标综合为自然语言叙述和可执行指令 | **LLM驱动** |
+| 安全关键决策 | 规则引擎（PolicyEngine） | 硬约束（区间封锁→FCFS）不能依赖LLM可靠性 | **规则安全层** |
+| 指标统计 | 规则计算 | 准点率、延误分级等基于阈值的数学统计 | **规则计算** |
 
 这一划分遵循 **"策略交给认知，计算交给数字"** 原则。
+
+**实验阶段原则**：所有认知决策（意图理解、实体提取、求解器选择、方案评估）均由LLM完成；规则仅用于数学计算（指标统计、Pareto分析）和安全兜底（策略引擎、约束验证）。
 
 ---
 
 ## 2. 工作流概览
 
+### 2.1 完整数据流图
+
 ```
 用户输入（自然语言）
     |
     v
-+-------------------+
-|   L0: 预处理       |  意图分类（聊天 / 查询 / 调度）
-+-------------------+
++-------------------------------------------+
+|  IntentRouter                             |
+|  【LLM主 + 规则次】                       |
+|  classify() --> LLM意图分类               |
+|  classify_with_fallback() --> 规则兜底    |
++-------------------------------------------+
+    |
+    +-- query / chat / overview --> Light Mode (Function Calling)
+    |
+    +-- dispatch --> Heavy Mode (L1-L4完整工作流)
+                          |
+                          v
++-------------------------------------------+
+|  L1: 数据建模层                           |
+|  【LLM主 + 规则次】                       |
+|  LLM提取 --> AccidentCard                 |
+|  _fallback_extraction() --> 规则兜底      |
++-------------------------------------------+
     |
     v
-+-------------------+
-|   L1: 数据建模     |  从自然语言提取 AccidentCard
-+-------------------+
++-------------------------------------------+
+|  SB: 快照构建器                           |
+|  【规则裁剪】                             |
+|  时空窗口裁剪，147列 -> 候选集            |
++-------------------------------------------+
     |
     v
-+-------------------+
-|   SB: 快照构建     |  构建 NetworkSnapshot（确定性裁剪）
-+-------------------+
++-------------------------------------------+
+|  L2: 策略规划层                           |
+|  【LLM主 + 规则次】                       |
+|  ReAct Agent + Function Calling           |
+|  8工具：assess_impact / run_solver / ...  |
+|  _rule_fallback() --> SolverSelector规则 |
++-------------------------------------------+
     |
     v
-+-------------------+
-|   L2: 规划器       |  LLM Agent 决定策略
-+-------------------+
++-------------------------------------------+
+|  L3: 求解执行层                           |
+|  【数学计算 + 安全规则】                    |
+|  SchedulerRegistry.create(solver_name)    |
+|  安全约束：区间封锁强制FCFS               |
++-------------------------------------------+
     |
     v
-+-------------------+
-|   L3: 求解器       |  执行选定的调度器
-+-------------------+
++-------------------------------------------+
+|  L4: 评估与方案生成层                     |
+|  【LLM主 + 规则次】                       |
+|  LLM综合评估 + 自然语言方案               |
+|  _calculate_high_speed_metrics() 规则统计 |
++-------------------------------------------+
     |
     v
-+-------------------+
-|   L4: 评估层       |  计算指标 + 生成自然语言方案
-+-------------------+
++-------------------------------------------+
+|  PolicyEngine                             |
+|  【规则安全层】                           |
+|  基于阈值的 ACCEPT / FALLBACK / RERUN     |
+|  LLM无权覆盖                              |
++-------------------------------------------+
+    |
+    +--[RERUN]--+ 反射循环(最多3轮) --> 回到 L2
+    |
+    +--[ACCEPT]--> WorkflowResult
+```
+
+### 2.2 反射循环（Reflection Loop）详细流程
+
+```
+迭代 i (i = 1, 2, 3)
     |
     v
-+-------------------+
-|   策略引擎         |  接受 / 拒绝 / 重规划
-+-------------------+
+L2.plan(previous_feedback=feedback_{i-1})
+    |   【LLM驱动】Agent根据前一轮反馈调整策略
+    |   若 feedback 存在，messages 追加系统反馈
+    v
+L3.execute(planner_decision)
+    |   【数学计算】执行选定求解器
+    v
+L4.evaluate(solver_result)
+    |   【LLM + 规则】LLM综合评估 + 规则指标计算
+    v
+PolicyEngine.make_decision(metrics)
+    |   【规则安全层】阈值判定
+    v
+    +-- decision == RERUN 且 i < 3 --
+    |       |
+    |       v
+    |   feedback_i = {
+    |       "rollback_reason": reason,
+    |       "suggested_fixes": fixes + policy_fixes,  // Fix 5: Policy反馈合并
+    |       "iteration": i,
+    |       "policy_override": True
+    |   }
+    |       |
+    |       +--> 进入迭代 i+1
     |
-    +--[拒绝]--> 反馈至 L2（最多3轮迭代）
-    |
-    +--[接受]--> 返回 WorkflowResult
+    +-- decision != RERUN 或 i == 3 --
+            |
+            v
+    记录 iteration_results[i]
+            |
+            v
+    _select_best_iteration(iteration_results)
+            |   【规则计算】按优化目标动态加权评分
+            v
+    WorkflowResult
 ```
 
 ---
@@ -100,16 +173,20 @@
 
 ### 3.3 实现方式
 
-- **主路径**：LLM调用，使用结构化输出提示（`l1_data_modeling`模板）
-- **回退路径**：当`FORCE_LLM_MODE=false`且LLM失败时，基于关键词的规则提取
-- **校验**：Pydantic模型校验确保所有必填字段存在
+| 路径 | 实现类型 | 触发条件 | 说明 |
+|------|----------|----------|------|
+| **主路径** | LLM驱动 | 默认 | LLM调用，使用结构化输出提示（`l1_data_modeling`模板） |
+| **回退路径** | 规则兜底 | LLM失败时 | `_fallback_extraction()`：基于关键词+正则提取 |
+| **校验** | Pydantic | 始终 | Pydantic模型校验确保所有必填字段存在 |
 
 ### 3.4 关键技术细节：LLM提取 vs. 规则提取
 
 v5.1+ 中，L0场景识别从硬编码规则迁移到LLM调用：
 - LLM同时提取`scene_type`、`fault_type`、`station_code`
-- 若LLM失败且`FORCE_LLM_MODE=false`，回退到关键词匹配
+- 若LLM失败，回退到`_fallback_extraction()`关键词匹配
 - 此设计收集SFT训练数据（`data/sft_train.jsonl`），用于未来模型微调
+
+**实验阶段**：所有输入均走LLM提取，规则回退仅在LLM服务不可用时启用。
 
 ---
 
@@ -199,16 +276,16 @@ for step in range(MAX_AGENT_STEPS=8)：
 
 ### 5.3 工具定义
 
-| 工具 | 类型 | 说明 |
-|------|------|------|
-| `assess_impact` | 感知 | 基于时刻表密度分析量化影响 |
-| `get_train_status` | 感知 | 返回特定列车的当前延误状态 |
-| `query_timetable` | 感知 | 检索时刻表片段供检查 |
-| `quick_line_overview` | 感知 | 走廊密度与容量摘要 |
-| `check_impact_cascade` | 感知 | 使用经验公式估计传播 |
-| `generate_dispatch_notice` | 辅助 | 格式化调度通知文本 |
-| `run_solver` | 动作 | 执行指定名称的求解器 |
-| `compare_strategies` | 动作 | 运行多个求解器，用综合指标评分 |
+| 工具 | 类型 | 说明 | 实现类型 |
+|------|------|------|----------|
+| `assess_impact` | 感知 | 基于时刻表密度分析量化影响 | LLM驱动（调用后分析） |
+| `get_train_status` | 感知 | 返回特定列车的当前延误状态 | 规则查询 |
+| `query_timetable` | 感知 | 检索时刻表片段供检查 | 规则查询 |
+| `quick_line_overview` | 感知 | 走廊密度与容量摘要 | 规则统计 |
+| `check_impact_cascade` | 感知 | 使用经验公式估计传播 | 规则估算 |
+| `generate_dispatch_notice` | 辅助 | 格式化调度通知文本 | LLM生成 |
+| `run_solver` | 动作 | 执行指定名称的求解器 | 数学计算 |
+| `compare_strategies` | 动作 | 运行多个求解器，用综合指标评分 | 数学计算 |
 
 ### 5.4 系统提示词工程
 
@@ -227,7 +304,13 @@ L2系统提示词包含：
 
 避免在MIP明显会超时的情况下浪费时间。
 
-### 5.6 反射支持
+### 5.6 规则兜底
+
+若LLM不可用时，L2调用 `_rule_fallback()`：
+- 使用 `SolverSelector.recommend_solver()` 基于场景特征做规则推荐
+- 该路径在实验阶段不启用，仅作为系统健壮性保障
+
+### 5.7 反射支持
 
 若L4向工作流引擎发送`RollbackFeedback`，L2在其消息中追加`previous_feedback`：
 ```
@@ -235,6 +318,62 @@ L2系统提示词包含：
 建议修复：{suggested_fixes}
 请结合以上考虑重新规划。
 ```
+
+### 5.8 L2 ReAct 循环与 Function Calling 详细流程图
+
+```
++------------------------------------------------------------------+
+|                        L2 策略规划层 (LLM Agent)                   |
+|                     ReAct 循环 + Function Calling                  |
++------------------------------------------------------------------+
+|                                                                  |
+|  输入: AccidentCard + NetworkSnapshot + previous_feedback(若有)  |
+|                                                                  |
+|  +----------------------------------------------------------+   |
+|  | Step 1-3: 感知与态势分析 (Observation / Reasoning)       |   |
+|  |                                                          |   |
+|  |  LLM -> assess_impact(密度分析)                          |   |
+|  |       -> get_train_status(列车状态)                      |   |
+|  |       -> query_timetable(时刻表检索)                     |   |
+|  |       -> quick_line_overview(走廊概况)                   |   |
+|  |       -> check_impact_cascade(传播估计)                  |   |
+|  |                                                          |   |
+|  |  【实现类型】工具执行为规则查询，策略推理为LLM驱动          |   |
+|  +----------------------------------------------------------+   |
+|                              |                                   |
+|                              v                                   |
+|  +----------------------------------------------------------+   |
+|  | Step 4-6: 决策与执行 (Action)                              |   |
+|  |                                                          |   |
+|  |  LLM -> run_solver("mip"/"fcfs"/...) 或                  |   |
+|  |       -> compare_strategies(["mip","fcfs","hierarchical"])|   |
+|  |                                                          |   |
+|  |  【实现类型】求解器执行为数学计算，求解器选择为LLM驱动      |   |
+|  +----------------------------------------------------------+   |
+|                              |                                   |
+|                              v                                   |
+|  +----------------------------------------------------------+   |
+|  | Step 7-8: 方案生成与验证 (Verification)                   |   |
+|  |                                                          |   |
+|  |  LLM -> generate_dispatch_notice(格式化通知)            |   |
+|  |       -> 内部验证: 检查solver输出是否完整                 |   |
+|  |                                                          |   |
+|  |  终止条件:                                               |   |
+|  |    - LLM不再调用工具，直接输出最终决策                     |   |
+|  |    - 达到 MAX_AGENT_STEPS=8                              |   |
+|  |    - 连续2次工具调用失败                                   |   |
+|  +----------------------------------------------------------+   |
+|                              |                                   |
+|                              v                                   |
+|  输出: planner_decision {preferred_solver, objective, config}  |
+|                                                                  |
++------------------------------------------------------------------+
+```
+
+**工具分类**：
+- **感知类工具**（5个）：`assess_impact`, `get_train_status`, `query_timetable`, `quick_line_overview`, `check_impact_cascade`
+- **动作类工具**（2个）：`run_solver`, `compare_strategies`
+- **辅助类工具**（1个）：`generate_dispatch_notice`
 
 ---
 
@@ -251,7 +390,7 @@ class SchedulerRegistry：
     _schedulers = {
         "mip": MIPScheduler,
         "fcfs": FCFSScheduler,
-        "max_delay_first": MaxDelayFirstScheduler,
+        "max-delay-first": MaxDelayFirstScheduler,
         "hierarchical": HierarchicalSolver,
         "eaf": EAFScheduler,
         "noop": NoOpScheduler,
@@ -263,7 +402,7 @@ class SchedulerRegistry：
         return scheduler_class(trains, stations, **kwargs)
 ```
 
-### 6.3 安全兜底
+### 6.3 安全兜底（【规则安全层】）
 
 1. 若`accident_card.scene_category == "区间封锁"`且选定求解器≠"fcfs"，强制覆盖为FCFS。
 2. 若`not accident_card.is_complete`且选定求解器不在("fcfs", "noop")中，强制覆盖为FCFS。
@@ -326,15 +465,24 @@ evaluation_context = {
 - 指标与调整详情
 - 要求使用面向调度员的专业语言
 
-### 7.5 策略引擎集成
+### 7.5 规则计算部分
+
+除LLM评估外，L4通过 `_calculate_high_speed_metrics()` 计算：
+- **准点率**：列车最大延误 < 5分钟（300秒）的比例
+- **严格准点率**：列车最大延误 < 3分钟（180秒）的比例
+- **延误分级**：micro[0,300)s / small[300,1800)s / medium[1800,6000)s / large[6000,∞)s
+- **综合评级**：A(≥90分) / B(≥75分) / C(≥60分) / D(<60分)
+
+### 7.6 策略引擎集成
 
 LLM评估后，`PolicyEngine`应用基于规则的阈值：
 - `max_delay > 60分钟`：标记人工复核
 - `affected_trains > 20`：建议区段隔离
 - `on_time_rate < 0.5`：建议替代策略
 
-策略决策：`ACCEPT` / `REJECT` / `REPLAN`
-- `REJECT` / `REPLAN` 触发ARDO反射循环。
+策略决策：`ACCEPT` / `FALLBACK` / `RERUN`
+- `FALLBACK` / `RERUN` 触发ARDO反射循环。
+- **PolicyEngine为纯规则实现，LLM无权覆盖其决策。**
 
 ---
 
@@ -353,29 +501,44 @@ LLM评估后，`PolicyEngine`应用基于规则的阈值：
 
 1: L1_result = L1.extract(user_input)
 2: if not L1_result.accident_card.is_complete：
-3:     return dialogue_workflow(L1_result.missing_fields)
+3:     return incomplete_result(missing_fields)
 4:
 5: snapshot = SnapshotBuilder.build(L1_result.accident_card)
 6:
-7: best_iterations = []
-8: for iteration in range(1, 4):  // 最多3次尝试
-9:     L2_result = L2.plan(
-10:        accident_card=L1_result.accident_card,
-11:        network_snapshot=snapshot,
-12:        previous_feedback=rollback_feedback if iteration > 1 else None
-13:    )
-14:    L3_result = L3.execute(L2_result.planner_decision, ...)
-15:    L4_result = L4.evaluate(L3_result, ...)
-16:
-17:    if L4_result.rollback_feedback.needs_rerun and iteration < 3：
-18:        rollback_feedback = L4_result.rollback_feedback
-19:        continue
-20:    else：
-21:        best_iterations.append((iteration, L4_result))
-22:
-23: // 选择最佳迭代
-24: best = select_best_iteration(best_iterations, optimization_objective)
-25: return build_success_result(best)
+7: iteration_results = []
+8: previous_feedback = None
+9: for iteration in range(1, 4):  // 最多3次尝试
+10:    L2_result = L2.plan(
+11:       accident_card=L1_result.accident_card,
+12:       network_snapshot=snapshot,
+13:       previous_feedback=previous_feedback
+14:    )
+15:    L3_result = L3.execute(L2_result.planner_decision, ...)
+16:    L4_result = L4.evaluate(L3_result, ...)
+17:
+18:    // Fix 5: 合并 PolicyEngine 反馈到 previous_feedback
+19:    policy_decision = L4_result.policy_decision
+20:    if policy_decision.suggested_fixes：
+21:        fixes = fixes + policy_fixes
+22:    if policy_decision.reason：
+23:        reason = reason + " | PolicyEngine: " + policy_reason
+24:
+25:    rollback = L4_result.rollback_feedback
+26:    if rollback.needs_rerun and iteration < 3：
+27:        previous_feedback = {
+28:            "rollback_reason": reason,
+29:            "suggested_fixes": fixes,
+30:            "iteration": iteration,
+31:            "policy_override": True
+32:        }
+33:        continue
+34:    else：
+35:        iteration_results.append((iteration, L2_result, L3_result, L4_result))
+36:        break
+37:
+38: // 选择最佳迭代
+39: best = select_best_iteration(iteration_results, optimization_objective)
+40: return build_success_result(best)
 ```
 
 ### 8.3 最佳迭代选择
@@ -399,26 +562,32 @@ IterScore最低者获胜。
 
 ### 9.1 会话类型
 
-| 类型 | API端点 | 使用场景 |
-|------|---------|---------|
-| 流式聊天 | `/api/agent_chat_stream` | 主调度接口 |
-| 有状态工作流 | `/api/workflow/start` + `/api/workflow/next` | 多轮信息收集 |
-| 通用聊天 | `/api/general_chat` | 无工具调用的自由问答 |
+| 类型 | API端点 | 使用场景 | 统一入口 |
+|------|---------|---------|----------|
+| 流式聊天 | `/api/agent_chat_stream` | 主调度接口 | agent.handle() |
+| 有状态工作流 | `/api/workflow/start` + `/api/workflow/next` | 多轮信息收集 | agent.handle() |
+| 通用聊天 | `/api/general_chat` | 无工具调用的自由问答 | agent.handle() |
 
-### 9.2 内存中会话存储
+### 9.2 会话状态管理
 
-```python
-_chat_memory: Dict[str, Dict] = {
-    session_id: {
-        "entities": {},           // 提取的AccidentCard字段
-        "last_intent": "",        // IntentRouter输出
-        "messages": [],           // OpenAI格式消息历史
-        "timestamp": float,       // 最后活动时间
-    }
-}
+系统使用双层会话管理：
+
+```
+Agent.session_state (内存层)
+    ├── history: List[Dict]        # 对话历史（user/assistant）
+    ├── last_accident_card: Any     # 最近一次事故卡片
+    ├── last_dispatch_result: Dict  # 最近一次调度结果快照
+    ├── last_mode: str              # 最近一次模式（light/heavy）
+    └── turn_count: int             # 轮次计数
+
+SessionManager (持久化层)
+    ├── create_session()            # 创建workflow会话
+    ├── update_layer_result()       # 更新L1-L4结果
+    ├── complete_session()          # 标记完成
+    └── update_messages()           # 同步对话历史
 ```
 
-限制：每会话20轮（40条消息），全局最多100个会话。
+当提供 `session_id` 时，`handle()` 自动从 `SessionManager` 加载历史，处理完成后同步回去。
 
 ### 9.3 意图路由器
 
@@ -427,7 +596,62 @@ _chat_memory: Dict[str, Dict] = {
 - **`chat`**：自由对话
 - **`dispatch`**：完整L1-L4工作流执行
 
-路由使用基于LLM的分类，回退到关键词匹配。
+路由使用基于LLM的分类（`classify()`），回退到关键词匹配（`classify_with_fallback()`）。
+
+### 9.4 意图理解两层架构图
+
+```
++------------------------------------------------------------------+
+|                     意图理解：两层架构设计                         |
++------------------------------------------------------------------+
+|                                                                  |
+|  第一层：IntentRouter（轻量级预分类）                              |
+|  【实现类型】LLM 主 + 规则兜底                                     |
+|  +----------------------------------------------------------+   |
+|  |  输入: 调度员自然语言消息                                   |   |
+|  |  输出: dispatch / query / chat / unknown                   |   |
+|  |                                                          |   |
+|  |  主路径: classify() -> LLM单次调用                        |   |
+|  |    "G1563在石家庄站故障延误30分钟" -> "dispatch"           |   |
+|  |    "现在有哪些列车晚点？"       -> "query"                |   |
+|  |    "你好"                      -> "chat"                 |   |
+|  |                                                          |   |
+|  |  兜底路径: _classify_with_rules()                         |   |
+|  |    关键词匹配（调度/故障/延误 -> dispatch）               |   |
+|  |    疑问词检测（哪些/什么/怎么 -> query）                  |   |
+|  +----------------------------------------------------------+   |
+|                              |                                   |
+|                              | dispatch                          |
+|                              v                                   |
+|  第二层：L1 数据建模层（深度结构化提取）                           |
+|  【实现类型】LLM 主 + 规则兜底                                     |
+|  +----------------------------------------------------------+   |
+|  |  输入: 自然语言 + 场景上下文                                |   |
+|  |  输出: AccidentCard (结构化JSON)                           |   |
+|  |                                                          |   |
+|  |  提取字段:                                                |   |
+|  |    - fault_type      : "设备故障"                         |   |
+|  |    - scene_category  : "突发故障"                         |   |
+|  |    - location_code   : "SJP"                              |   |
+|  |    - affected_trains : ["G1563"]                          |   |
+|  |    - expected_duration: 30 (分钟)                         |   |
+|  |    - is_complete     : true/false                         |   |
+|  |                                                          |   |
+|  |  主路径: LLM结构化提取（l1_data_modeling模板）            |   |
+|  |  兜底路径: _fallback_extraction() 正则+关键词补全         |   |
+|  +----------------------------------------------------------+   |
+|                              |                                   |
+|                              v                                   |
+|                     进入 L2 策略规划层                            |
+|                                                                  |
++------------------------------------------------------------------+
+
+**设计理由**：
+- **IntentRouter** 只做轻量级分类（3-4类），LLM调用开销低（~100 tokens）
+- **L1** 做深度提取（10+字段），需要更多上下文和结构化输出
+- 两层分离使 L1 可以复用（如反射循环中只执行一次）
+- 规则兜底确保 LLM 服务不可用时系统仍能降级运行
+```
 
 ---
 
@@ -435,13 +659,13 @@ _chat_memory: Dict[str, Dict] = {
 
 ### 10.1 提示词模板
 
-| 模板 | 层级 | 用途 |
-|------|------|------|
-| `l1_data_modeling` | L1 | 从自然语言提取AccidentCard |
-| `l0_preprocess_extractor` | L0 | 场景类型分类 |
-| `l2_system_prompt` | L2 | Agent行为 + 工具描述 + 求解器选择指南 |
-| `l2_scenario_text` | L2 | 动态上下文（紧急程度、时段、安全约束） |
-| `l4_evaluation_system` | L4 | 评估框架 + 输出格式规范 |
+| 模板 | 层级 | 用途 | 温度 |
+|------|------|------|------|
+| `l1_data_modeling` | L1 | 从自然语言提取AccidentCard | 0.2 |
+| `intent_classification` | L0 | 意图分类（dispatch/query/chat） | 0.1 |
+| `l2_system_prompt` | L2 | Agent行为 + 工具描述 + 求解器选择指南 | 0.2 |
+| `l2_scenario_text` | L2 | 动态上下文（紧急程度、时段、安全约束） | 0.2 |
+| `l4_evaluation_system` | L4 | 评估框架 + 输出格式规范 | 0.3 |
 
 ### 10.2 提示词策略
 

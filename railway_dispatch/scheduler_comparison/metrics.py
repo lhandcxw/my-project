@@ -16,6 +16,8 @@ from enum import Enum
 import json
 import math
 
+from config import DispatchEnvConfig
+
 
 class MetricCategory(str, Enum):
     """指标类别"""
@@ -234,7 +236,15 @@ class EvaluationMetrics:
     # === 详细数据 ===
     delay_by_train: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     delay_by_station: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    
+
+    def __post_init__(self):
+        """保证冗余派生字段与主字段始终一致"""
+        import math
+        # propagation_breadth 与 affected_trains_count 同义
+        self.propagation_breadth = self.affected_trains_count
+        # delay_std_dev 由 delay_variance 派生
+        self.delay_std_dev = math.sqrt(self.delay_variance) if self.delay_variance >= 0 else 0.0
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
         return {
@@ -468,7 +478,8 @@ class MetricsDefinition:
             max_d = max(train_delays) if train_delays else 0
             train_max_delays.append(max_d)
 
-        on_time_count = sum(1 for d in train_max_delays if d < 300)
+        on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
+        on_time_count = sum(1 for d in train_max_delays if d < on_time_threshold)
         on_time_rate = on_time_count / len(train_max_delays) if train_max_delays else 1.0
 
         return EvaluationMetrics(

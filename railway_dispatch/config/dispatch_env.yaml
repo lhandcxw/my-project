@@ -52,6 +52,11 @@ constraints:
   # 默认停站时间（秒）
   default_stop_time: 180  # 3分钟
 
+  # 准点率阈值（秒）
+  # 定义：列车最大延误小于此值视为准点
+  # 高铁行业标准：5分钟（300秒）
+  on_time_threshold_seconds: 300
+
   # 最小停站时间计算系数
   # 实际最小停站时间 = max(min_stop_time, original_duration * min_stop_ratio)
   min_stop_ratio: 0.5
@@ -101,6 +106,15 @@ solver:
     # 例如：0.01表示在最优解的1%范围内停止
     optimality_gap: 0.01
 
+    # 求解时间限制的安全边界（秒）
+    # L2层传递的参数会被钳制在这个范围内
+    min_time_limit: 30
+    max_time_limit: 600
+
+    # 最优性间隙的安全边界
+    min_optimality_gap: 0.01
+    max_optimality_gap: 0.10
+
     # 区间运行时间压缩比例（0.0-1.0）
     # 定义：MIP调度器可压缩的区间运行时间比例
     # 京广高铁实际调度：区间运行时间可压缩到最小区间运行时间的85%
@@ -119,6 +133,9 @@ solver:
 
     # 是否启用区间运行冗余利用
     enable_running_redundancy: true
+
+    # 局部搜索最大迭代次数
+    local_search_max_iterations: 10
 
   # MaxDelayFirst求解器配置
   max_delay_first:
@@ -142,6 +159,29 @@ solver:
     # 区间运行冗余利用比例（0.0-1.0）
     # 【参数优化】从0.6提升至0.85，更充分利用运行冗余压缩延误
     running_time_redundancy_ratio: 0.85
+
+  # EAF求解器配置
+  eaf:
+    # 额外发车间隔（秒）
+    # EAF策略比FCFS更保守，在headway基础上额外增加此间隔
+    extra_headway_seconds: 60
+
+  # 分层求解器配置
+  hierarchical:
+    # MIP最大列车数（裁剪后）
+    max_trains_for_mip: 30
+
+    # MIP最小改进阈值（分钟）
+    # MIP结果必须比FCFS减少至少此值才接受
+    max_mip_improvement_minutes: 1
+
+    # FCFS即可满足的最大延误阈值（分钟）
+    # 小于此值直接返回FCFS结果，不启用MIP
+    max_delay_for_fcfs_minutes: 5
+
+    # 启用MIP的最小列车数
+    # 避免小规模问题过度复杂化
+    min_trains_for_mip: 3
 
 # ============================================
 # 车站默认配置

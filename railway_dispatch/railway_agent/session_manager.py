@@ -208,6 +208,30 @@ class SessionManager:
                 return True
         return False
 
+    def complete_session(self, session_id: str) -> bool:
+        """标记会话为已完成"""
+        session = self.get_session(session_id)
+        if session is None:
+            return False
+        with self._lock:
+            session.is_complete = True
+            session.updated_at = time.time()
+        return True
+
+    def update_messages(self, session_id: str, messages: List[Dict[str, str]]) -> bool:
+        """批量更新会话消息历史（用于与 Agent.session_state 同步）"""
+        session = self.get_session(session_id)
+        if session is None:
+            return False
+        with self._lock:
+            # 保留 system 消息，替换 user/assistant 消息为最新版本
+            system_msgs = [m for m in session.messages if m.get("role") == "system"]
+            session.messages = system_msgs + [
+                m for m in messages if m.get("role") in ("user", "assistant")
+            ]
+            session.updated_at = time.time()
+        return True
+
     def cleanup_old_sessions(self, max_age_seconds: int = 3600):
         """清理过期会话（默认1小时）"""
         current_time = time.time()

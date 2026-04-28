@@ -15,10 +15,6 @@ from railway_agent.llm_workflow_engine_v2 import (
 # Agent接口（统一LLM驱动）
 from railway_agent.agents import LLMAgent, create_llm_agent, AgentResult
 
-# 向后兼容导出（旧名称仍可用）
-RuleAgent = LLMAgent
-create_rule_agent = create_llm_agent
-
 # 技能系统（Agent 框架版）
 from railway_agent.adapters.skill_registry import SkillRegistry, get_skill_registry
 from railway_agent.adapters.skills import (
@@ -52,9 +48,6 @@ from railway_agent.session_manager import SessionManager, get_session_manager
 from railway_agent.adapters.llm_adapter import get_llm_caller
 from railway_agent.adapters.llm_prompt_adapter import LLMPromptAdapter, get_llm_prompt_adapter
 
-# 为了向后兼容，ToolRegistry 指向 SkillRegistry
-ToolRegistry = SkillRegistry
-
 __all__ = [
     # 主入口：工作流引擎
     "LLMWorkflowEngineV2",
@@ -63,9 +56,6 @@ __all__ = [
     "LLMAgent",
     "create_llm_agent",
     "AgentResult",
-    # 向后兼容
-    "RuleAgent",
-    "create_rule_agent",
     # 工作流分层模块
     "Layer1DataModeling",
     "Layer2Planner",
@@ -95,5 +85,4 @@ __all__ = [
     # 技能注册表
     "SkillRegistry",
     "get_skill_registry",
-    "ToolRegistry",
 ]

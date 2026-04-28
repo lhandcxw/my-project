@@ -252,7 +252,7 @@ class LLMCaller:
                     response = client.chat.completions.create(
                         model=self.OLLAMA_MODEL,
                         messages=[
-                            {"role": "system", "content": "你是一个专业的铁路调度助手。请严格按照要求输出JSON格式。"},
+                            {"role": "system", "content": "你是京广高铁智能调度系统的AI助手。所有回答必须严格遵循用户指定的输出格式。如要求JSON，则只输出纯JSON对象，禁止添加markdown代码块标记(```)、解释文字、注释或换行符包裹的额外内容。"},
                             {"role": "user", "content": prompt}
                         ],
                         max_tokens=max_tokens,
@@ -292,7 +292,7 @@ class LLMCaller:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "你是一个专业的铁路调度助手。"},
+                    {"role": "system", "content": "你是京广高铁智能调度系统的高级分析助手，具备中国铁路调度专业知识。回答应准确、专业、结构化。如用户要求JSON格式，则只输出纯JSON对象，禁止添加markdown代码块或解释文字。"},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=max_tokens,
@@ -319,7 +319,7 @@ class LLMCaller:
             request_params = {
                 "model": self.DASHSCOPE_MODEL,
                 "messages": [
-                    {"role": "system", "content": "你是一个专业的铁路调度助手。请严格按照要求输出JSON格式。"},
+                    {"role": "system", "content": "你是京广高铁智能调度系统的AI助手，精通中国铁路调度专业术语和规章制度。所有回答必须严格遵循用户指定的输出格式。如要求JSON，则只输出纯JSON对象，禁止添加markdown代码块标记(```)、解释性文字或注释。"},
                     {"role": "user", "content": prompt}
                 ],
                 "max_tokens": max_tokens,

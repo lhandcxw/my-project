@@ -16,14 +16,11 @@ from .scheduler_interface import (
     BaseScheduler, 
     SchedulerRegistry, 
     SchedulerResult,
+    SchedulerType,
     FCFSSchedulerAdapter, 
-    MIPSchedulerAdapter,
-    ReinforcementLearningSchedulerAdapter
+    MIPSchedulerAdapter
 )
 from .llm_adapter import LLMOutputAdapter, LLMOutputFormat
-
-# 兼容性导入 - SchedulerType 也从 scheduler_interface 导入
-from .scheduler_interface import SchedulerType
 
 __all__ = [
     # 指标定义
@@ -44,7 +41,6 @@ __all__ = [
     'SchedulerRegistry',
     'FCFSSchedulerAdapter',
     'MIPSchedulerAdapter',
-    'ReinforcementLearningSchedulerAdapter',
     # LLM适配器
     'LLMOutputAdapter',
     'LLMOutputFormat'

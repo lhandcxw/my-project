@@ -31,10 +31,6 @@ class LLMConfig:
     # 微调模型配置（当 L1_EXTRACTION_MODE = "finetuned" 时使用）
     L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
     L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称或路径
-
-    # 微调模型配置（当 L1_EXTRACTION_MODE = "finetuned" 时使用）
-    L1_FINETUNED_MODEL_PROVIDER = "ollama"  # "ollama" | "vllm" | "transformers"
-    L1_FINETUNED_MODEL_NAME = "qwen2.5:1.5b"  # 微调后的模型名称
     L1_FINETUNED_MODEL_PATH = ""  # 本地模型路径（transformers 模式使用）
     L1_FINETUNED_API_URL = "http://localhost:11434"  # Ollama/vLLM API 地址
     L1_FINETUNED_TEMPERATURE = 0.0  # 微调模型温度（提取任务需要确定性）
@@ -181,14 +177,17 @@ class DispatchEnvConfig:
 
     @classmethod
     def _get_default_config(cls):
-        """获取默认配置"""
+        """获取默认配置（与 dispatch_env.yaml 严格对齐）"""
         return {
             "constraints": {
                 "headway_time": 180,
-                "min_stop_time": 60,
+                "min_stop_time": 120,
                 "min_headway_time": 180,
-                "stop_time_redundancy_ratio": 0.5,
-                "running_time_redundancy_ratio": 0.3
+                "stop_time_redundancy_ratio": 0.8,
+                "running_time_redundancy_ratio": 0.85,
+                "min_stop_ratio": 0.5,
+                "min_section_time_ratio": 0.9,
+                "default_min_section_time": 600
             },
             "station_defaults": {
                 "default_track_count": 2
@@ -253,6 +252,11 @@ class DispatchEnvConfig:
         return cls.get("constraints.min_headway_time", 180)
 
     @classmethod
+    def min_departure_interval(cls) -> int:
+        """多股道车站最小发车间隔（秒）"""
+        return cls.get("constraints.min_departure_interval", 120)
+
+    @classmethod
     def stop_time_redundancy_ratio(cls) -> float:
         """停站冗余利用比例"""
         return cls.get("constraints.stop_time_redundancy_ratio", 0.5)
@@ -261,6 +265,11 @@ class DispatchEnvConfig:
     def running_time_redundancy_ratio(cls) -> float:
         """区间运行冗余利用比例"""
         return cls.get("constraints.running_time_redundancy_ratio", 0.3)
+
+    @classmethod
+    def on_time_threshold_seconds(cls) -> int:
+        """准点率阈值（秒）：延误小于此值视为准点"""
+        return cls.get("constraints.on_time_threshold_seconds", 300)
 
     @classmethod
     def min_section_time_ratio(cls) -> float:
@@ -281,6 +290,56 @@ class DispatchEnvConfig:
     def solver_optimality_gap(cls) -> float:
         """求解器最优性间隙"""
         return cls.get("solver_settings.optimality_gap", 0.01)
+
+    @classmethod
+    def mip_min_time_limit(cls) -> int:
+        """MIP求解器最小时间限制（秒）"""
+        return cls.get("solver.mip.min_time_limit", 30)
+
+    @classmethod
+    def mip_max_time_limit(cls) -> int:
+        """MIP求解器最大时间限制（秒）"""
+        return cls.get("solver.mip.max_time_limit", 600)
+
+    @classmethod
+    def mip_min_optimality_gap(cls) -> float:
+        """MIP求解器最小最优性间隙"""
+        return cls.get("solver.mip.min_optimality_gap", 0.01)
+
+    @classmethod
+    def mip_max_optimality_gap(cls) -> float:
+        """MIP求解器最大最优性间隙"""
+        return cls.get("solver.mip.max_optimality_gap", 0.10)
+
+    @classmethod
+    def fcfs_local_search_max_iterations(cls) -> int:
+        """FCFS局部搜索最大迭代次数"""
+        return cls.get("solver.fcfs.local_search_max_iterations", 10)
+
+    @classmethod
+    def eaf_extra_headway_seconds(cls) -> int:
+        """EAF策略额外发车间隔（秒）"""
+        return cls.get("solver.eaf.extra_headway_seconds", 60)
+
+    @classmethod
+    def hierarchical_max_trains_for_mip(cls) -> int:
+        """分层求解器 MIP 最大列车数"""
+        return cls.get("solver.hierarchical.max_trains_for_mip", 30)
+
+    @classmethod
+    def hierarchical_max_mip_improvement_minutes(cls) -> int:
+        """分层求解器 MIP 最小改进阈值（分钟）"""
+        return cls.get("solver.hierarchical.max_mip_improvement_minutes", 1)
+
+    @classmethod
+    def hierarchical_max_delay_for_fcfs_minutes(cls) -> int:
+        """分层求解器 FCFS 即可满足的最大延误阈值（分钟）"""
+        return cls.get("solver.hierarchical.max_delay_for_fcfs_minutes", 5)
+
+    @classmethod
+    def hierarchical_min_trains_for_mip(cls) -> int:
+        """分层求解器启用 MIP 的最小列车数"""
+        return cls.get("solver.hierarchical.min_trains_for_mip", 3)
 
     # 新增：延误等级配置
     @classmethod
@@ -394,37 +453,6 @@ llm_config = LLMConfig()
 app_config = AppConfig()
 solver_config = SolverConfig()
 
-# 向后兼容的导出（供 web/app.py 使用）
-AGENT_MODE = AppConfig.AGENT_MODE
-LLM_CONFIG = {
-    'provider': LLMConfig.PROVIDER,
-    'api_key': LLMConfig.DASHSCOPE_API_KEY,
-    'model': LLMConfig.DASHSCOPE_MODEL,
-    'enable_thinking': LLMConfig.DASHSCOPE_ENABLE_THINKING
-}
-
-
-class Config:
-    """统一配置类 - 兼容旧接口"""
-    
-    def __init__(self):
-        self.llm_provider = LLMConfig.PROVIDER
-        self.llm_model = LLMConfig.get_model_name()
-        self.dashscope_api_key = LLMConfig.DASHSCOPE_API_KEY
-        self.dashscope_model = LLMConfig.DASHSCOPE_MODEL
-        self.dashscope_enable_thinking = LLMConfig.DASHSCOPE_ENABLE_THINKING
-        self.ollama_base_url = LLMConfig.OLLAMA_BASE_URL
-        self.ollama_model = LLMConfig.OLLAMA_MODEL
-        self.openai_api_key = LLMConfig.OPENAI_API_KEY
-        self.openai_model = LLMConfig.OPENAI_MODEL
-        self.agent_mode = AppConfig.AGENT_MODE
-        self.web_host = AppConfig.WEB_HOST
-        self.web_port = AppConfig.WEB_PORT
-
-
-# 全局配置实例
-_config_instance = None
-
 
 def validate_config():
     """验证配置完整性，失败时明确报错并终止"""
@@ -442,14 +470,6 @@ def validate_config():
 
     # 配置摘要由app.py统一打印，避免重复输出
     pass
-
-
-def get_config() -> Config:
-    """获取配置实例（兼容旧接口）"""
-    global _config_instance
-    if _config_instance is None:
-        _config_instance = Config()
-    return _config_instance
 
 
 def get_config_summary() -> str:

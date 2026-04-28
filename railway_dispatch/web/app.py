@@ -18,14 +18,12 @@ from datetime import datetime
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.data_models import Train, Station, DelayInjection, ScenarioType, InjectedDelay, DelayLocation
+from models.data_models import DelayInjection, ScenarioType, InjectedDelay, DelayLocation
 from models.data_loader import get_trains_pydantic, get_stations_pydantic, get_station_codes, get_station_names, get_train_ids, use_real_data, is_using_real_data
-from solver.mip_scheduler import MIPScheduler
+from scheduler_comparison.scheduler_interface import SchedulerRegistry
 from scheduler_comparison.comparator import ComparisonCriteria
 from railway_agent import create_skills, execute_skill
-from railway_agent.session_manager import get_session_manager, SessionManager
-from evaluation.evaluator import Evaluator
-
+from railway_agent.session_manager import get_session_manager
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -34,7 +32,7 @@ logger = logging.getLogger(__name__)
 from visualization.simple_diagram import create_train_diagram, create_comparison_diagram
 
 # 导入统一LLM驱动 Agent
-from railway_agent import LLMAgent, create_llm_agent, ToolRegistry
+from railway_agent import LLMAgent, create_llm_agent
 
 # 导入意图路由（新增：支持query/chat/dispatch多分支）
 
@@ -62,10 +60,9 @@ station_codes = get_station_codes()
 station_names = get_station_names()
 train_ids = get_train_ids()
 
-# 创建调度器
-scheduler = MIPScheduler(trains, stations)
+# 创建调度器（通过注册表统一创建，保证与其他模块的公平性协议一致）
+scheduler = SchedulerRegistry.create("mip", trains, stations)
 skills = create_skills(scheduler)
-# evaluator = Evaluator()  # 已弃用：评估功能已整合到Layer4Evaluation
 
 # 从统一配置中心导入配置
 from config import AppConfig, LLMConfig, DispatchEnvConfig, get_config_summary, validate_config
@@ -214,7 +211,7 @@ def compute_dispatcher_metrics(original_schedule, optimized_schedule):
     for train_id, stops in (optimized_schedule or {}).items():
         if stops:
             last_delay = stops[-1].get("delay_seconds", 0)
-            if last_delay < 300:
+            if last_delay < DispatchEnvConfig.on_time_threshold_seconds():
                 terminal_on_time += 1
     metrics["terminal_on_time_rate"] = round(terminal_on_time / total_trains, 3) if total_trains > 0 else 1.0
 
@@ -801,19 +798,23 @@ def agent_chat_stream():
                 eval_report = result.get("evaluation_report", {})
                 eval_report_dict = None
                 if eval_report:
-                    try:
-                        eval_report_dict = eval_report.model_dump() if hasattr(eval_report, 'model_dump') else eval_report.dict()
-                    except:
-                        eval_report_dict = {
-                            'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N'),
-                            'on_time_rate': getattr(eval_report, 'on_time_rate', 0.0),
-                            'punctuality_strict': getattr(eval_report, 'punctuality_strict', 0.0),
-                            'delay_std_dev': getattr(eval_report, 'delay_std_dev', 0.0),
-                            'delay_propagation_depth': getattr(eval_report, 'delay_propagation_depth', 0),
-                            'delay_propagation_breadth': getattr(eval_report, 'delay_propagation_breadth', 0),
-                            'risk_warnings': getattr(eval_report, 'risk_warnings', []),
-                            'constraint_check': getattr(eval_report, 'constraint_check', {})
-                        }
+                    if isinstance(eval_report, dict):
+                        # 已经是 dict（来自 debug_trace 中提前 model_dump 过的数据）
+                        eval_report_dict = eval_report
+                    else:
+                        try:
+                            eval_report_dict = eval_report.model_dump() if hasattr(eval_report, 'model_dump') else eval_report.dict()
+                        except:
+                            eval_report_dict = {
+                                'evaluation_grade': getattr(eval_report, 'evaluation_grade', 'N'),
+                                'on_time_rate': getattr(eval_report, 'on_time_rate', 0.0),
+                                'punctuality_strict': getattr(eval_report, 'punctuality_strict', 0.0),
+                                'delay_std_dev': getattr(eval_report, 'delay_std_dev', 0.0),
+                                'delay_propagation_depth': getattr(eval_report, 'delay_propagation_depth', 0),
+                                'delay_propagation_breadth': getattr(eval_report, 'delay_propagation_breadth', 0),
+                                'risk_warnings': getattr(eval_report, 'risk_warnings', []),
+                                'constraint_check': getattr(eval_report, 'constraint_check', {})
+                            }
 
                 opt_schedule = result.get("optimized_schedule", {})
                 original_schedule = get_original_schedule()
@@ -1460,57 +1461,52 @@ def workflow_start():
                 "message": "Agent未初始化"
             })
 
-        # 统一架构：使用LLMAgent执行完整L1-L4工作流（与agent_chat保持一致）
-        # 注意：这里使用agent.analyze()，它会内部调用WorkflowEngine执行完整工作流
-        delay_injection = {"raw_input": user_input}
-        agent_result = agent.analyze(delay_injection, user_input)
-
-        # 从工作流结果中提取accident_card
-        workflow_result = getattr(agent_result, '_workflow_result', None)
-        accident_card_data = getattr(agent_result, '_accident_card', {}) if not workflow_result else None
-        if not accident_card_data and workflow_result:
-            accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
-
-        # 转换为字典格式（用于JSON序列化）
-        result_dict = {
-            "accident_card": accident_card_data,
-            "can_solve": accident_card_data.get("is_complete", True) if accident_card_data else True,
-            "missing_info": accident_card_data.get("missing_fields", []) if accident_card_data else [],
-            "llm_response_type": "llm_real"
-        }
-
-        # 检查信息是否完整
-        is_complete = accident_card_data.get("is_complete", True) if accident_card_data else True
-        missing_fields = accident_card_data.get("missing_fields", []) if accident_card_data else []
-
-        # 创建会话并保存第1层结果
+        # 统一架构：使用 handle() 作为唯一自然语言入口
         session_mgr = get_session_manager()
         session_id = session_mgr.create_session(user_input, snapshot_info)
-        session_mgr.update_layer_result(session_id, 1, result_dict)
 
-        # 获取会话状态
+        handle_result = agent.handle(
+            user_input=user_input,
+            session_id=session_id,
+            time_budget_seconds=120.0
+        )
+
+        # 获取会话状态（handle() 内部已同步到 SessionManager）
         status = session_mgr.get_session_status(session_id)
+
+        accident_card_data = handle_result.get("accident_card", {})
+        missing_fields = handle_result.get("missing_fields", []) or accident_card_data.get("missing_fields", [])
+        is_incomplete = handle_result.get("mode") == "incomplete" or handle_result.get("needs_more_info")
+
+        # 构建 L1 结果字典
+        result_dict = {
+            "accident_card": accident_card_data,
+            "can_solve": not is_incomplete,
+            "missing_info": missing_fields,
+            "llm_response_type": "llm_real"
+        }
+        if is_incomplete:
+            session_mgr.update_layer_result(session_id, 1, result_dict)
 
         # 构建响应
         response = {
             "success": True,
             "session_id": session_id,
-            "current_layer": 1,
-            "progress": status["progress"],
-            "messages": status["messages"],
+            "current_layer": 1 if is_incomplete else 4,
+            "progress": status["progress"] if status else ("等待补充信息" if is_incomplete else "工作流执行完成"),
+            "messages": status["messages"] if status else [],
             "layer1_result": result_dict,
             "agent_result": {
-                "success": agent_result.success,
-                "recognized_scenario": agent_result.recognized_scenario,
-                "selected_skill": agent_result.selected_skill,
-                "selected_solver": agent_result.selected_solver,
-                "reasoning": agent_result.reasoning,
-                "llm_summary": agent_result.llm_summary
+                "success": handle_result.get("success", False),
+                "recognized_scenario": handle_result.get("recognized_scenario", accident_card_data.get("scene_category", "unknown")),
+                "selected_skill": handle_result.get("selected_skill", ""),
+                "selected_solver": handle_result.get("selected_solver", ""),
+                "reasoning": handle_result.get("reasoning", ""),
+                "llm_summary": handle_result.get("message", "")
             }
         }
 
-        # 如果信息不完整，返回提示信息要求补充
-        if not is_complete and missing_fields:
+        if is_incomplete:
             response["needs_more_info"] = True
             response["missing_fields"] = missing_fields
             response["message"] = f"请补充以下信息：{', '.join(missing_fields)}"
@@ -1518,7 +1514,7 @@ def workflow_start():
         else:
             response["needs_more_info"] = False
             response["can_proceed"] = True
-            response["message"] = "信息完整，可继续执行后续流程"
+            response["message"] = handle_result.get("message", "信息完整，可继续执行后续流程")
 
         return jsonify(response)
 
@@ -1599,8 +1595,7 @@ def workflow_next():
                     "missing_fields": missing_info
                 })
 
-        # 统一架构：直接使用LLMAgent执行完整L1-L4工作流
-        # 不再手动逐层执行，而是复用统一的analyze接口
+        # 统一架构：直接使用 handle() 作为唯一自然语言入口
         agent = get_agent()
         if agent is None:
             return jsonify({
@@ -1618,40 +1613,41 @@ def workflow_next():
 
         logger.info(f"多轮对话继续，执行完整工作流，输入: {user_input[:50]}...")
 
-        # 使用Agent执行完整L1-L4工作流（与agent_chat/workflow_start统一入口）
-        result = agent.analyze(
-            delay_injection={"raw_input": user_input},
-            user_prompt=user_input
+        # 使用统一入口 handle() 执行完整L1-L4工作流
+        handle_result = agent.handle(
+            user_input=user_input,
+            session_id=session_id,
+            time_budget_seconds=120.0
         )
 
-        if not result.success:
+        if not handle_result.get("success") and handle_result.get("mode") != "incomplete":
             return jsonify({
                 "success": False,
-                "message": f"工作流执行失败: {result.error_message}"
+                "message": f"工作流执行失败: {handle_result.get('message', '未知错误')}"
             })
 
-        # 构建统一格式的响应
+        # 构建统一格式的响应（兼容原格式）
         workflow_result = {
-            "success": True,
-            "recognized_scenario": result.recognized_scenario,
-            "selected_skill": result.selected_skill,
-            "selected_solver": result.selected_solver,
-            "reasoning": result.reasoning,
-            "llm_summary": result.llm_summary,
+            "success": handle_result.get("success", False),
+            "recognized_scenario": handle_result.get("recognized_scenario", "unknown"),
+            "selected_skill": handle_result.get("selected_skill", ""),
+            "selected_solver": handle_result.get("selected_solver", ""),
+            "reasoning": handle_result.get("reasoning", ""),
+            "llm_summary": handle_result.get("message", ""),
             "dispatch_result": {
-                "optimized_schedule": result.dispatch_result.optimized_schedule if result.dispatch_result else [],
-                "delay_statistics": result.dispatch_result.delay_statistics if result.dispatch_result else {},
-                "computation_time": result.dispatch_result.computation_time if result.dispatch_result else 0,
-                "success": result.dispatch_result.success if result.dispatch_result else False,
-                "message": result.dispatch_result.message if result.dispatch_result else "",
-                "skill_name": result.dispatch_result.skill_name if result.dispatch_result else ""
+                "optimized_schedule": handle_result.get("optimized_schedule", []),
+                "delay_statistics": handle_result.get("delay_statistics", {}),
+                "computation_time": handle_result.get("computation_time", 0),
+                "success": handle_result.get("success", False),
+                "message": handle_result.get("message", ""),
+                "skill_name": handle_result.get("selected_skill", "")
             },
-            "computation_time": result.computation_time,
-            "model_used": result.model_used
+            "computation_time": handle_result.get("computation_time", 0),
+            "model_used": getattr(agent, 'model_name', '')
         }
 
-        # 更新会话状态为完成
-        session_mgr.update_layer_result(session_id, 4, workflow_result)
+        # handle() 内部已通过 _update_session_state 同步到 SessionManager
+        # 额外确保标记完成
         session_mgr.complete_session(session_id)
 
         # 获取更新后的状态
@@ -1661,11 +1657,11 @@ def workflow_next():
             "success": True,
             "session_id": session_id,
             "current_layer": 4,
-            "progress": status["progress"],
-            "messages": status["messages"],
+            "progress": status["progress"] if status else "已完成",
+            "messages": status["messages"] if status else [],
             "workflow_result": workflow_result,
             "is_complete": True,
-            "message": "工作流执行完成"
+            "message": handle_result.get("message", "工作流执行完成")
         })
 
     except Exception as e:
@@ -1756,7 +1752,7 @@ def workflow_continue():
                 "message": "会话不存在或已过期"
             })
 
-        # 统一架构：使用LLMAgent执行完整工作流（与agent_chat/workflow_start保持一致）
+        # 统一架构：使用 handle() 作为唯一自然语言入口
         agent = get_agent()
         if agent is None:
             return jsonify({
@@ -1770,27 +1766,26 @@ def workflow_continue():
 
         logger.info(f"使用补充信息重新执行完整工作流: {combined_input[:50]}...")
 
-        # 使用Agent执行完整L1-L4工作流（统一入口）
-        agent_result = agent.analyze(
-            delay_injection={"raw_input": combined_input},
-            user_prompt=combined_input
+        # 使用统一入口 handle() 执行完整L1-L4工作流
+        handle_result = agent.handle(
+            user_input=combined_input,
+            session_id=session_id,
+            time_budget_seconds=120.0
         )
 
-        # 从工作流结果中提取accident_card
-        workflow_result = getattr(agent_result, '_workflow_result', None)
-        accident_card_data = getattr(agent_result, '_accident_card', {}) if not workflow_result else None
-        if not accident_card_data and workflow_result:
-            accident_card_data = workflow_result.debug_trace.get("accident_card", {}) if hasattr(workflow_result, 'debug_trace') else {}
+        accident_card_data = handle_result.get("accident_card", {})
+        missing_fields = handle_result.get("missing_fields", []) or accident_card_data.get("missing_fields", [])
+        is_incomplete = handle_result.get("mode") == "incomplete" or handle_result.get("needs_more_info")
 
-        # 转换为字典格式（用于JSON序列化）
+        # 构建 L1 结果字典
         result_dict = {
             "accident_card": accident_card_data,
-            "can_solve": accident_card_data.get("is_complete", True) if accident_card_data else True,
-            "missing_info": accident_card_data.get("missing_fields", []) if accident_card_data else [],
+            "can_solve": not is_incomplete,
+            "missing_info": missing_fields,
             "llm_response_type": "llm_real"
         }
 
-        # 更新会话状态
+        # 更新会话状态（handle() 内部已同步，这里额外更新 layer1_result）
         session_mgr.update_layer_result(session_id, 1, result_dict)
 
         # 获取更新后的会话状态
@@ -1803,29 +1798,25 @@ def workflow_continue():
                 "message": "会话不存在或已过期"
             })
 
-        # 检查信息是否完整
-        is_complete = accident_card_data.get("is_complete", True) if accident_card_data else True
-        missing_fields = accident_card_data.get("missing_fields", []) if accident_card_data else []
-
         # 构建响应
         response = {
             "success": True,
             "session_id": session_id,
-            "current_layer": 1,
+            "current_layer": 1 if is_incomplete else 4,
             "progress": status["progress"],
             "messages": status["messages"],
             "layer1_result": result_dict,
             "agent_result": {
-                "success": agent_result.success,
-                "recognized_scenario": agent_result.recognized_scenario,
-                "selected_skill": agent_result.selected_skill,
-                "selected_solver": agent_result.selected_solver,
-                "reasoning": agent_result.reasoning,
-                "llm_summary": agent_result.llm_summary
+                "success": handle_result.get("success", False),
+                "recognized_scenario": handle_result.get("recognized_scenario", accident_card_data.get("scene_category", "unknown")),
+                "selected_skill": handle_result.get("selected_skill", ""),
+                "selected_solver": handle_result.get("selected_solver", ""),
+                "reasoning": handle_result.get("reasoning", ""),
+                "llm_summary": handle_result.get("message", "")
             }
         }
 
-        if not is_complete and missing_fields:
+        if is_incomplete and missing_fields:
             response["needs_more_info"] = True
             response["missing_fields"] = missing_fields
             response["message"] = f"信息仍不完整，请继续补充：{', '.join(missing_fields)}"

@@ -15,6 +15,8 @@ from enum import Enum
 import math
 import logging
 
+from config import DispatchEnvConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -297,9 +299,10 @@ class ExpertMetricsCalculator:
         ]
         
         if high_priority_trains:
+            on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
             on_time_count = sum(
                 1 for tid in high_priority_trains
-                if train_delays[tid] < 300  # 5分钟内算准点
+                if train_delays[tid] < on_time_threshold
             )
             metrics.high_priority_on_time_rate = on_time_count / len(high_priority_trains)
     
@@ -428,6 +431,7 @@ class ExpertMetricsCalculator:
         if len(train_first_deps) >= 2:
             first_last_trains = [train_first_deps[0][0], train_first_deps[-1][0]]
         
+        on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
         if first_last_trains:
             on_time_count = 0
             for train_id in first_last_trains:
@@ -436,7 +440,7 @@ class ExpertMetricsCalculator:
                         stop.get("delay_seconds", 0)
                         for stop in optimized_schedule[train_id]
                     )
-                    if max_delay < 300:  # 5分钟内算准点
+                    if max_delay < on_time_threshold:
                         on_time_count += 1
             
             metrics.first_last_train_on_time = on_time_count / len(first_last_trains)
@@ -455,7 +459,7 @@ class ExpertMetricsCalculator:
                         stop.get("delay_seconds", 0)
                         for stop in optimized_schedule[train_id]
                     )
-                    if max_delay < 300:
+                    if max_delay < on_time_threshold:
                         on_time_count += 1
             
             metrics.long_distance_on_time_rate = on_time_count / len(long_distance_trains)
@@ -700,8 +704,9 @@ class ExpertEvaluationReport:
         m = self.metrics
         
         # 延误点评
-        if m.max_delay_seconds < 300:
-            comments.append("延误控制优秀，最大延误控制在5分钟以内。")
+        on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
+        if m.max_delay_seconds < on_time_threshold:
+            comments.append("延误控制优秀，最大延误控制在准点阈值以内。")
         elif m.max_delay_seconds < 600:
             comments.append("延误控制良好，但仍有优化空间。")
         else:

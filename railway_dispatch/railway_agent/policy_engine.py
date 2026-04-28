@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 策略引擎
+
+【实现类型】规则驱动（安全层）
+【设计定位】独立于 LLM 的规则安全层，对 L4 评估结果做最终决策。
+  LLM 无权覆盖 PolicyEngine 的决策结果，确保系统安全性和可审计性。
+【规则内容】基于场景类型的阈值判定（max_delay_minutes, min_feasibility_score, max_risk_level）
+
 根据结构化评估结果做最终决策（是否采用主解/回退基线/重新求解）
 v3.2: 阈值参数化
 """
@@ -64,8 +70,9 @@ def load_policy_thresholds_from_env():
 
 class PolicyEngine:
     """
-    策略引擎
-    根据评估结果做最终决策，LLM 无权覆盖决策结果
+    策略引擎（【规则安全层】）
+    根据评估结果做最终决策，LLM 无权覆盖决策结果。
+    本层为纯规则实现，独立于 LLM，确保决策的可审计性和安全性。
     v3.2: 阈值从配置读取
     """
     
@@ -255,7 +262,7 @@ class PolicyEngine:
         
         return self.make_decision(
             is_successful=is_successful,
-            validation_result=None,  # TODO: 获取验证结果
+            validation_result=None,  # 【设计说明】验证由 L3 求解层和 L4 评估层负责，PolicyEngine 基于评估结果做最终决策
             evaluation_result=evaluation_result,
             solver_metrics=solver_metrics,
             risk_warnings=risk_warnings,

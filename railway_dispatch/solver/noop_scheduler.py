@@ -2,38 +2,25 @@
 """
 铁路调度系统 - NoOp（基线/无操作）调度器模块
 不做任何调整，仅返回原始时刻表和初始延误
-这是调度优化的基线/基准
+
+这是调度优化的基线/基准，用于对比其他调度算法的效果
 """
 
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from typing import List, Dict, Any
 import time
 import logging
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from solver.base import BaseSolver, SolveResult
 from models.data_models import Train, Station, DelayInjection
+from config import DispatchEnvConfig
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class SolveResult:
-    """求解结果数据类"""
-    success: bool
-    optimized_schedule: Dict[str, List[Dict]]
-    delay_statistics: Dict[str, Any]
-    computation_time: float
-    message: str = ""
-
-
-class NoOpScheduler:
+class NoOpScheduler(BaseSolver):
     """
     基线调度器（No-Op）
     不做任何调整，仅返回原始时刻表和初始延误
-    这是调度优化的基线/基准，用于对比其他调度算法的效果
     """
 
     def __init__(
@@ -42,9 +29,8 @@ class NoOpScheduler:
         stations: List[Station],
         **kwargs
     ):
-        self.trains = trains
-        self.stations = stations
-        self.station_names = {s.station_code: s.station_name for s in stations}
+        # NoOp 不需要 headway/min_stop_time，但保持接口统一
+        super().__init__(trains, stations, **kwargs)
 
     def solve(
         self,
@@ -53,45 +39,32 @@ class NoOpScheduler:
     ) -> SolveResult:
         """
         执行调度优化（NoOp不做任何优化）
-
-        Args:
-            delay_injection: 延误注入信息
-            objective: 优化目标（NoOp忽略此参数）
-
-        Returns:
-            SolveResult: 调度结果
         """
         start_time = time.time()
 
         # 获取原始时刻表
         schedule = self.get_original_schedule()
 
-        # 收集所有延误信息
-        all_delays = []
-
         # 应用初始延误（只影响注入站及后续，不做传播）
+        all_delays = []
         for injected in delay_injection.injected_delays:
             train_id = injected.train_id
             initial_delay = injected.initial_delay_seconds
 
             if train_id in schedule:
-                # 找到注入站在列车时刻表中的位置
                 train_stops = schedule[train_id]
                 injected_station = injected.location.station_code
 
                 found_injected = False
                 for stop in train_stops:
                     if stop["station_code"] == injected_station:
-                        # 从该站开始应用延误
                         stop["delay_seconds"] = initial_delay
                         all_delays.append(initial_delay)
                         found_injected = True
                     elif found_injected:
-                        # 注入站之后的站点也受影响
                         stop["delay_seconds"] = initial_delay
                         all_delays.append(initial_delay)
                     else:
-                        # 注入站之前的站点无延误
                         all_delays.append(0)
 
         # 统计实际有延误的列车数（与FCFS/MaxDelayFirst口径一致）
@@ -104,15 +77,28 @@ class NoOpScheduler:
 
         # 计算延误统计
         max_delay_val = max(all_delays) if all_delays else 0
-        # 【修复】avg_delay 使用受影响列车数作为分母，与高铁调度行业标准一致
-        avg_delay = sum(all_delays) / len(final_affected_trains) if final_affected_trains else 0
+        # 【修复】avg_delay 使用受影响列车的平均最大延误，与 MetricsDefinition.calculate_metrics() 口径一致
+        affected_train_max_delays = []
+        for train_id in final_affected_trains:
+            train_delays = [s.get("delay_seconds", 0) for s in schedule[train_id]]
+            affected_train_max_delays.append(max(train_delays))
+        avg_delay = sum(affected_train_max_delays) / len(affected_train_max_delays) if affected_train_max_delays else 0
+
+        # 【修复】on_time_rate 与统一标准一致：基于每列车最大延误 < 准点阈值视为准点
+        on_time_threshold = DispatchEnvConfig.on_time_threshold_seconds()
+        train_max_delays = []
+        for train_id, train_stops in schedule.items():
+            delays = [s.get("delay_seconds", 0) for s in train_stops]
+            train_max_delays.append(max(delays) if delays else 0)
+        on_time_count = sum(1 for d in train_max_delays if d < on_time_threshold)
+        on_time_rate = on_time_count / len(train_max_delays) if train_max_delays else 1.0
 
         delay_statistics = {
             "max_delay_seconds": int(max_delay_val),
             "avg_delay_seconds": float(avg_delay),
             "total_delay_seconds": int(sum(all_delays)),
             "affected_trains_count": len(final_affected_trains),
-            "on_time_rate": 1.0 if max_delay_val == 0 else (1.0 - max_delay_val / 3600)
+            "on_time_rate": float(on_time_rate),
         }
 
         computation_time = time.time() - start_time
@@ -122,60 +108,5 @@ class NoOpScheduler:
             optimized_schedule=schedule,
             delay_statistics=delay_statistics,
             computation_time=computation_time,
-            message="基线调度器：仅应用初始延误，不做传播优化"
+            message="基线调度器：仅应用初始延误，不做传播优化",
         )
-
-    def get_original_schedule(self) -> Dict[str, List[Dict]]:
-        """获取原始时刻表"""
-        schedule = {}
-        for train in self.trains:
-            stops = []
-            if train.schedule and train.schedule.stops and isinstance(train.schedule.stops, (list, tuple)):
-                for stop in train.schedule.stops:
-                    if hasattr(stop, 'station_code'):
-                        stops.append({
-                            "station_code": stop.station_code,
-                            "station_name": getattr(stop, 'station_name', stop.station_code),
-                            "arrival_time": getattr(stop, 'arrival_time', ''),
-                            "departure_time": getattr(stop, 'departure_time', ''),
-                            "delay_seconds": 0
-                        })
-            schedule[train.train_id] = stops
-        return schedule
-
-
-# 测试代码
-if __name__ == "__main__":
-    from models.data_loader import get_trains_pydantic, get_stations_pydantic, use_real_data
-    from models.data_models import DelayInjection, InjectedDelay, DelayLocation
-
-    use_real_data(True)
-    trains = get_trains_pydantic()[:10]
-    stations = get_stations_pydantic()
-
-    # 创建调度器
-    scheduler = NoOpScheduler(trains, stations)
-
-    # 创建延误注入
-    delay_injection = DelayInjection(
-        scenario_type="temporary_speed_limit",
-        scenario_id="TEST_001",
-        injected_delays=[
-            InjectedDelay(
-                train_id="G1215",
-                location=DelayLocation(
-                    location_type="station",
-                    station_code="XSD"
-                ),
-                initial_delay_seconds=300,  # 5分钟延误
-                timestamp="2024-01-01T10:00:00"
-            )
-        ],
-        affected_trains=["G1215"]
-    )
-
-    # 执行调度
-    result = scheduler.solve(delay_injection)
-    print(f"成功: {result.success}")
-    print(f"消息: {result.message}")
-    print(f"延误统计: {result.delay_statistics}")

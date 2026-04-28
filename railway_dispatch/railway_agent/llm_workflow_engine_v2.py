@@ -134,29 +134,35 @@ class LLMWorkflowEngineV2:
                 enable_rag=enable_rag
             )
 
-            accident_card = l1_result["accident_card"]
+            accident_card = l1_result.get("accident_card")
+            if accident_card is None:
+                raise ValueError("L1 未返回 accident_card")
 
             # 检查信息完整性
             if l1_result.get("needs_more_info", False):
                 missing_fields = l1_result.get("missing_questions", [])
-                missing_info = [q["question"] for q in missing_fields]
-                logger.debug(f"[对话工作流] 信息不完整，缺少: {missing_fields}")
+                # 【修复】兼容字典列表和字符串列表两种格式
+                if missing_fields and isinstance(missing_fields[0], dict):
+                    missing_info = [q.get("question", str(q)) for q in missing_fields]
+                else:
+                    missing_info = [str(q) for q in missing_fields]
+                logger.debug(f"[对话工作流] 信息不完整，缺少: {missing_info}")
 
                 # 保存对话状态
                 self._dialogue_states[dialogue_id].update({
                     "accident_card": accident_card.model_dump(),
-                    "missing_info": missing_fields,
+                    "missing_info": missing_info,
                     "l1_result": l1_result,
                     "status": "waiting_for_info"
                 })
 
                 # 生成询问问题
-                questions = self._generate_questions(missing_fields)
+                questions = self._generate_questions(missing_info)
 
                 return {
                     "dialogue_id": dialogue_id,
                     "status": "incomplete",
-                    "message": f"信息不完整，请补充以下信息: {', '.join(missing_fields)}",
+                    "message": f"信息不完整，请补充以下信息: {', '.join(missing_info)}",
                     "questions": questions,
                     "current_accident_card": accident_card.model_dump(),
                     "response_source": l1_result.get("response_source", "unknown")
@@ -380,15 +386,18 @@ class LLMWorkflowEngineV2:
                 enable_rag=enable_rag
             )
 
-            accident_card = l1_result["accident_card"]
+            accident_card = l1_result.get("accident_card")
+            if accident_card is None:
+                raise ValueError("L1 未返回 accident_card")
 
             # 检查是否可以进入求解
-            if not accident_card.is_complete:
-                logger.debug(f"信息不完整，无法求解: {accident_card.missing_fields}")
+            if not getattr(accident_card, 'is_complete', False):
+                missing = getattr(accident_card, 'missing_fields', [])
+                logger.debug(f"信息不完整，无法求解: {missing}")
                 return self._build_incomplete_result(
                     user_input,
                     accident_card,
-                    accident_card.missing_fields
+                    missing
                 )
 
             # ========== 步骤1.5：构建 NetworkSnapshot ==========
@@ -396,10 +405,13 @@ class LLMWorkflowEngineV2:
             try:
                 canonical_request = self._build_canonical_request(accident_card, user_input)
                 network_snapshot = build_network_snapshot(canonical_request)
-                logger.info(
-                    f"[Snapshot] 构建成功: 候选列车 {len(network_snapshot.candidate_train_ids)} 列, "
-                    f"走廊 {network_snapshot.solving_window.get('observation_corridor', 'N/A')}"
-                )
+                if network_snapshot is None:
+                    logger.warning("[Snapshot] 构建返回 None，使用全量数据回退")
+                else:
+                    logger.info(
+                        f"[Snapshot] 构建成功: 候选列车 {len(network_snapshot.candidate_train_ids)} 列, "
+                        f"走廊 {network_snapshot.solving_window.get('observation_corridor', 'N/A')}"
+                    )
             except Exception as e:
                 logger.warning(f"[Snapshot] 构建失败，使用全量数据回退: {e}")
 
@@ -746,11 +758,11 @@ class LLMWorkflowEngineV2:
             message=f"调度完成: {l4_result.get('policy_decision', {}).get('reason', '') if isinstance(l4_result.get('policy_decision'), dict) else '调度完成'}",
             debug_trace={
                 "user_input": user_input,
-                "accident_card": accident_card.model_dump(),
-                "planning_intent": l2_result["planning_intent"],
-                "skill_dispatch": l2_result["skill_dispatch"],
-                "solver_result": l3_result["skill_execution_result"],
-                "evaluation_report": l4_result.get("evaluation_report").model_dump() if l4_result.get("evaluation_report") else None,
+                "accident_card": accident_card.model_dump() if accident_card and hasattr(accident_card, 'model_dump') else accident_card,
+                "planning_intent": l2_result.get("planning_intent", "unknown"),
+                "skill_dispatch": l2_result.get("skill_dispatch", {}),
+                "solver_result": l3_result.get("skill_execution_result", {}),
+                "evaluation_report": l4_result.get("evaluation_report").model_dump() if l4_result.get("evaluation_report") and hasattr(l4_result.get("evaluation_report"), 'model_dump') else l4_result.get("evaluation_report"),
                 "policy_decision": l4_result.get("policy_decision"),
                 "llm_summary": l4_result.get("llm_summary", ""),
                 "natural_language_plan": l4_result.get("natural_language_plan", ""),
@@ -860,12 +872,13 @@ class LLMWorkflowEngineV2:
         missing_info: List[str]
     ) -> WorkflowResult:
         """构建信息不完整结果"""
+        card_data = accident_card.model_dump() if accident_card and hasattr(accident_card, 'model_dump') else str(accident_card)
         return WorkflowResult(
             success=False,
             message=f"信息不完整，缺少: {', '.join(missing_info)}",
             debug_trace={
                 "user_input": user_input,
-                "accident_card": accident_card.model_dump(),
+                "accident_card": card_data,
                 "missing_info": missing_info
             }
         )

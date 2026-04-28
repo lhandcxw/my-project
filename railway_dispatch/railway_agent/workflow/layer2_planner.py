@@ -190,6 +190,13 @@ class Layer2Planner:
             if not affected:
                 affected = best_result.get("affected_trains", [])
 
+            # 【修复】添加 solver_type 以兼容工作流引擎（llm_workflow_engine_v2.py:724）
+            best_result = dict(best_result)
+            best_result["solver_type"] = best_result.get("solver", "unknown")
+
+            # 提取位置信息（供L4及前端使用）
+            loc = accident_card.location_name or accident_card.location_code or "未知位置"
+
             result["skill_execution_result"] = {
                 "success": best_result.get("success", False),
                 "total_delay_minutes": best_result.get("total_delay_minutes", 0),
@@ -198,12 +205,17 @@ class Layer2Planner:
                 "affected_trains_count": best_result.get("affected_trains_count", 0),
                 "affected_trains": affected,
                 "solving_time_seconds": best_result.get("solving_time_seconds", 0),
-                "solving_time": best_result.get("solving_time_seconds", 0),  # 前端兼容
+                "solving_time": best_result.get("solving_time_seconds", 0),  # L4兼容
                 "solver": best_result.get("solver", "unknown"),
-                "skill_name": best_result.get("solver", "unknown"),  # 前端兼容
+                "solver_type": best_result.get("solver_type", "unknown"),
+                "skill_name": best_result.get("solver", "unknown"),
                 "adjustments": best_result.get("adjustments", []),
                 "optimized_schedule": opt_schedule,
                 "on_time_rate": best_result.get("on_time_rate", 1.0),
+                "location": loc,
+                "location_name": accident_card.location_name or "",
+                "location_code": accident_card.location_code or "",
+                "scenario_type": accident_card.scene_category or ""
             }
             result["solver_response"] = best_result
 
@@ -217,7 +229,8 @@ class Layer2Planner:
 
         try:
             # 尝试从响应内容中提取关键决策
-            content = final_response.get("assistant_message", {}).get("content", "")
+            assistant_msg = final_response.get("assistant_message") or {}
+            content = assistant_msg.get("content", "")
             if content:
                 # 取前200字符作为规划意图
                 return content[:200] if len(content) > 200 else content

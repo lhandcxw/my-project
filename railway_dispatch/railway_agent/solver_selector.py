@@ -2,10 +2,16 @@
 """
 求解器选择与评分模块（Solver Selector）
 
+【实现类型】规则驱动（推荐方法）+ 计算驱动（评分方法）
+【设计定位】score_result 和 find_pareto_front 为数学计算（非AI）；
+  recommend_solver 为基于场景特征的条件规则推荐，作为 LLM 决策的参考基准。
+【实验阶段策略】L2 层优先使用 LLM Function Calling 选择求解器，
+  SolverSelector.recommend_solver 仅作为规则对比基线或 LLM 失败时的兜底。
+
 职责：
-  1. 多目标评分：对求解结果进行基于优化目标的综合评分
-  2. Pareto分析：识别多目标空间中的非支配解集
-  3. 求解器推荐：基于AccidentCard特征和 urgency 推荐求解器与参数
+  1. 多目标评分：对求解结果进行基于优化目标的综合评分（计算驱动）
+  2. Pareto分析：识别多目标空间中的非支配解集（计算驱动）
+  3. 求解器推荐：基于AccidentCard特征和 urgency 推荐求解器与参数（规则驱动）
 
 设计原则：
   - 高内聚：所有求解器选择逻辑集中于此，消除 layer2_planner/skills 中的重复/不一致
@@ -25,6 +31,8 @@ class SolverSelector:
     """
     求解器选择器
 
+    【实现类型】score_result/find_pareto_front 为数学计算；
+      recommend_solver 为基于阈值的规则推荐（兜底用途）。
     统一求解器评分、Pareto分析和推荐逻辑。
     """
 
@@ -197,9 +205,8 @@ class SolverSelector:
         time_budget_seconds: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        基于事故特征推荐求解器和优化目标
-
-        替代 layer2_planner._rule_fallback 的硬编码逻辑。
+        【规则方法】基于事故特征推荐求解器和优化目标
+        作为 LLM 决策的规则对比基线；LLM 失败时由 L2._rule_fallback 调用。
 
         Args:
             accident_card_dict: AccidentCard 的字典表示

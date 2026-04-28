@@ -24,6 +24,12 @@ from .adapters.skill_registry import SkillRegistry, get_skill_registry
 from .adapters.skills import DispatchSkillOutput
 from .workflow.intent_router import IntentRouter
 
+try:
+    from .session_manager import get_session_manager
+    _SESSION_MANAGER_AVAILABLE = True
+except ImportError:
+    _SESSION_MANAGER_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,156 +104,121 @@ class LLMAgent:
         logger.debug(f"  - 提供商: {LLMConfig.get_provider_name()}")
         logger.debug(f"  - 模型: {self.model_name}")
 
-    def analyze(self, delay_injection: Dict[str, Any], user_prompt: str = "") -> AgentResult:
+    def _build_prompt_from_delay_injection(self, delay_injection: Dict[str, Any]) -> str:
         """
-        分析场景并执行调度（使用 WorkflowEngine 执行完整工作流）
-
-        Args:
-            delay_injection: 延误注入数据
-            user_prompt: 用户输入的原始文本
-
-        Returns:
-            AgentResult: 执行结果
+        将结构化 DelayInjection 转换为自然语言描述，供 handle() 统一入口使用
+        【设计原则】所有入口最终都通过自然语言进入 handle()，确保 L1 提取的一致性
         """
-        start_time = time.time()
+        scenario_type = delay_injection.get("scenario_type", "")
+        injected_delays = delay_injection.get("injected_delays", [])
+        scenario_params = delay_injection.get("scenario_params", {})
 
-        try:
-            # 使用 WorkflowEngine 执行完整工作流（方案A推荐）
-            from railway_agent.llm_workflow_engine_v2 import create_workflow_engine
+        parts = []
+        if scenario_type == "temporary_speed_limit":
+            limit_speed = scenario_params.get("limit_speed_kmh", 200)
+            duration = scenario_params.get("duration_minutes", 120)
+            section = scenario_params.get("affected_section", "")
+            parts.append(f"因天气原因导致{section}区间临时限速{limit_speed}km/h，预计持续{duration}分钟")
+        elif scenario_type == "sudden_failure":
+            if injected_delays:
+                d = injected_delays[0]
+                train_id = d.get("train_id", "")
+                station = d.get("location", {}).get("station_code", "")
+                delay_sec = d.get("initial_delay_seconds", 0)
+                delay_min = delay_sec // 60
+                parts.append(f"{train_id}在{station}站发生突发故障，预计延误{delay_min}分钟")
+        elif scenario_type == "section_interrupt":
+            if injected_delays:
+                d = injected_delays[0]
+                train_id = d.get("train_id", "")
+                station = d.get("location", {}).get("station_code", "")
+                delay_min = d.get("initial_delay_seconds", 0) // 60
+                parts.append(f"{train_id}在{station}站附近区间因施工封锁，预计延误{delay_min}分钟")
+        else:
+            if injected_delays:
+                d = injected_delays[0]
+                train_id = d.get("train_id", "")
+                station = d.get("location", {}).get("station_code", "")
+                delay_min = d.get("initial_delay_seconds", 0) // 60
+                parts.append(f"{train_id}在{station}站发生异常，预计延误{delay_min}分钟")
 
-            logger.debug("[Agent] 使用 WorkflowEngine 执行完整 L1-L4 工作流")
+        return " ".join(parts) if parts else "请分析当前调度场景并生成调整方案"
 
-            workflow_engine = create_workflow_engine()
-            workflow_result = workflow_engine.execute_full_workflow(
-                user_input=user_prompt or delay_injection.get("raw_input", ""),
-                canonical_request=None,
-                enable_rag=True
-            )
-
-            if not workflow_result.success:
-                raise RuntimeError(f"工作流执行失败: {workflow_result.message}")
-
-# 从工作流结果提取信息
-            accident_card_data = workflow_result.debug_trace.get("accident_card", {})
-            planning_intent = workflow_result.debug_trace.get("planning_intent", "unknown")
-            skill_dispatch = workflow_result.debug_trace.get("skill_dispatch", {})
-
-            # 处理 skill_dispatch 可能是字符串的情况
-            if isinstance(skill_dispatch, str):
-                selected_solver = skill_dispatch
-            elif isinstance(skill_dispatch, dict):
-                selected_solver = skill_dispatch.get("主技能", skill_dispatch.get("solver", "unknown"))
-            else:
-                selected_solver = "unknown"
-
-            # 映射场景类型
-            scene_mapping = {
-                "临时限速": "temporary_speed_limit",
-                "突发故障": "sudden_failure",
-                "区间封锁": "section_interrupt"
-            }
-            recognized_scenario = scene_mapping.get(accident_card_data.get("scene_category", ""), "unknown")
-
-            # 所有场景统一使用通用求解技能
-            selected_skill = "dispatch_solve_skill"
-
-            # 提取 policy_decision
-            policy_decision = workflow_result.debug_trace.get("policy_decision", {})
-            # 处理可能是对象或字典的情况
-            if hasattr(policy_decision, 'decision'):
-                decision_value = policy_decision.decision.value if hasattr(policy_decision.decision, 'value') else str(policy_decision.decision)
-            elif isinstance(policy_decision, dict):
-                decision_value = policy_decision.get('decision', 'unknown')
-                if hasattr(decision_value, 'value'):
-                    decision_value = decision_value.value
-            else:
-                decision_value = 'unknown'
-
-            # 提取 LLM 评估摘要
-            llm_summary = workflow_result.debug_trace.get("llm_summary", "")
-
-            # 构建推理过程
-            reasoning_parts = [
-                f"【场景识别】{accident_card_data.get('scene_category', '未知')} - {accident_card_data.get('fault_type', '未知')}",
-                f"【位置信息】{accident_card_data.get('location_name', '未知')} ({accident_card_data.get('location_code', '未知')})",
-                f"【影响列车】{', '.join(accident_card_data.get('affected_train_ids', []))}",
-                f"【规划意图】{planning_intent}",
-                f"【求解器】{selected_solver}",
-                f"【评估结果】{decision_value}"
-            ]
-            reasoning = "\n".join(reasoning_parts)
-
-            # 提取调度结果
-            solver_result = workflow_result.solver_result
-            if solver_result and solver_result.success:
-                dispatch_result = DispatchSkillOutput(
-                    optimized_schedule=solver_result.schedule,
-                    delay_statistics=solver_result.metrics,
-                    computation_time=solver_result.solving_time_seconds,
-                    success=True,
-                    message="调度完成",
-                    skill_name=selected_skill
-                )
-            else:
-                error_msg = getattr(solver_result, 'error_message', None) if solver_result else None
-                dispatch_result = DispatchSkillOutput(
-                    optimized_schedule=[],
-                    delay_statistics={},
-                    computation_time=0,
-                    success=False,
-                    message=error_msg if error_msg else "工作流执行失败",
-                    skill_name=selected_skill
-                )
-
-            computation_time = time.time() - start_time
-
-            # 提取L4层评估报告（包含高铁专用指标）
-            evaluation_report = workflow_result.debug_trace.get("evaluation_report", {})
-
-            # 提取自然语言调度方案
-            natural_language_plan = workflow_result.debug_trace.get("natural_language_plan", "")
-
-            # 提取调度员操作指南
-            operations_guide = workflow_result.debug_trace.get("dispatcher_operations", {})
-
-            # 构建AgentResult
-            agent_result = AgentResult(
-                success=workflow_result.success,
-                recognized_scenario=recognized_scenario,
-                selected_skill=selected_skill,
-                selected_solver=selected_solver,
-                reasoning=reasoning,
-                llm_summary=llm_summary,
-                dispatch_result=dispatch_result,
-                model_response=reasoning,
-                computation_time=computation_time,
-                model_used=self.model_name,
-                evaluation_report=evaluation_report,
-                natural_language_plan=natural_language_plan,  # 添加自然语言调度方案
-                operations_guide=operations_guide  # 添加调度员操作指南
-            )
-
-            # 保存工作流结果供后续使用（如调度器比较）
-            agent_result._workflow_result = workflow_result
-            agent_result._accident_card = accident_card_data
-            
-            return agent_result
-
-        except Exception as e:
-            logger.exception(f"LLM Agent 执行错误: {str(e)}")
+    def _convert_handle_result_to_agent_result(self, handle_result: Dict[str, Any], model_used: str, computation_time: float) -> AgentResult:
+        """
+        将 handle() 返回的字典转换为 AgentResult，保持向后兼容
+        """
+        if not handle_result.get("success", False):
             return AgentResult(
                 success=False,
-                recognized_scenario="error",
+                recognized_scenario=handle_result.get("recognized_scenario", "error"),
                 selected_skill="",
                 selected_solver="",
                 reasoning="",
                 llm_summary="",
                 dispatch_result=None,
-                model_response="",
-                computation_time=time.time() - start_time,
-                model_used=self.model_name,
-                error_message=str(e)
+                model_response=handle_result.get("message", ""),
+                computation_time=computation_time,
+                model_used=model_used,
+                error_message=handle_result.get("message", ""),
             )
+
+        accident_card = handle_result.get("accident_card", {})
+        dispatch_metrics = handle_result.get("dispatch_metrics", {})
+        optimized_schedule = handle_result.get("optimized_schedule", {})
+        selected_solver = handle_result.get("selected_solver", "unknown")
+
+        dispatch_result = DispatchSkillOutput(
+            optimized_schedule=optimized_schedule,
+            delay_statistics=dispatch_metrics,
+            computation_time=dispatch_metrics.get("computation_time", 0),
+            success=True,
+            message=handle_result.get("message", "调度完成"),
+            skill_name="dispatch_solve_skill",
+        )
+
+        reasoning = handle_result.get("reasoning", "")
+        return AgentResult(
+            success=True,
+            recognized_scenario=handle_result.get("recognized_scenario", "unknown"),
+            selected_skill="dispatch_solve_skill",
+            selected_solver=selected_solver,
+            reasoning=reasoning,
+            llm_summary=handle_result.get("message", ""),
+            dispatch_result=dispatch_result,
+            model_response=reasoning,
+            computation_time=computation_time,
+            model_used=model_used,
+            evaluation_report=handle_result.get("evaluation_report", {}),
+            natural_language_plan=handle_result.get("natural_language_plan", ""),
+            operations_guide=handle_result.get("operations_guide", {}),
+        )
+
+    def analyze(self, delay_injection: Dict[str, Any], user_prompt: str = "",
+                time_budget_seconds: float = 120.0) -> AgentResult:
+        """
+        【已弃用 / 内部委托】analyze() 现已委托给统一入口 handle()
+
+        为保持向后兼容，本方法将结构化 delay_injection 转为自然语言 prompt，
+        然后调用 handle() 执行完整 L1-L4 工作流。
+
+        新代码请直接使用 agent.handle(user_input=...) 作为统一入口。
+        """
+        start_time = time.time()
+
+        prompt = user_prompt or self._build_prompt_from_delay_injection(delay_injection)
+
+        handle_result = self.handle(
+            user_input=prompt,
+            time_budget_seconds=time_budget_seconds,
+        )
+
+        computation_time = time.time() - start_time
+
+        return self._convert_handle_result_to_agent_result(
+            handle_result, self.model_name, computation_time
+        )
+
 
     def analyze_with_comparison(
         self,
@@ -256,7 +227,8 @@ class LLMAgent:
         comparison_criteria: str = "balanced"
     ) -> AgentResult:
         """
-        分析场景并执行调度（带调度器比较）
+        【LLM驱动 + 规则计算】分析场景并执行调度（带调度器比较）
+        LLM 完成 L1-L4 工作流；SchedulerComparator 执行多求解器规则计算对比。
 
         Args:
             delay_injection: 延误注入数据（或仅包含user_prompt的字典）
@@ -641,9 +613,10 @@ class LLMAgent:
     # ================================================================
 
     def handle(self, user_input: str, session_history: Optional[List[Dict[str, str]]] = None,
-               time_budget_seconds: float = 300.0) -> Dict[str, Any]:
+               time_budget_seconds: float = 300.0,
+               session_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        全局Agent统一入口（UAO-RD架构）
+        【统一入口 / LLM驱动】全局Agent统一入口（UAO-RD架构）
 
         流程：
         1. L1提取 + 意图分类
@@ -667,6 +640,20 @@ class LLMAgent:
             for msg in session_history:
                 if msg not in merged_history:
                     merged_history.append(msg)
+
+        # 如果提供了 session_id，从 SessionManager 加载持久化历史
+        if session_id and _SESSION_MANAGER_AVAILABLE:
+            try:
+                session_mgr = get_session_manager()
+                status = session_mgr.get_session_status(session_id)
+                if status:
+                    persisted_msgs = status.get("messages", [])
+                    for msg in persisted_msgs:
+                        if msg.get("role") in ("user", "assistant") and msg not in merged_history:
+                            merged_history.append(msg)
+            except Exception as e:
+                logger.warning(f"[Agent] 加载会话历史失败: {e}")
+
         # 截断到最近10轮，防止过长
         merged_history = merged_history[-20:]
 
@@ -681,7 +668,7 @@ class LLMAgent:
             if intent in ("query", "chat", "overview"):
                 l1_result = {"intent": intent, "accident_card": None, "can_solve": False}
                 result = self._light_mode(user_input, l1_result, merged_history, deadline)
-                self._update_session_state(user_input, result, None)
+                self._update_session_state(user_input, result, None, session_id)
                 return result
 
             # Step 2: dispatch 意图进入 Heavy Mode
@@ -697,7 +684,7 @@ class LLMAgent:
                 accident_card_data.intent = intent
 
             # Fix #8: 更新跨模式会话状态
-            self._update_session_state(user_input, result, accident_card_data)
+            self._update_session_state(user_input, result, accident_card_data, session_id)
             return result
 
         except TimeoutError as e:
@@ -721,8 +708,9 @@ class LLMAgent:
                 "computation_time": time.time() - start_time
             }
 
-    def _update_session_state(self, user_input: str, result: Dict[str, Any], accident_card: Any):
-        """更新内部会话状态（Fix #8）"""
+    def _update_session_state(self, user_input: str, result: Dict[str, Any], accident_card: Any,
+                               session_id: Optional[str] = None):
+        """更新内部会话状态（Fix #8），并同步到 SessionManager"""
         mode = result.get("mode", "unknown")
         self.session_state["turn_count"] = self.session_state.get("turn_count", 0) + 1
         self.session_state["last_mode"] = mode
@@ -745,6 +733,22 @@ class LLMAgent:
                 "eval_grade": result.get("eval_grade"),
                 "timestamp": time.time(),
             }
+        # 同步到 SessionManager（如果提供了 session_id）
+        if session_id and _SESSION_MANAGER_AVAILABLE:
+            try:
+                session_mgr = get_session_manager()
+                session_mgr.update_messages(session_id, self.session_state.get("history", []))
+                if mode == "heavy" and result.get("success"):
+                    session_mgr.update_layer_result(session_id, 4, {
+                        "success": True,
+                        "evaluation_report": result.get("evaluation_report"),
+                        "accident_card": accident_card,
+                        "dispatch_metrics": result.get("dispatch_metrics"),
+                    })
+                    session_mgr.complete_session(session_id)
+            except Exception as e:
+                logger.warning(f"[Agent] 同步会话状态到 SessionManager 失败: {e}")
+
         logger.debug(f"[Agent] 会话状态更新: turn={self.session_state['turn_count']}, mode={mode}")
 
     def _light_mode(self, user_input: str, l1_result: Dict[str, Any],
@@ -780,10 +784,21 @@ class LLMAgent:
             )
 
         system_prompt = (
-            "你是京广高铁智能调度系统的信息查询助手。"
-            "你可以调用工具查询列车状态、时刻表、车站负荷、延误传播等信息。"
-            "请根据用户问题选择合适的工具获取数据，然后以专业、简洁的方式回答。"
-            "回复控制在200字以内。"
+            "你是京广高铁智能调度系统的专业信息查询助手，服务于京广高铁（北京西→安阳东，13站，147列列车）的调度员。\n"
+            "你的职责是根据用户问题，精准调用工具获取数据，并以专业、简洁的方式回答。\n\n"
+            "【工具使用规范】\n"
+            "1. get_train_status：查询指定列车的运行状态、停站信息、当前位置。用户提到具体车次号时使用。\n"
+            "2. query_timetable：查询指定车站的时刻表、列车密度。用户询问'某站有哪些车'、'几点到'时使用。\n"
+            "3. station_load_skill：分析车站负荷、高峰时段、接发车能力。用户询问'某站忙不忙'、'负荷'时使用。\n"
+            "4. delay_propagation_skill：分析延误传播影响。用户询问'某车晚点会影响哪些车'时使用。\n"
+            "5. quick_line_overview：全线快速概览。用户询问'全线情况'、'整体状态'时使用。\n"
+            "6. check_impact_cascade：快速检查延误连锁反应。用户询问'连锁反应'、'波及范围'时使用。\n\n"
+            "【回答规范】\n"
+            "- 优先使用工具获取实时数据，不要凭知识猜测\n"
+            "- 回答简洁准确，突出重点指标（时间、车次、延误分钟数）\n"
+            "- 如果用户询问此前调度结果，直接引用上下文数据，无需重复调用工具\n"
+            "- 多列车查询可简要列表，单列车查询可详细到每个站点\n"
+            "- 涉及安全数据（追踪间隔、限速值）必须精确到具体数字\n"
             + (f"\n{context_hint}" if context_hint else "")
         )
 
@@ -907,6 +922,19 @@ class LLMAgent:
             )
 
             if not workflow_result.success:
+                # 区分信息不完整与真正失败
+                debug_trace = getattr(workflow_result, "debug_trace", {}) or {}
+                missing_info = debug_trace.get("missing_info", []) if isinstance(debug_trace, dict) else []
+                if missing_info:
+                    return {
+                        "success": True,
+                        "mode": "incomplete",
+                        "needs_more_info": True,
+                        "missing_fields": missing_info,
+                        "accident_card": debug_trace.get("accident_card", {}),
+                        "message": workflow_result.message,
+                        "computation_time": time.time() - start_time
+                    }
                 return {
                     "success": False,
                     "mode": "heavy",
@@ -937,7 +965,44 @@ class LLMAgent:
             affected_trains = []
             affected_trains_count = 0
 
-            if solver_result and solver_result.success:
+            # 【关键修复】兼容 L2 直接求解和 L3 回退两种路径
+            # L2 Agent 直接求解时，指标在 debug_trace["solver_result"]（即 skill_execution_result）中
+            # L3 Solver 求解时，指标在 solver_result.metrics 中（秒级，需转分钟）
+            skill_exec_result = workflow_result.debug_trace.get("solver_result", {})
+            if isinstance(skill_exec_result, dict) and skill_exec_result.get("success"):
+                # 优先使用 skill_execution_result（分钟级，直接可用）
+                dispatch_metrics = {
+                    "max_delay_minutes": skill_exec_result.get("max_delay_minutes", 0),
+                    "avg_delay_minutes": skill_exec_result.get("avg_delay_minutes", 0),
+                    "total_delay_minutes": skill_exec_result.get("total_delay_minutes", 0),
+                    "affected_trains_count": skill_exec_result.get("affected_trains_count", 0),
+                    "affected_trains": skill_exec_result.get("affected_trains", []),
+                    "computation_time": round(
+                        solver_result.solving_time_seconds if solver_result else skill_exec_result.get("solving_time_seconds", 0), 2
+                    ),
+                    "on_time_rate": skill_exec_result.get("on_time_rate", 1.0),
+                    "punctuality_strict": skill_exec_result.get("punctuality_strict", 1.0),
+                    "delay_std_dev": skill_exec_result.get("delay_std_dev", 0.0),
+                    "delay_propagation_depth": skill_exec_result.get("delay_propagation_depth", 0),
+                    "delay_propagation_breadth": skill_exec_result.get("delay_propagation_breadth", 0),
+                    "evaluation_grade": skill_exec_result.get("evaluation_grade", "N"),
+                }
+                optimized_schedule = (
+                    solver_result.schedule if solver_result and isinstance(solver_result.schedule, dict)
+                    else skill_exec_result.get("optimized_schedule", {})
+                )
+                selected_solver = (
+                    solver_result.solver_type if solver_result
+                    else skill_exec_result.get("solver", skill_exec_result.get("skill_name", "unknown"))
+                )
+                affected_trains = skill_exec_result.get("affected_trains", [])
+                affected_trains_count = skill_exec_result.get("affected_trains_count", 0)
+                skill_message = (
+                    solver_result.error_message or workflow_result.message
+                    if solver_result else workflow_result.message
+                )
+            elif solver_result and solver_result.success:
+                # 回退：使用 solver_result.metrics（秒级，需除以60）
                 m = solver_result.metrics if isinstance(solver_result.metrics, dict) else {}
                 dispatch_metrics = {
                     "max_delay_minutes": round(m.get("max_delay_seconds", 0) / 60, 2),

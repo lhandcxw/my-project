@@ -24,6 +24,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from config import DispatchEnvConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,15 +58,11 @@ class HierarchicalSolver:
     result = solver.solve(trains, stations, delay_injection, config)
     """
     
-    # 专家推荐的阈值参数（专家修复版：强化MIP优化效果）
-    MAX_TRAINS_FOR_MIP = 30           # MIP最大列车数
-    MAX_MIP_IMPROVEMENT_MINUTES = 1   # MIP最小改进阈值（分钟）- 降低阈值以更倾向MIP
-    MAX_DELAY_FOR_FCFS_MINUTES = 5    # 小于此值用FCFS即可 - 降低阈值以更多使用MIP
-    MIN_TRAINS_FOR_MIP = 3            # 【专家新增】至少3列车才使用MIP（避免小规模问题过度复杂化）
+    # 阈值参数已从硬编码迁移到 config/dispatch_env.yaml 的 solver.hierarchical 节点
+    # 通过 DispatchEnvConfig 动态读取，支持不重启调整
     
     def __init__(self):
-        self.fcfs_scheduler = None
-        self.mip_scheduler = None
+        pass
     
     def solve(
         self,
@@ -122,8 +120,8 @@ class HierarchicalSolver:
         fcfs_max_delay_seconds = fcfs_delay_stats.get('max_delay_seconds', 0)
         
         # 条件1: 最大延误很小，直接用FCFS
-        if fcfs_max_delay_seconds < self.MAX_DELAY_FOR_FCFS_MINUTES * 60:
-            logger.info(f"[Hierarchical] 最大延误<{self.MAX_DELAY_FOR_FCFS_MINUTES}分钟，使用FCFS结果")
+        if fcfs_max_delay_seconds < DispatchEnvConfig.hierarchical_max_delay_for_fcfs_minutes() * 60:
+            logger.info(f"[Hierarchical] 最大延误<{DispatchEnvConfig.hierarchical_max_delay_for_fcfs_minutes()}分钟，使用FCFS结果")
             return self._build_result(
                 solver_mode=SolverMode.FCFS_ONLY.value,
                 fcfs_result=fcfs_result,
@@ -285,8 +283,8 @@ class HierarchicalSolver:
                        f"减少{improvement:.1f}分钟")
 
             # 如果MIP改进不明显，使用FCFS
-            if improvement < self.MAX_MIP_IMPROVEMENT_MINUTES:
-                logger.info(f"[Hierarchical] MIP改进不足(<{self.MAX_MIP_IMPROVEMENT_MINUTES}分钟)，使用FCFS结果")
+            if improvement < DispatchEnvConfig.hierarchical_max_mip_improvement_minutes():
+                logger.info(f"[Hierarchical] MIP改进不足(<{DispatchEnvConfig.hierarchical_max_mip_improvement_minutes()}分钟)，使用FCFS结果")
                 return self._build_result(
                     solver_mode=SolverMode.FCFS_ONLY.value,
                     fcfs_result=fcfs_result,
@@ -356,10 +354,9 @@ class HierarchicalSolver:
                 elif hasattr(s, 'station_code'):
                     pydantic_stations.append(s)
             
-            if self.fcfs_scheduler is None:
-                self.fcfs_scheduler = FCFSScheduler(pydantic_trains, pydantic_stations)
-            
-            result = self.fcfs_scheduler.solve(pydantic_di)
+            # 【修复】每次创建新实例，避免数据污染
+            fcfs_scheduler = FCFSScheduler(pydantic_trains, pydantic_stations)
+            result = fcfs_scheduler.solve(pydantic_di)
             return result
         except Exception as e:
             # 【专家修复】提供更详细的错误信息
@@ -450,10 +447,9 @@ class HierarchicalSolver:
                 elif hasattr(s, 'station_code'):
                     pydantic_stations.append(s)
             
-            if self.mip_scheduler is None:
-                self.mip_scheduler = MIPScheduler(pydantic_trains, pydantic_stations)
-            
-            result = self.mip_scheduler.solve(pydantic_di, solver_config=solver_config)
+            # 【修复】每次创建新实例，避免数据污染
+            mip_scheduler = MIPScheduler(pydantic_trains, pydantic_stations)
+            result = mip_scheduler.solve(pydantic_di, solver_config=solver_config)
             return result
         except Exception as e:
             # 【专家修复】提供更详细的错误信息，避免直接显示元组等不友好的错误格式
@@ -616,7 +612,7 @@ class HierarchicalSolver:
                 accident_card=SimpleAccidentCard(),
                 all_trains=trains_dict,
                 all_stations=stations_dict,
-                max_trains=self.MAX_TRAINS_FOR_MIP,
+                max_trains=DispatchEnvConfig.hierarchical_max_trains_for_mip(),
                 window_size=window_size  # 动态窗口大小
             )
             
@@ -628,8 +624,8 @@ class HierarchicalSolver:
             for affected_id in affected_train_ids:
                 if affected_id not in selected_train_ids:
                     # 检查是否还能添加（不超过max_trains限制）
-                    if current_mip_count >= self.MAX_TRAINS_FOR_MIP:
-                        logger.warning(f"[Hierarchical] MIP窗口已达上限({self.MAX_TRAINS_FOR_MIP}列)，不再强制添加更多列车")
+                    if current_mip_count >= DispatchEnvConfig.hierarchical_max_trains_for_mip():
+                        logger.warning(f"[Hierarchical] MIP窗口已达上限({DispatchEnvConfig.hierarchical_max_trains_for_mip()}列)，不再强制添加更多列车")
                         break
                     # 查找该列车并添加
                     for t in all_trains:
@@ -725,7 +721,7 @@ class HierarchicalSolver:
         except Exception as e:
             logger.warning(f"[Hierarchical] MIP窗口构建失败: {e}，使用简化裁剪")
             # 简化方案：取前30列 + 确保受影响列车包含
-            selected = all_trains[:self.MAX_TRAINS_FOR_MIP]
+            selected = all_trains[:DispatchEnvConfig.hierarchical_max_trains_for_mip()]
             selected_ids = set()
             for t in selected:
                 if hasattr(t, 'train_id'):
