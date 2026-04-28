@@ -298,6 +298,115 @@ def health_check():
     })
 
 
+def _time_to_minutes(t):
+    """将 'HH:MM' 转换为从 00:00 开始的分钟数"""
+    try:
+        h, m = map(int, t.split(':'))
+        return h * 60 + m
+    except Exception:
+        return 0
+
+
+def _get_train_position(train, current_minutes):
+    """计算列车在当前时刻的位置状态"""
+    stops = train.schedule.stops if train.schedule else []
+    if not stops:
+        return None
+
+    first_arrival = _time_to_minutes(stops[0].arrival_time)
+    if current_minutes < first_arrival - 30:
+        return None
+
+    last_departure = _time_to_minutes(stops[-1].departure_time)
+    if current_minutes > last_departure + 30:
+        return None
+
+    for i, stop in enumerate(stops):
+        arr = _time_to_minutes(stop.arrival_time)
+        dep = _time_to_minutes(stop.departure_time)
+
+        if arr <= current_minutes <= dep:
+            return {
+                'status': 'stopped',
+                'station_code': stop.station_code,
+                'station_name': stop.station_name,
+                'progress': 0,
+                'stop_index': i
+            }
+
+        if i < len(stops) - 1:
+            next_stop = stops[i + 1]
+            next_arr = _time_to_minutes(next_stop.arrival_time)
+            if dep < current_minutes < next_arr:
+                total = next_arr - dep
+                elapsed = current_minutes - dep
+                progress = elapsed / total if total > 0 else 0
+                return {
+                    'status': 'running',
+                    'from_station': stop.station_code,
+                    'to_station': next_stop.station_code,
+                    'from_name': stop.station_name,
+                    'to_name': next_stop.station_name,
+                    'progress': round(progress, 3),
+                    'stop_index': i
+                }
+    return None
+
+
+@app.route('/api/line_status', methods=['GET'])
+def line_status():
+    """
+    线路实时运行态势接口
+    根据当前时间计算所有在途列车的位置
+    """
+    try:
+        now = datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+
+        ref_time = request.args.get('time')
+        if ref_time:
+            try:
+                h, m = map(int, ref_time.split(':'))
+                current_minutes = h * 60 + m
+            except Exception:
+                pass
+
+        active_trains = []
+        station_load = {s.station_code: 0 for s in stations}
+
+        for train in trains:
+            pos = _get_train_position(train, current_minutes)
+            if pos:
+                item = {
+                    'train_id': train.train_id,
+                    'train_type': train.train_type,
+                    'status': pos['status'],
+                    'station_code': pos.get('station_code'),
+                    'station_name': pos.get('station_name'),
+                    'from_station': pos.get('from_station'),
+                    'to_station': pos.get('to_station'),
+                    'from_name': pos.get('from_name'),
+                    'to_name': pos.get('to_name'),
+                    'progress': pos.get('progress', 0),
+                    'delay_minutes': 0
+                }
+                active_trains.append(item)
+                if pos['status'] == 'stopped' and pos.get('station_code'):
+                    station_load[pos['station_code']] = station_load.get(pos['station_code'], 0) + 1
+
+        return jsonify({
+            'success': True,
+            'timestamp': now.isoformat(),
+            'reference_time': f"{current_minutes // 60:02d}:{current_minutes % 60:02d}",
+            'active_trains_count': len(active_trains),
+            'station_load': station_load,
+            'trains': active_trains
+        })
+    except Exception as e:
+        logger.error(f"线路状态查询失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+
 @app.route('/api/dispatch', methods=['POST'])
 def dispatch():
     try:

@@ -8,6 +8,8 @@ let thinkingBuffer = [];
 let thinkingTimer = null;
 let workflowSessionId = null;
 let chatSessionId = null;
+let progressAnimTimer = null;
+let currentProgressLayer = 0;
 
 const quickPrompts = {
     'query_train': '查询G1563列车的运行情况',
@@ -175,15 +177,21 @@ function updateSendButton(processing) {
         sendBtn.style.opacity = '0.7';
     } else {
         sendBtn.disabled = false;
-        sendBtn.innerHTML = '发送';
+        sendBtn.innerHTML = '<span>&#10022;</span> 生成方案';
         sendBtn.style.opacity = '1';
     }
 }
 
 function resetProgress() {
+    if (progressAnimTimer) { clearTimeout(progressAnimTimer); progressAnimTimer = null; }
+    currentProgressLayer = 0;
     for (let i = 1; i <= 4; i++) {
         const step = document.getElementById(`step${i}`);
-        if (step) { step.className = 'progress-step'; }
+        if (step) {
+            step.className = 'progress-step';
+            const st = step.querySelector('.step-status');
+            if (st) st.textContent = '';
+        }
     }
     document.getElementById('progressText').textContent = '等待输入...';
     document.getElementById('metricTotalDelay').textContent = '-';
@@ -213,14 +221,64 @@ function resetProgress() {
     if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
 }
 
-function updateProgressStep(layer, message) {
-    for (let i = 1; i < layer; i++) {
-        const step = document.getElementById(`step${i}`);
-        if (step) step.classList.add('done');
+function setStepState(stepNum, state) {
+    const step = document.getElementById(`step${stepNum}`);
+    if (!step) return;
+    const st = step.querySelector('.step-status');
+    if (state === 'done') {
+        step.classList.remove('active');
+        step.classList.add('done');
+        if (st) st.textContent = '已完成';
+    } else if (state === 'active') {
+        step.classList.add('active');
+        if (st) st.textContent = '进行中';
+    } else if (state === 'pending') {
+        step.classList.remove('done', 'active');
+        if (st) st.textContent = '';
     }
-    const currentStep = document.getElementById(`step${layer}`);
-    if (currentStep) currentStep.classList.add('active');
-    document.getElementById('progressText').textContent = message;
+}
+
+function animateProgressSteps(targetLayer, message, delayBetweenSteps) {
+    if (progressAnimTimer) { clearTimeout(progressAnimTimer); progressAnimTimer = null; }
+
+    // 如果目标层比当前已到达的层小，直接设置（异常情况）
+    if (targetLayer <= currentProgressLayer) {
+        for (let i = 1; i < targetLayer; i++) setStepState(i, 'done');
+        setStepState(targetLayer, 'active');
+        document.getElementById('progressText').textContent = message;
+        return;
+    }
+
+    // 动画逐步点亮：currentProgressLayer+1 -> ... -> targetLayer
+    let current = currentProgressLayer + 1;
+    function step() {
+        // 把之前的标记为 done
+        for (let i = 1; i < current; i++) setStepState(i, 'done');
+        setStepState(current, 'active');
+        document.getElementById('progressText').textContent = message;
+        currentProgressLayer = current;
+
+        if (current < targetLayer) {
+            current++;
+            progressAnimTimer = setTimeout(step, delayBetweenSteps);
+        } else {
+            progressAnimTimer = null;
+        }
+    }
+    step();
+}
+
+function updateProgressStep(layer, message) {
+    // 首次 progress，从 L1 开始逐步动画到目标层
+    if (currentProgressLayer === 0) {
+        animateProgressSteps(layer, message, 600);
+    } else {
+        // 后续 progress，直接更新到目标层（已经有部分完成了）
+        for (let i = 1; i < layer; i++) setStepState(i, 'done');
+        setStepState(layer, 'active');
+        currentProgressLayer = layer;
+        document.getElementById('progressText').textContent = message;
+    }
 }
 
 function displayResult(data) {
@@ -271,9 +329,17 @@ function displayResult(data) {
             riskContainer.innerHTML = '<div class="risk-empty safe"><span style="font-size:18px;">&#9989;</span> 未发现潜在风险</div>';
         }
 
-        // 详细方案
+        // 详细方案 - 自动展开
         const detailSection = document.getElementById('detailSection');
+        const detailContent = document.getElementById('detailContent');
+        const detailToggle = document.getElementById('detailToggle');
+        const detailArrow = document.getElementById('detailArrow');
         if (detailSection) detailSection.classList.add('visible');
+        if (detailContent && !detailContent.classList.contains('open')) {
+            detailContent.classList.add('open');
+            if (detailToggle) detailToggle.classList.add('open');
+            if (detailArrow) detailArrow.innerHTML = '&#9650;';
+        }
 
         const naturalPlanSection = document.getElementById('naturalPlanSection');
         const naturalPlanContent = document.getElementById('naturalPlanContent');
@@ -287,7 +353,7 @@ function displayResult(data) {
         if (opsGuide && (opsGuide.steps || opsGuide.operations) && opsGuideSection && opsGuideContent) {
             opsGuideSection.style.display = 'block';
             const guide = opsGuide;
-            let html = `<div style="margin-bottom:12px;font-size:15px;font-weight:600;color:#e65100;">场景：${escapeHtml(guide.scene_name || '调度操作指南')}</div>`;
+            let html = `<div style="margin-bottom:12px;font-size:15px;font-weight:600;color:#ffab00;">场景：${escapeHtml(guide.scene_name || '调度操作指南')}</div>`;
 
             // 优先使用新结构 steps
             if (guide.steps && guide.steps.length > 0) {
@@ -325,20 +391,30 @@ function displayResult(data) {
                 }).join('');
             }
 
-            html += `<div style="margin-top:12px;font-size:12px;color:#9e9e9e;border-top:1px dashed #e0e0e0;padding-top:8px;">`;
+            html += `<div style="margin-top:12px;font-size:12px;color:#5a6a7f;border-top:1px dashed #1e3a5f;padding-top:8px;">`;
             html += `来源：${escapeHtml(guide.source || '系统生成')} | 匹配度：${guide.match_score || 0}`;
             html += `</div>`;
             opsGuideContent.innerHTML = html;
         }
 
-        // 时刻表对比
+        // 时刻表对比 + 运行图
         const hasOptSchedule = data.optimized_schedule && Object.keys(data.optimized_schedule).length > 0;
         const hasOrigSchedule = data.original_schedule && Object.keys(data.original_schedule).length > 0;
+        console.log('[运行图调试] hasOptSchedule:', hasOptSchedule, 'hasOrigSchedule:', hasOrigSchedule,
+            'opt_keys:', hasOptSchedule ? Object.keys(data.optimized_schedule).length : 0,
+            'orig_keys:', hasOrigSchedule ? Object.keys(data.original_schedule).length : 0);
         if (hasOptSchedule && hasOrigSchedule) {
+            console.log('[运行图调试] 生成对比图');
             displayScheduleComparison(data.original_schedule, data.optimized_schedule);
             generateDiagram(data.original_schedule, data.optimized_schedule);
         } else if (hasOptSchedule) {
+            console.log('[运行图调试] 无原始时刻表，仅显示时刻表表格');
             displayScheduleTable(data.optimized_schedule);
+        }
+
+        // 更新线路运行态势
+        if (hasOptSchedule) {
+            updateLineMapFromSchedule(data.optimized_schedule, data.original_schedule);
         }
     } catch (error) {
         console.error('显示结果失败:', error);
@@ -376,7 +452,7 @@ function displayQueryResult(data) {
                 status: '列车状态查询',
                 station_load: '车站负荷查询'
             }[data.query_type] || '信息查询';
-            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#1565c0;font-weight:600;">&#128270; ${escapeHtml(queryTypeLabel)}</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
+            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#00d4ff;font-weight:600;">&#128270; ${escapeHtml(queryTypeLabel)}</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
         }
 
         // 隐藏操作指南
@@ -401,7 +477,7 @@ function displayQueryResult(data) {
             }
             tableHtml += '</tbody></table>';
         }
-        document.getElementById('scheduleTable').innerHTML = tableHtml || '<p style="color:#9e9e9e;text-align:center;padding:20px;">无结构化数据</p>';
+        document.getElementById('scheduleTable').innerHTML = tableHtml || '<p style="color:#5a6a7f;text-align:center;padding:20px;">无结构化数据</p>';
 
         // 隐藏运行图
         const diagramContainer = document.getElementById('diagramContainer');
@@ -438,7 +514,7 @@ function displayChatResult(data) {
         const naturalPlanContent = document.getElementById('naturalPlanContent');
         if (naturalPlanSection && naturalPlanContent) {
             naturalPlanSection.style.display = 'block';
-            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#1565c0;font-weight:600;">&#128172; 知识问答</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
+            naturalPlanContent.innerHTML = `<div style="margin-bottom:8px;font-size:13px;color:#00d4ff;font-weight:600;">&#128172; 知识问答</div><div style="line-height:1.7;">${escapeHtml(data.content || '').replace(/\n/g, '<br>')}</div>`;
         }
 
         const opsGuideSection = document.getElementById('opsGuideSection');
@@ -502,22 +578,29 @@ function displayScheduleComparison(originalSchedule, optimizedSchedule) {
     }
 
     if (shownTrains === 0) {
-        tableHtml += '<tr><td colspan="7" style="text-align:center;color:#9e9e9e;padding:24px;">所有列车均准点运行，无调整</td></tr>';
+        tableHtml += '<tr><td colspan="7" style="text-align:center;color:#5a6a7f;padding:24px;">所有列车均准点运行，无调整</td></tr>';
     }
     tableHtml += '</tbody></table>';
     if (shownTrains >= maxTrains) {
-        tableHtml += '<p style="color:#9e9e9e;font-size:12px;text-align:center;margin-top:10px;">仅展示前10列有变化的列车</p>';
+        tableHtml += '<p style="color:#5a6a7f;font-size:12px;text-align:center;margin-top:10px;">仅展示前10列有变化的列车</p>';
     }
     document.getElementById('scheduleTable').innerHTML = tableHtml;
 }
 
 async function generateDiagram(originalSchedule, optimizedSchedule) {
     const diagramContainer = document.getElementById('diagramContainer');
-    diagramContainer.innerHTML = '<div style="color:#616161;font-size:14px;">正在生成运行图对比，请稍候...</div>';
+    if (!diagramContainer) {
+        console.error('[运行图调试] diagramContainer 不存在');
+        return;
+    }
+    diagramContainer.innerHTML = '<div style="color:#8b9bb4;font-size:14px;">正在生成运行图对比，请稍候...</div>';
+    console.log('[运行图调试] generateDiagram 开始调用',
+        'originalSchedule keys:', Object.keys(originalSchedule || {}).length,
+        'optimizedSchedule keys:', Object.keys(optimizedSchedule || {}).length);
     try {
         const highlightTrainIds = [];
-        for (const [trainId, optStops] of Object.entries(optimizedSchedule)) {
-            const origStops = originalSchedule[trainId] || [];
+        for (const [trainId, optStops] of Object.entries(optimizedSchedule || {})) {
+            const origStops = (originalSchedule || {})[trainId] || [];
             for (let i = 0; i < optStops.length; i++) {
                 const opt = optStops[i];
                 const orig = origStops[i] || {};
@@ -527,6 +610,7 @@ async function generateDiagram(originalSchedule, optimizedSchedule) {
                 }
             }
         }
+        console.log('[运行图调试] 高亮列车数:', highlightTrainIds.length);
 
         const response = await fetch('/api/diagram', {
             method: 'POST',
@@ -538,14 +622,18 @@ async function generateDiagram(originalSchedule, optimizedSchedule) {
             })
         });
         const data = await response.json();
+        console.log('[运行图调试] 后端返回 success:', data.success, 'trains_drawn:', data.trains_drawn);
         if (data.success) {
-            const infoText = data.trains_drawn ? `<div style="color:#9e9e9e;font-size:12px;margin-bottom:8px;">运行图绘制 ${data.trains_drawn} 列变化列车，渲染耗时 ${data.render_time || '-'} 秒</div>` : '';
+            const infoText = data.trains_drawn ? `<div style="color:#5a6a7f;font-size:12px;margin-bottom:8px;">运行图绘制 ${data.trains_drawn} 列变化列车，渲染耗时 ${data.render_time || '-'} 秒</div>` : '';
             diagramContainer.innerHTML = infoText + `<img src="data:image/png;base64,${data.diagram_image}" style="max-width:100%;height:auto;border-radius:8px;box-shadow:var(--shadow-md);">`;
+            console.log('[运行图调试] 图片已渲染到 diagramContainer');
         } else {
-            diagramContainer.innerHTML = '<div style="color:#c62828;font-size:14px;">运行图生成失败：' + (data.message || '未知错误') + '</div>';
+            diagramContainer.innerHTML = '<div style="color:#ff5252;font-size:14px;">运行图生成失败：' + (data.message || '未知错误') + '</div>';
+            console.error('[运行图调试] 后端返回失败:', data.message);
         }
     } catch (error) {
-        diagramContainer.innerHTML = '<div style="color:#c62828;font-size:14px;">运行图生成失败：' + error.message + '</div>';
+        diagramContainer.innerHTML = '<div style="color:#ff5252;font-size:14px;">运行图生成失败：' + error.message + '</div>';
+        console.error('[运行图调试] 异常:', error);
     }
 }
 
@@ -621,7 +709,7 @@ function displayComparisonResult(data) {
             html += '</ul></div>';
         }
     } else {
-        html = '<p style="color:#9e9e9e;text-align:center;padding:20px;">暂无对比结果</p>';
+        html = '<p style="color:#5a6a7f;text-align:center;padding:20px;">暂无对比结果</p>';
     }
     document.getElementById('comparisonReport').innerHTML = html;
     drawComparisonChart(result.all_results || []);
@@ -709,7 +797,7 @@ async function resetWorkflow() {
         document.getElementById('workflowResult').style.display = 'none';
         document.getElementById('continueWorkflowBtn').disabled = true;
         document.getElementById('resetWorkflowBtn').disabled = true;
-        document.getElementById('workflowChatHistory').innerHTML = '<p style="color:#9e9e9e;text-align:center;padding:20px;">会话已重置</p>';
+        document.getElementById('workflowChatHistory').innerHTML = '<p style="color:#5a6a7f;text-align:center;padding:20px;">会话已重置</p>';
     } catch (error) {
         console.error('重置失败:', error);
     }
@@ -765,7 +853,7 @@ checkServerStatus();
 function drawComparisonChart(results) {
     const container = document.getElementById('comparisonChart');
     if (!container || !results || results.length === 0) {
-        if (container) container.innerHTML = '<p style="color:#9e9e9e;text-align:center;padding:20px;">无数据</p>';
+        if (container) container.innerHTML = '<p style="color:#5a6a7f;text-align:center;padding:20px;">无数据</p>';
         return;
     }
     const canvas = document.createElement('canvas');
@@ -788,22 +876,22 @@ function drawComparisonChart(results) {
     const avgDelays = results.map(r => r.metrics?.avg_delay_minutes || 0);
     const maxVal = Math.max(...maxDelays, ...avgDelays, 1);
 
-    // 背景
-    ctx.fillStyle = '#ffffff';
+    // 背景（深色主题）
+    ctx.fillStyle = '#111827';
     ctx.fillRect(0, 0, cssW, cssH);
 
     // 标题
-    ctx.fillStyle = '#1565c0';
+    ctx.fillStyle = '#00d4ff';
     ctx.font = 'bold 14px sans-serif';
     ctx.fillText('各调度器延误对比（分钟）', margin.left, 22);
 
     // 网格线
-    ctx.strokeStyle = '#f0f0f0';
+    ctx.strokeStyle = '#1e3a5f';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 5; i++) {
         const y = margin.top + h - (i / 5) * h;
         ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(margin.left + w, y); ctx.stroke();
-        ctx.fillStyle = '#9e9e9e'; ctx.font = '11px sans-serif';
+        ctx.fillStyle = '#5a6a7f'; ctx.font = '11px sans-serif';
         ctx.textAlign = 'right';
         ctx.fillText((maxVal * i / 5).toFixed(0), margin.left - 10, y + 4);
     }
@@ -830,21 +918,21 @@ function drawComparisonChart(results) {
         const avgH = (r.metrics?.avg_delay_minutes || 0) / maxVal * h;
 
         // 最大延误柱
-        ctx.fillStyle = r.is_winner ? '#c62828' : '#1565c0';
+        ctx.fillStyle = r.is_winner ? '#ff5252' : '#1e88e5';
         roundRect(x - barW - 3, margin.top + h - maxH, barW, maxH, 3);
         ctx.fill();
 
         // 平均延误柱
-        ctx.fillStyle = r.is_winner ? '#ef5350' : '#42a5f5';
+        ctx.fillStyle = r.is_winner ? '#ff7b7b' : '#64b5f6';
         roundRect(x + 3, margin.top + h - avgH, barW, avgH, 3);
         ctx.fill();
 
         // 标签
-        ctx.fillStyle = '#424242';
+        ctx.fillStyle = '#e0e6ed';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(r.scheduler_name, x, margin.top + h + 18);
-        ctx.fillStyle = '#9e9e9e';
+        ctx.fillStyle = '#8b9bb4';
         ctx.font = '10px sans-serif';
         ctx.fillText(`最大:${(r.metrics?.max_delay_minutes || 0).toFixed(0)}`, x - barW/2 - 1, margin.top + h + 34);
         ctx.fillText(`平均:${(r.metrics?.avg_delay_minutes || 0).toFixed(1)}`, x + barW/2 + 1, margin.top + h + 34);
@@ -852,14 +940,302 @@ function drawComparisonChart(results) {
 
     // 图例
     const legendX = margin.left + w - 160;
-    ctx.fillStyle = '#1565c0'; roundRect(legendX, 10, 12, 12, 2); ctx.fill();
-    ctx.fillStyle = '#424242'; ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#1e88e5'; roundRect(legendX, 10, 12, 12, 2); ctx.fill();
+    ctx.fillStyle = '#e0e6ed'; ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
     ctx.fillText('最大延误', legendX + 18, 20);
-    ctx.fillStyle = '#42a5f5'; roundRect(legendX + 80, 10, 12, 12, 2); ctx.fill();
+    ctx.fillStyle = '#64b5f6'; roundRect(legendX + 80, 10, 12, 12, 2); ctx.fill();
     ctx.fillText('平均延误', legendX + 98, 20);
 
     container.innerHTML = '';
     container.appendChild(canvas);
+}
+
+// ==================== 线路运行态势 ====================
+const LINE_STATIONS = [
+    {code:'BJX', name:'北京西', x:25, tracks:7, type:'hub'},
+    {code:'DJK', name:'杜家坎', x:74, tracks:4, type:'junction'},
+    {code:'ZBD', name:'涿州东', x:121, tracks:4, type:'normal'},
+    {code:'GBD', name:'高碑店东', x:169, tracks:4, type:'normal'},
+    {code:'XSD', name:'徐水东', x:217, tracks:4, type:'normal'},
+    {code:'BDD', name:'保定东', x:265, tracks:6, type:'major'},
+    {code:'DZD', name:'定州东', x:313, tracks:4, type:'normal'},
+    {code:'ZDJ', name:'正定机场', x:361, tracks:4, type:'normal'},
+    {code:'SJP', name:'石家庄', x:409, tracks:11, type:'hub'},
+    {code:'GYX', name:'高邑西', x:457, tracks:4, type:'normal'},
+    {code:'XTD', name:'邢台东', x:505, tracks:6, type:'normal'},
+    {code:'HDD', name:'邯郸东', x:553, tracks:7, type:'major'},
+    {code:'AYD', name:'安阳东', x:601, tracks:4, type:'normal'}
+];
+
+let currentLineTrains = [];
+let lineStatusTimer = null;
+let optimizedDelayMap = {};
+
+function getStationX(code) {
+    const s = LINE_STATIONS.find(st => st.code === code);
+    return s ? s.x : 0;
+}
+
+function getTrainColor(delayMinutes, status) {
+    if (delayMinutes > 10) return '#ff5252';
+    if (delayMinutes > 0) return '#ffab00';
+    if (status === 'stopped') return '#1e88e5';
+    return '#00c853';
+}
+
+function computeTrainX(train) {
+    if (train.status === 'stopped') {
+        return getStationX(train.station_code);
+    } else if (train.status === 'running') {
+        const fromX = getStationX(train.from_station);
+        const toX = getStationX(train.to_station);
+        return fromX + (toX - fromX) * (train.progress || 0);
+    }
+    return null;
+}
+
+function renderTrainMarkers(trains) {
+    const g = document.getElementById('trainMarkers');
+    if (!g) return;
+    g.innerHTML = '';
+
+    if (!trains || trains.length === 0) return;
+
+    // 1. 计算每列车的 X 坐标和延误
+    const allItems = trains.map(train => {
+        const x = computeTrainX(train);
+        const delay = (train.delay_minutes || 0) + (optimizedDelayMap[train.train_id] || 0);
+        return { train, x, delay };
+    }).filter(item => item.x !== null);
+
+    // 2. 排序：延误优先，其次按位置从左到右
+    allItems.sort((a, b) => {
+        if (b.delay !== a.delay) return b.delay - a.delay;
+        return a.x - b.x;
+    });
+
+    // 3. 限制显示数量：最多 10 列，但保证位置分布均匀
+    let selected = [];
+    if (allItems.length <= 10) {
+        selected = allItems;
+    } else {
+        // 优先取延误列车
+        const delayed = allItems.filter(i => i.delay > 0);
+        const normal = allItems.filter(i => i.delay === 0);
+        // 取所有延误的 + 补充正常列车到 10 列
+        selected = delayed.slice(0, 10);
+        if (selected.length < 10) {
+            // 从正常列车中均匀取样
+            const need = 10 - selected.length;
+            const step = Math.max(1, Math.floor(normal.length / need));
+            for (let i = 0; i < need && i * step < normal.length; i++) {
+                selected.push(normal[i * step]);
+            }
+        }
+        // 重新按 X 排序以便从左到右渲染
+        selected.sort((a, b) => a.x - b.x);
+    }
+
+    const MARKER_W = 42;
+    const MARKER_H = 18;
+    const MIN_X_GAP = 48; // 水平方向最小间距
+    const Y_LEVELS = [-30, -14, 2, 16, 30]; // 5 个高度层（相对于 yBase=65）
+    const placed = []; // 已放置的标记，用于碰撞检测
+
+    selected.forEach((item) => {
+        const { train, x, delay } = item;
+        const color = getTrainColor(delay, train.status);
+
+        // 找到不冲突的高度层
+        let yOffset = Y_LEVELS[0];
+        let levelIdx = 0;
+        for (let i = 0; i < Y_LEVELS.length; i++) {
+            const candidateY = 65 + Y_LEVELS[i];
+            const conflict = placed.some(p =>
+                Math.abs(p.x - x) < MIN_X_GAP && Math.abs(p.y - candidateY) < 20
+            );
+            if (!conflict) {
+                yOffset = Y_LEVELS[i];
+                levelIdx = i;
+                break;
+            }
+        }
+        const y = 65 + yOffset;
+        placed.push({ x, y });
+
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        marker.setAttribute('transform', `translate(${x - MARKER_W / 2}, ${y - MARKER_H / 2})`);
+        marker.style.cursor = 'pointer';
+
+        // 引线：从标记底部中心到线路
+        const lineY = y + MARKER_H / 2;
+        const lineTo = 65;
+        if (lineY !== lineTo) {
+            const leadLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            leadLine.setAttribute('x1', x);
+            leadLine.setAttribute('y1', lineY);
+            leadLine.setAttribute('x2', x);
+            leadLine.setAttribute('y2', lineTo);
+            leadLine.setAttribute('stroke', color);
+            leadLine.setAttribute('stroke-width', '1');
+            leadLine.setAttribute('stroke-dasharray', '2,2');
+            leadLine.setAttribute('opacity', '0.5');
+            g.appendChild(leadLine);
+        }
+
+        // 发光滤镜（延误列车）
+        if (delay > 0) {
+            const glowFilter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+            glowFilter.setAttribute('id', `glow_${train.train_id}`);
+            glowFilter.setAttribute('x', '-50%');
+            glowFilter.setAttribute('y', '-50%');
+            glowFilter.setAttribute('width', '200%');
+            glowFilter.setAttribute('height', '200%');
+            const feGaussian = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
+            feGaussian.setAttribute('stdDeviation', '3');
+            feGaussian.setAttribute('result', 'coloredBlur');
+            glowFilter.appendChild(feGaussian);
+            const feMerge = document.createElementNS('http://www.w3.org/2000/svg', 'feMerge');
+            const feMergeNode1 = document.createElementNS('http://www.w3.org/2000/svg', 'feMergeNode');
+            feMergeNode1.setAttribute('in', 'coloredBlur');
+            const feMergeNode2 = document.createElementNS('http://www.w3.org/2000/svg', 'feMergeNode');
+            feMergeNode2.setAttribute('in', 'SourceGraphic');
+            feMerge.appendChild(feMergeNode1);
+            feMerge.appendChild(feMergeNode2);
+            glowFilter.appendChild(feMerge);
+            g.appendChild(glowFilter);
+        }
+
+        // 标记背景
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', '0');
+        rect.setAttribute('y', '0');
+        rect.setAttribute('width', MARKER_W);
+        rect.setAttribute('height', MARKER_H);
+        rect.setAttribute('rx', '5');
+        rect.setAttribute('fill', color);
+        rect.setAttribute('opacity', '0.95');
+        if (delay > 0) {
+            rect.setAttribute('filter', `url(#glow_${train.train_id})`);
+        }
+        marker.appendChild(rect);
+
+        // 延误脉冲边框
+        if (delay > 0) {
+            const pulse = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            pulse.setAttribute('x', '-2');
+            pulse.setAttribute('y', '-2');
+            pulse.setAttribute('width', MARKER_W + 4);
+            pulse.setAttribute('height', MARKER_H + 4);
+            pulse.setAttribute('rx', '6');
+            pulse.setAttribute('fill', 'none');
+            pulse.setAttribute('stroke', delay > 10 ? '#ff5252' : '#ffab00');
+            pulse.setAttribute('stroke-width', '1.5');
+            pulse.innerHTML = `<animate attributeName="opacity" values="0.2;0.8;0.2" dur="1.2s" repeatCount="indefinite"/>`;
+            marker.appendChild(pulse);
+        }
+
+        // 车次文字
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', MARKER_W / 2);
+        text.setAttribute('y', 12);
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', '#fff');
+        text.setAttribute('font-size', '8.5');
+        text.setAttribute('font-weight', '700');
+        text.textContent = train.train_id;
+        marker.appendChild(text);
+
+        marker.addEventListener('mouseenter', (e) => showLineTooltip(e, train, x, y, delay));
+        marker.addEventListener('mouseleave', hideLineTooltip);
+
+        g.appendChild(marker);
+    });
+}
+
+function showLineTooltip(evt, train, svgX, svgY, delayMinutes) {
+    const tooltip = document.getElementById('lineTooltip');
+    if (!tooltip) return;
+
+    const statusText = train.status === 'stopped'
+        ? `停靠 · ${train.station_name || train.station_code}`
+        : `运行中 · ${train.from_name || train.from_station} → ${train.to_name || train.to_station}`;
+
+    const delayHtml = delayMinutes > 0
+        ? `<span class="tt-status-delay">延误 ${delayMinutes} 分钟</span>`
+        : '<span class="tt-status-normal">准点</span>';
+
+    tooltip.innerHTML = `
+        <div class="tt-title">${train.train_id}</div>
+        <div class="tt-row"><span>状态</span><span>${statusText}</span></div>
+        <div class="tt-row"><span>车型</span><span>${train.train_type || '高速动车组'}</span></div>
+        <div class="tt-row"><span>运行</span><span>${delayHtml}</span></div>
+    `;
+
+    const container = document.getElementById('lineMapContainer');
+    if (!container) return;
+    const svgEl = container.querySelector('svg');
+    if (!svgEl) return;
+    const svgRect = svgEl.getBoundingClientRect();
+    const scaleX = svgRect.width / 620;
+    const scaleY = svgRect.height / 130;
+
+    const left = svgX * scaleX + 18;
+    const top = svgY * scaleY - 40;
+
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+    tooltip.style.display = 'block';
+}
+
+function hideLineTooltip() {
+    const tooltip = document.getElementById('lineTooltip');
+    if (tooltip) tooltip.style.display = 'none';
+}
+
+async function loadLineStatus() {
+    try {
+        const response = await fetch('/api/line_status');
+        const data = await response.json();
+        if (data.success) {
+            currentLineTrains = data.trains || [];
+            renderTrainMarkers(currentLineTrains);
+            const countEl = document.getElementById('activeTrainCount');
+            if (countEl) countEl.textContent = data.active_trains_count || 0;
+        }
+    } catch (e) {
+        console.error('线路状态加载失败:', e);
+    }
+}
+
+function updateLineMapFromSchedule(optimizedSchedule, originalSchedule) {
+    if (!optimizedSchedule) return;
+
+    optimizedDelayMap = {};
+    for (const [trainId, stops] of Object.entries(optimizedSchedule)) {
+        let maxDelay = 0;
+        if (Array.isArray(stops)) {
+            for (const stop of stops) {
+                if (stop.delay_seconds) maxDelay = Math.max(maxDelay, stop.delay_seconds);
+            }
+        }
+        optimizedDelayMap[trainId] = Math.round(maxDelay / 60);
+    }
+
+    // 同步更新 currentLineTrains 中的延误信息
+    currentLineTrains.forEach(train => {
+        if (optimizedDelayMap[train.train_id] !== undefined) {
+            train.delay_minutes = optimizedDelayMap[train.train_id];
+        }
+    });
+
+    renderTrainMarkers(currentLineTrains);
+}
+
+function startLineStatusPolling() {
+    loadLineStatus();
+    if (lineStatusTimer) clearInterval(lineStatusTimer);
+    lineStatusTimer = setInterval(loadLineStatus, 30000);
 }
 
 // ==================== 页面初始化 ====================
@@ -877,5 +1253,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+    startLineStatusPolling();
     console.log('京广高铁调度辅助系统 v2.0 已加载');
 });

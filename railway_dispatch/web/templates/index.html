@@ -4,943 +4,969 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>京广高铁调度辅助系统</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- 样式已全部内嵌，无需外部CSS -->
     <style>
         /* ===== 基础重置与变量 ===== */
         :root {
-            --primary: #1565c0;
-            --primary-dark: #0d47a1;
-            --primary-light: #e3f2fd;
-            --accent: #ff6f00;
-            --success: #2e7d32;
-            --danger: #c62828;
-            --warning: #f9a825;
-            --text-primary: #212121;
-            --text-secondary: #616161;
-            --text-muted: #9e9e9e;
-            --bg-body: #f5f7fa;
-            --bg-card: #ffffff;
-            --bg-header: #0d1b2a;
-            --border: #e0e0e0;
-            --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-            --shadow-md: 0 4px 12px rgba(0,0,0,0.10);
-            --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+            --bg-primary: #0a0f1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a2236;
+            --bg-card-hover: #1f2940;
+            --bg-input: #0d1321;
+            --border-color: #1e3a5f;
+            --border-light: #2a4365;
+            --primary: #1e88e5;
+            --primary-glow: rgba(30, 136, 229, 0.3);
+            --accent: #00d4ff;
+            --accent-glow: rgba(0, 212, 255, 0.2);
+            --success: #00c853;
+            --warning: #ffab00;
+            --danger: #ff5252;
+            --text-primary: #e0e6ed;
+            --text-secondary: #8b9bb4;
+            --text-muted: #5a6a7f;
+            --text-highlight: #ffffff;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.4);
+            --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+            --shadow-glow: 0 0 20px rgba(30, 136, 229, 0.15);
             --radius-sm: 6px;
             --radius-md: 10px;
-            --radius-lg: 16px;
+            --radius-lg: 14px;
             --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: var(--bg-body);
+            background: var(--bg-primary);
             color: var(--text-primary);
             line-height: 1.6;
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
         }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
 
         /* ===== 顶部状态栏 ===== */
-        .topbar {
-            background: #0a1628;
-            color: rgba(255,255,255,0.7);
-            padding: 6px 0;
-            font-size: 12px;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .topbar-inner {
-            max-width: 1440px;
-            margin: 0 auto;
+        .top-status-bar {
+            background: linear-gradient(90deg, #0a0f1a 0%, #0d1b2a 50%, #0a0f1a 100%);
+            border-bottom: 1px solid var(--border-color);
             padding: 0 24px;
+            height: 56px;
             display: flex;
+            align-items: center;
             justify-content: space-between;
-            align-items: center;
-        }
-        .topbar-left { display: flex; gap: 20px; align-items: center; }
-        .topbar-item { display: flex; align-items: center; gap: 6px; }
-        .topbar-item .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-        .dot-online { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
-        .dot-warn { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; }
-        .dot-offline { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
-        .live-clock {
-            font-family: "SF Mono", "Roboto Mono", "Consolas", monospace;
-            font-size: 15px;
-            font-weight: 600;
-            color: #fff;
-            letter-spacing: 1px;
-            background: rgba(255,255,255,0.08);
-            padding: 3px 12px;
-            border-radius: 20px;
-        }
-
-        /* ===== 主标题区（居中） ===== */
-        .main-header {
-            background: linear-gradient(160deg, #0d1b2a 0%, #1b3a5c 60%, #0d47a1 100%);
-            color: white;
-            padding: 28px 0 32px;
-            text-align: center;
-            position: relative;
-            overflow: hidden;
-        }
-        .main-header::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-            opacity: 0.5;
-        }
-        .main-header-content { position: relative; z-index: 1; }
-        .main-header h1 {
-            font-size: 28px;
-            font-weight: 700;
-            letter-spacing: 2px;
-            margin-bottom: 8px;
-            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-        .main-header .subtitle {
-            font-size: 14px;
-            opacity: 0.75;
-            font-weight: 400;
-            letter-spacing: 1px;
-        }
-        .main-header .badge-bar {
-            display: flex;
-            justify-content: center;
-            gap: 12px;
-            margin-top: 14px;
-        }
-        .header-badge {
-            background: rgba(255,255,255,0.12);
-            backdrop-filter: blur(10px);
-            padding: 5px 14px;
-            border-radius: 20px;
-            font-size: 12px;
-            border: 1px solid rgba(255,255,255,0.15);
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .header-badge svg { width: 14px; height: 14px; opacity: 0.8; }
-
-        /* ===== 导航标签 ===== */
-        .nav-tabs-wrap {
-            background: var(--bg-card);
-            border-bottom: 1px solid var(--border);
             position: sticky;
             top: 0;
             z-index: 100;
-            box-shadow: var(--shadow-sm);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.5);
         }
-        .nav-tabs {
-            max-width: 1440px;
-            margin: 0 auto;
-            padding: 0 24px;
-            display: flex;
-            gap: 0;
-        }
-        .nav-tab {
-            padding: 16px 28px;
-            cursor: pointer;
-            border: none;
-            background: none;
-            font-size: 15px;
-            color: var(--text-secondary);
-            font-weight: 500;
-            position: relative;
-            transition: var(--transition);
+        .system-title {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
         }
-        .nav-tab:hover { color: var(--primary); background: var(--primary-light); }
-        .nav-tab.active {
-            color: var(--primary);
-            font-weight: 600;
+        .logo {
+            width: 36px; height: 36px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: bold; color: #fff;
+            box-shadow: 0 0 12px var(--primary-glow);
         }
-        .nav-tab.active::after {
-            content: '';
-            position: absolute;
-            bottom: 0;
-            left: 20%;
-            right: 20%;
-            height: 3px;
-            background: var(--primary);
-            border-radius: 3px 3px 0 0;
+        .title-text {
+            font-size: 16px; font-weight: 600; color: var(--text-highlight);
+            letter-spacing: 1px;
         }
-        .nav-tab .tab-icon { font-size: 18px; }
+        .status-metrics {
+            display: flex; align-items: center; gap: 28px;
+        }
+        .status-item {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 12px; color: var(--text-secondary);
+        }
+        .status-item .status-icon { font-size: 14px; }
+        .status-item .status-value {
+            font-size: 15px; font-weight: 700; color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 8px var(--accent-glow);
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--success); }
+            50% { opacity: 0.6; box-shadow: 0 0 2px var(--success); }
+        }
+        .status-dot.green { animation: pulse-dot 2s ease-in-out infinite; }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block; margin-left: 4px;
+        }
+        .status-dot.green { background: var(--success); box-shadow: 0 0 6px var(--success); }
+        .status-dot.yellow { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+        .status-dot.red { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
 
-        /* ===== 主容器 ===== */
-        .main-container {
-            max-width: 1440px;
+        .user-info {
+            display: flex; align-items: center; gap: 16px;
+        }
+        .live-clock {
+            font-size: 18px; font-weight: 700; color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 10px var(--accent-glow);
+            letter-spacing: 1px;
+        }
+        .user-name {
+            font-size: 13px; color: var(--text-primary); font-weight: 500;
+        }
+        .user-role {
+            font-size: 11px; color: var(--text-muted);
+        }
+
+        /* ===== 导航标签 ===== */
+        .nav-bar {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 24px;
+            display: flex;
+            gap: 4px;
+        }
+        .nav-tab {
+            padding: 14px 24px;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            position: relative;
+            transition: var(--transition);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .nav-tab:hover { color: var(--text-primary); background: rgba(30,136,229,0.05); }
+        .nav-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+            background: linear-gradient(180deg, rgba(0,212,255,0.05) 0%, transparent 100%);
+        }
+        .tab-icon { font-size: 13px; opacity: 0.8; }
+
+        /* ===== 主内容区 ===== */
+        .main-content {
+            padding: 20px 24px 40px;
+            max-width: 1600px;
             margin: 0 auto;
-            padding: 24px;
         }
         .tab-panel { display: none; }
         .tab-panel.active { display: block; animation: fadeIn 0.3s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* ===== 卡片组件 ===== */
+        /* ===== 仪表盘布局 ===== */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1.4fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 1200px) {
+            .dashboard-grid { grid-template-columns: 1fr; }
+        }
+
+        /* ===== 面板卡片 ===== */
         .panel-card {
             background: var(--bg-card);
-            border-radius: var(--radius-md);
-            box-shadow: var(--shadow-sm);
-            border: 1px solid var(--border);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
             overflow: hidden;
             transition: var(--transition);
         }
-        .panel-card:hover { box-shadow: var(--shadow-md); }
+        .panel-card:hover { border-color: var(--border-light); box-shadow: var(--shadow-glow); }
         .card-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .card-header h3 {
-            font-size: 15px;
-            font-weight: 600;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex; align-items: center; gap: 8px;
+            font-size: 14px; font-weight: 600; color: var(--text-highlight);
         }
         .card-header .card-icon {
             width: 28px; height: 28px;
-            border-radius: 8px;
-            background: var(--primary-light);
-            color: var(--primary);
+            background: linear-gradient(135deg, rgba(30,136,229,0.2), rgba(0,212,255,0.1));
+            border-radius: var(--radius-sm);
             display: flex; align-items: center; justify-content: center;
-            font-size: 14px;
+            font-size: 13px; color: var(--accent);
         }
-        .card-body { padding: 20px; }
+        .card-body { padding: 16px 18px; }
 
-        /* ===== 智能调度布局 ===== */
-        .dispatch-layout {
-            display: grid;
-            grid-template-columns: 1fr 360px;
-            gap: 20px;
-            min-height: 680px;
-        }
-
-        /* 快捷操作 */
-        .quick-actions-bar {
-            display: flex;
-            gap: 10px;
+        /* ===== 左侧：调度方案生成 ===== */
+        .section-header {
+            display: flex; align-items: center; gap: 10px;
             margin-bottom: 16px;
-            flex-wrap: wrap;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .section-icon {
+            width: 32px; height: 32px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            border-radius: var(--radius-sm);
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-size: 14px;
+            box-shadow: 0 0 12px var(--primary-glow);
+        }
+        .section-title {
+            font-size: 15px; font-weight: 600; color: var(--text-highlight);
+        }
+        .section-sub {
+            font-size: 12px; color: var(--text-muted); margin-left: auto;
+        }
+
+        /* 快捷按钮 */
+        .quick-actions-bar {
+            display: flex; flex-wrap: wrap; gap: 10px;
+            margin-bottom: 16px;
         }
         .quick-chip {
-            padding: 8px 16px;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-            background: var(--bg-card);
-            color: var(--text-secondary);
-            font-size: 13px;
+            display: flex; align-items: center; gap: 6px;
+            padding: 8px 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            font-size: 13px; color: var(--text-secondary);
             cursor: pointer;
             transition: var(--transition);
-            display: flex;
-            align-items: center;
-            gap: 5px;
         }
         .quick-chip:hover {
             border-color: var(--primary);
-            color: var(--primary);
-            background: var(--primary-light);
+            background: rgba(30,136,229,0.1);
+            color: var(--text-primary);
             transform: translateY(-1px);
-            box-shadow: var(--shadow-sm);
+            box-shadow: 0 4px 12px rgba(30,136,229,0.15);
+        }
+        .quick-chip span { font-size: 14px; }
+
+        /* 输入区 */
+        .input-area {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 14px;
+            margin-bottom: 16px;
+        }
+        .chat-textarea {
+            width: 100%;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            color: var(--text-primary);
+            font-size: 14px;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+            transition: var(--transition);
+            font-family: inherit;
+        }
+        .chat-textarea:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(30,136,229,0.15);
+        }
+        .chat-textarea::placeholder { color: var(--text-muted); }
+        .input-actions {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-top: 12px;
+        }
+        .char-count {
+            font-size: 12px; color: var(--text-muted);
+        }
+        .btn-generate {
+            display: flex; align-items: center; gap: 6px;
+            padding: 10px 28px;
+            background: linear-gradient(135deg, var(--primary), #0d47a1);
+            border: none;
+            border-radius: var(--radius-md);
+            color: #fff;
+            font-size: 14px; font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            box-shadow: 0 4px 14px rgba(30,136,229,0.3);
+        }
+        .btn-generate:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(30,136,229,0.4);
+        }
+        .btn-generate:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .btn-send-plain {
+            display: none;
         }
 
         /* 聊天区域 */
-        .chat-box {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
+        .chat-area {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+        .chat-header {
+            padding: 12px 16px;
+            background: linear-gradient(90deg, rgba(30,136,229,0.1), transparent);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px; font-weight: 600; color: var(--accent);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .chat-header .version {
+            font-size: 11px; color: var(--text-muted); font-weight: 400;
+            background: var(--bg-secondary); padding: 2px 8px; border-radius: 10px;
         }
         .chat-messages {
-            flex: 1;
+            max-height: 320px;
             overflow-y: auto;
             padding: 16px;
-            background: #fafbfc;
-            min-height: 420px;
-            max-height: 520px;
+            display: flex; flex-direction: column; gap: 12px;
         }
-        .msg {
-            margin-bottom: 14px;
-            animation: msgSlide 0.25s ease;
-            display: flex;
-            flex-direction: column;
-        }
-        @keyframes msgSlide { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .msg-user { align-items: flex-end; }
-        .msg-agent, .msg-system, .msg-thinking, .msg-error { align-items: flex-start; }
+        .msg { display: flex; flex-direction: column; gap: 4px; }
         .msg-bubble {
-            max-width: 82%;
-            padding: 10px 14px;
-            border-radius: 14px;
-            font-size: 14px;
-            line-height: 1.6;
-            word-wrap: break-word;
-            position: relative;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            font-size: 13px; line-height: 1.7;
+            max-width: 90%;
+            word-break: break-word;
         }
+        .msg-system .msg-bubble {
+            background: rgba(30,136,229,0.08);
+            border: 1px solid rgba(30,136,229,0.2);
+            color: var(--text-secondary);
+        }
+        .msg-user { align-items: flex-end; }
         .msg-user .msg-bubble {
-            background: var(--primary);
-            color: white;
+            background: linear-gradient(135deg, var(--primary), #0d47a1);
+            color: #fff;
             border-bottom-right-radius: 4px;
         }
         .msg-agent .msg-bubble {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-bottom-left-radius: 4px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
             color: var(--text-primary);
-        }
-        .msg-system .msg-bubble {
-            background: #fff8e1;
-            border: 1px solid #ffe082;
-            color: #7c4a00;
-            font-size: 13px;
-            border-radius: 10px;
-        }
-        .msg-error .msg-bubble {
-            background: #ffebee;
-            border: 1px solid #ef9a9a;
-            color: #b71c1c;
-            border-left: 4px solid var(--danger);
-            border-radius: 10px;
+            border-bottom-left-radius: 4px;
         }
         .msg-thinking .msg-bubble {
-            background: #e3f2fd;
-            border: 1px solid #90caf9;
-            color: #0d47a1;
-            font-size: 13px;
-            border-radius: 10px;
+            background: rgba(0,212,255,0.05);
+            border: 1px dashed rgba(0,212,255,0.2);
+            color: var(--text-muted);
+            font-style: italic;
+        }
+        .msg-error .msg-bubble {
+            background: rgba(255,82,82,0.08);
+            border: 1px solid rgba(255,82,82,0.2);
+            color: var(--danger);
         }
         .msg-time {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 3px;
-            padding: 0 4px;
+            font-size: 11px; color: var(--text-muted);
+            margin-top: 2px;
         }
 
-        /* 输入区 */
-        .chat-input-wrap {
+        /* 推荐方案 */
+        .recommend-area {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+        .recommend-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px; font-weight: 600; color: var(--text-highlight);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .recommend-body {
             padding: 14px 16px;
-            border-top: 1px solid var(--border);
-            background: var(--bg-card);
-            display: flex;
-            gap: 10px;
-            align-items: flex-end;
         }
-        .chat-textarea {
-            flex: 1;
-            padding: 10px 14px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            font-size: 14px;
-            resize: none;
-            min-height: 44px;
-            max-height: 120px;
-            font-family: inherit;
-            background: #fafbfc;
+        .recommend-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            margin-bottom: 10px;
             transition: var(--transition);
-            line-height: 1.5;
         }
-        .chat-textarea:focus {
-            outline: none;
+        .recommend-card:hover {
             border-color: var(--primary);
-            background: var(--bg-card);
-            box-shadow: 0 0 0 3px rgba(21,101,192,0.1);
+            box-shadow: 0 0 12px rgba(30,136,229,0.1);
         }
-        .btn-send {
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: var(--radius-sm);
-            padding: 10px 24px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: var(--transition);
-            white-space: nowrap;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            height: 44px;
+        .recommend-card:last-child { margin-bottom: 0; }
+        .recommend-title {
+            font-size: 13px; font-weight: 600; color: var(--accent);
+            margin-bottom: 6px;
         }
-        .btn-send:hover { background: var(--primary-dark); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-        .btn-send:disabled { background: #bdbdbd; cursor: not-allowed; transform: none; box-shadow: none; }
+        .recommend-desc {
+            font-size: 12px; color: var(--text-secondary); line-height: 1.6;
+        }
+        .recommend-tags {
+            display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+        }
+        .recommend-tag {
+            padding: 3px 8px;
+            background: rgba(30,136,229,0.1);
+            border: 1px solid rgba(30,136,229,0.2);
+            border-radius: 10px;
+            font-size: 11px; color: var(--accent);
+        }
 
-        /* ===== 右侧仪表盘 ===== */
-        .dashboard-stack { display: flex; flex-direction: column; gap: 16px; }
+        /* ===== 右侧：信息面板 ===== */
+        .right-panel { display: flex; flex-direction: column; gap: 16px; }
 
-        /* 进度步骤 */
+        /* 处理进度 */
         .progress-track {
-            display: flex;
-            justify-content: space-between;
+            display: flex; justify-content: space-between;
             position: relative;
-            margin-bottom: 12px;
             padding: 0 8px;
         }
         .progress-track::before {
             content: '';
             position: absolute;
-            top: 14px;
-            left: 18px;
-            right: 18px;
+            top: 18px; left: 40px; right: 40px;
             height: 2px;
-            background: #e8eaf6;
+            background: var(--border-color);
             z-index: 0;
         }
         .progress-step {
-            position: relative;
-            z-index: 1;
-            text-align: center;
+            display: flex; flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            position: relative; z-index: 1;
             flex: 1;
-            transition: var(--transition);
         }
         .step-circle {
-            width: 30px; height: 30px;
+            width: 36px; height: 36px;
             border-radius: 50%;
-            background: #e8eaf6;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 6px;
-            font-size: 11px;
-            font-weight: 700;
-            color: #9e9e9e;
-            border: 3px solid var(--bg-card);
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 700; color: var(--text-muted);
             transition: var(--transition);
         }
         .progress-step.active .step-circle {
-            background: var(--primary);
-            color: white;
-            box-shadow: 0 0 0 4px rgba(21,101,192,0.2);
+            border-color: var(--accent);
+            background: rgba(0,212,255,0.1);
+            color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
         }
         .progress-step.done .step-circle {
-            background: var(--success);
-            color: white;
+            border-color: var(--success);
+            background: rgba(0,200,83,0.1);
+            color: var(--success);
         }
-        .step-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
-        .progress-step.active .step-label { color: var(--primary); font-weight: 600; }
-        .progress-step.done .step-label { color: var(--success); }
-
-        .progress-status {
-            font-size: 12px;
-            color: var(--text-secondary);
+        .step-label {
+            font-size: 11px; color: var(--text-muted);
             text-align: center;
-            padding: 8px 12px;
-            background: #f8f9fa;
-            border-radius: var(--radius-sm);
-            min-height: 34px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        }
+        .progress-step.active .step-label { color: var(--accent); }
+        .progress-step.done .step-label { color: var(--success); }
+        .step-status {
+            font-size: 10px; color: var(--text-muted);
+            margin-top: -4px;
+        }
+        .progress-step.done .step-status { color: var(--success); }
+        .progress-status {
+            text-align: center;
+            margin-top: 12px;
+            font-size: 12px;
+            color: var(--accent);
+            min-height: 18px;
         }
 
-        /* 指标网格 */
+        /* 关键指标 */
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 8px;
+            gap: 10px;
         }
         .metric-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 14px 10px;
             text-align: center;
-            padding: 12px 6px;
-            background: #f8f9fa;
-            border-radius: var(--radius-sm);
-            border: 1px solid #eceff1;
             transition: var(--transition);
         }
-        .metric-box:hover { background: var(--primary-light); border-color: #bbdefb; transform: translateY(-1px); }
-        .metric-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: var(--primary);
-            line-height: 1.2;
-            font-variant-numeric: tabular-nums;
+        .metric-box:hover {
+            border-color: var(--border-light);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-sm);
         }
-        .metric-box.danger .metric-value { color: var(--danger); }
-        .metric-box.warning .metric-value { color: var(--accent); }
+        .metric-value {
+            font-size: 22px; font-weight: 700;
+            color: var(--text-highlight);
+            font-variant-numeric: tabular-nums;
+            line-height: 1.2;
+            transition: var(--transition);
+        }
+        @keyframes metric-glow {
+            0%, 100% { text-shadow: 0 0 0px transparent; }
+            50% { text-shadow: 0 0 8px rgba(0,212,255,0.15); }
+        }
+        .metric-box:hover .metric-value {
+            animation: metric-glow 1.5s ease-in-out infinite;
+        }
+        .metric-label {
+            font-size: 11px; color: var(--text-muted);
+            margin-top: 6px;
+        }
+        .metric-box.success { border-color: rgba(0,200,83,0.3); background: rgba(0,200,83,0.05); }
         .metric-box.success .metric-value { color: var(--success); }
-        .metric-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
+        .metric-box.warning { border-color: rgba(255,171,0,0.3); background: rgba(255,171,0,0.05); }
+        .metric-box.warning .metric-value { color: var(--warning); }
+        .metric-box.danger { border-color: rgba(255,82,82,0.3); background: rgba(255,82,82,0.05); }
+        .metric-box.danger .metric-value { color: var(--danger); }
 
-        /* 风险卡片 */
+        /* 线路态势 */
+        .line-map {
+            position: relative;
+            padding: 10px 0;
+            overflow-x: auto;
+        }
+        .line-map svg {
+            width: 100%; height: auto;
+            min-width: 520px;
+        }
+        .line-legend {
+            display: flex; gap: 14px; margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .line-legend-item {
+            display: flex; align-items: center; gap: 5px;
+            font-size: 11px; color: var(--text-muted);
+        }
+        .line-legend-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+        }
+
+        /* 风险提示 */
         .risk-list { display: flex; flex-direction: column; gap: 8px; }
         .risk-tag {
+            display: flex; align-items: center; gap: 8px;
             padding: 10px 12px;
-            background: #fff8e1;
-            border-radius: var(--radius-sm);
-            font-size: 12px;
-            color: #7c4a00;
-            border-left: 3px solid var(--warning);
-            line-height: 1.5;
-            display: flex;
-            align-items: flex-start;
-            gap: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            font-size: 12px; color: var(--text-secondary);
+            transition: var(--transition);
         }
-        .risk-tag .risk-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+        .risk-tag:hover {
+            border-color: var(--warning);
+            background: rgba(255,171,0,0.05);
+        }
+        .risk-icon {
+            width: 24px; height: 24px;
+            background: rgba(255,171,0,0.1);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; color: var(--warning);
+            flex-shrink: 0;
+        }
         .risk-empty {
             text-align: center;
-            padding: 24px;
+            padding: 20px;
             color: var(--text-muted);
             font-size: 13px;
         }
         .risk-empty.safe { color: var(--success); }
 
-        /* ===== 详细方案区 ===== */
+        /* ===== 详细方案 ===== */
         .detail-section {
             margin-top: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
             display: none;
         }
         .detail-section.visible { display: block; animation: fadeIn 0.3s ease; }
         .detail-toggle {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+            padding: 14px 18px;
+            background: linear-gradient(90deg, rgba(30,136,229,0.08), transparent);
+            border-bottom: 1px solid var(--border-color);
             cursor: pointer;
-            padding: 16px 20px;
-            background: var(--bg-card);
-            border-radius: var(--radius-md);
-            box-shadow: var(--shadow-sm);
-            border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 14px; font-weight: 600; color: var(--text-highlight);
             transition: var(--transition);
         }
-        .detail-toggle:hover { box-shadow: var(--shadow-md); }
-        .detail-toggle h2 {
-            font-size: 16px;
-            font-weight: 600;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .detail-toggle .toggle-arrow {
-            color: var(--text-muted);
-            font-size: 12px;
-            transition: transform 0.3s;
-        }
-        .detail-toggle.open .toggle-arrow { transform: rotate(180deg); }
+        .detail-toggle:hover { background: linear-gradient(90deg, rgba(30,136,229,0.12), transparent); }
+        .toggle-arrow { font-size: 12px; color: var(--text-muted); transition: var(--transition); }
+        .detail-toggle.open .toggle-arrow { transform: rotate(180deg); color: var(--accent); }
         .detail-body {
-            display: none;
-            padding: 20px;
-            background: var(--bg-card);
-            border-radius: 0 0 var(--radius-md) var(--radius-md);
-            border: 1px solid var(--border);
-            border-top: none;
+            padding: 0 18px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
         }
-        .detail-body.open { display: block; animation: fadeIn 0.25s ease; }
+        .detail-body.open {
+            padding: 18px;
+            max-height: 8000px;
+        }
 
+        /* 信息卡片 */
         .info-card {
-            background: #f1f8e9;
-            border: 1px solid #c5e1a5;
-            border-radius: var(--radius-sm);
-            padding: 16px;
-            margin-bottom: 16px;
+            background: rgba(255,171,0,0.03);
+            border: 1px solid rgba(255,171,0,0.15);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            margin-bottom: 14px;
         }
         .info-card.warn {
-            background: #fff8e1;
-            border-color: #ffe082;
+            background: rgba(255,82,82,0.03);
+            border-color: rgba(255,82,82,0.15);
         }
         .info-card-title {
-            font-weight: 600;
-            font-size: 14px;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+            font-size: 13px; font-weight: 600;
+            color: var(--warning);
+            margin-bottom: 8px;
+            display: flex; align-items: center; gap: 6px;
         }
-        .info-card-content { font-size: 13px; line-height: 1.8; color: var(--text-secondary); }
+        .info-card.warn .info-card-title { color: var(--danger); }
+        .info-card-content {
+            font-size: 13px; color: var(--text-secondary); line-height: 1.7;
+        }
 
-        /* ===== 操作指南 step 卡片 ===== */
+        /* 操作指南 */
         .ops-step-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            padding: 14px;
-            margin-bottom: 12px;
-            box-shadow: var(--shadow-sm);
-            transition: var(--transition);
-        }
-        .ops-step-card:hover { box-shadow: var(--shadow-md); border-color: #b0bec5; }
-        .ops-step-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 12px;
             margin-bottom: 10px;
-            flex-wrap: wrap;
+        }
+        .ops-step-header {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 8px; flex-wrap: wrap;
         }
         .ops-step-phase {
-            font-weight: 600;
-            font-size: 14px;
-            color: var(--text-primary);
+            font-size: 13px; font-weight: 600; color: var(--text-primary);
         }
         .ops-badge {
-            font-size: 11px;
             padding: 2px 8px;
-            border-radius: 12px;
-            font-weight: 600;
-            white-space: nowrap;
+            border-radius: 10px;
+            font-size: 11px; font-weight: 600;
         }
-        .ops-badge-critical { background: #ffcdd2; color: #b71c1c; border: 1px solid #ef9a9a; }
-        .ops-badge-high { background: #ffe0b2; color: #e65100; border: 1px solid #ffcc80; }
-        .ops-badge-medium { background: #e0e0e0; color: #424242; border: 1px solid #bdbdbd; }
+        .ops-badge-critical { background: rgba(255,82,82,0.15); color: var(--danger); }
+        .ops-badge-high { background: rgba(255,171,0,0.15); color: var(--warning); }
+        .ops-badge-medium { background: rgba(30,136,229,0.15); color: var(--primary); }
         .ops-time-limit {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-left: auto;
+            font-size: 11px; color: var(--text-muted); margin-left: auto;
         }
         .ops-action-list {
-            margin: 0;
-            padding-left: 18px;
-            font-size: 13px;
-            line-height: 1.9;
-            color: var(--text-secondary);
+            list-style: none; padding-left: 0;
         }
-        .ops-action-list li { margin-bottom: 2px; }
+        .ops-action-list li {
+            padding: 4px 0; padding-left: 16px;
+            position: relative;
+            font-size: 12px; color: var(--text-secondary);
+        }
+        .ops-action-list li::before {
+            content: '›';
+            position: absolute; left: 4px;
+            color: var(--primary); font-weight: bold;
+        }
 
-        /* ===== 表格样式 ===== */
+        /* 数据表格 */
         .data-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
+            width: 100%; border-collapse: collapse;
             font-size: 13px;
-            margin-top: 12px;
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            border: 1px solid var(--border);
         }
         .data-table th {
-            background: #f5f7fa;
+            background: var(--bg-secondary);
             padding: 10px 12px;
-            font-weight: 600;
-            color: var(--text-secondary);
             text-align: left;
-            border-bottom: 1px solid var(--border);
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-weight: 600; color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
         }
         .data-table td {
             padding: 10px 12px;
-            border-bottom: 1px solid #f0f0f0;
+            border-bottom: 1px solid var(--border-color);
             color: var(--text-primary);
         }
-        .data-table tr:last-child td { border-bottom: none; }
-        .data-table tr:hover td { background: #fafbfc; }
-        .data-table .delay-red { color: var(--danger); font-weight: 600; }
-        .data-table .delay-green { color: var(--success); }
-        .data-table .highlight-row { background: #fff8e1 !important; }
+        .data-table tr:hover td { background: rgba(30,136,229,0.03); }
+        .data-table tr.highlight-row td { background: rgba(255,82,82,0.03); }
+        .delay-red { color: var(--danger); font-weight: 600; }
+        .delay-green { color: var(--success); }
 
-        /* ===== 调度器对比页 ===== */
-        .comparison-form {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 20px;
-        }
-        .form-field label {
-            display: block;
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            margin-bottom: 6px;
-        }
-        .form-field select,
-        .form-field input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            font-size: 14px;
-            background: var(--bg-card);
-            transition: var(--transition);
-            color: var(--text-primary);
-        }
-        .form-field select:focus,
-        .form-field input:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(21,101,192,0.1);
-        }
-        .btn-block {
-            display: block;
-            width: 100%;
-            padding: 12px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: var(--radius-sm);
-            font-size: 15px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: var(--transition);
-            margin-top: 22px;
-        }
-        .btn-block:hover { background: var(--primary-dark); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-
-        /* 对比报告表格 */
+        /* 报告表格 */
         .report-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            font-size: 13px;
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            border: 1px solid var(--border);
+            width: 100%; border-collapse: collapse;
+            font-size: 13px; margin-bottom: 16px;
         }
         .report-table th {
-            background: #f5f7fa;
-            padding: 12px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-align: center;
-            border-bottom: 2px solid var(--border);
-            font-size: 12px;
+            background: var(--bg-secondary);
+            padding: 10px; text-align: center;
+            font-weight: 600; color: var(--text-secondary);
+            border-bottom: 2px solid var(--border-color);
         }
         .report-table td {
-            padding: 12px;
-            text-align: center;
-            border-bottom: 1px solid #f0f0f0;
+            padding: 10px; text-align: center;
+            border-bottom: 1px solid var(--border-color);
             color: var(--text-primary);
         }
-        .report-table tr:hover td { background: #fafbfc; }
-        .report-table .winner { background: #e8f5e9 !important; font-weight: 600; }
-        .scheduler-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 12px;
+        .report-table tr.winner td {
+            background: rgba(0,200,83,0.05);
             font-weight: 600;
         }
-        .badge-mip { background: #e3f2fd; color: #1565c0; }
-        .badge-fcfs { background: #e8f5e9; color: #2e7d32; }
-        .badge-maxdelay { background: #fff3e0; color: #ef6c00; }
-        .badge-noop { background: #f3e5f5; color: #7b1fa2; }
-        .badge-hierarchical { background: #fce4ec; color: #c62828; }
+        .scheduler-badge {
+            display: inline-block; padding: 3px 10px;
+            border-radius: 10px; font-size: 12px; font-weight: 600;
+        }
+        .badge-mip { background: rgba(30,136,229,0.15); color: var(--primary); }
+        .badge-fcfs { background: rgba(0,200,83,0.15); color: var(--success); }
+        .badge-maxdelay { background: rgba(255,171,0,0.15); color: var(--warning); }
+        .badge-hierarchical { background: rgba(156,39,176,0.15); color: #ce93d8; }
+        .badge-noop { background: rgba(255,82,82,0.15); color: var(--danger); }
         .recommend-box {
-            margin-top: 16px;
-            padding: 16px 20px;
-            background: var(--primary-light);
-            border-radius: var(--radius-sm);
-            border-left: 4px solid var(--primary);
-        }
-        .recommend-box strong { color: var(--primary-dark); font-size: 14px; }
-        .recommend-box ul { margin: 8px 0 0; padding-left: 20px; color: var(--text-secondary); font-size: 13px; }
-        .recommend-box li { margin-bottom: 4px; }
-
-        /* 加载动画 */
-        .loading-overlay {
-            text-align: center;
-            padding: 48px;
-            display: none;
-        }
-        .loading-overlay.visible { display: block; }
-        .spinner-ring {
-            width: 44px; height: 44px;
-            border: 3px solid #e3f2fd;
-            border-top-color: var(--primary);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 16px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        /* ===== 工作流页 ===== */
-        .workflow-chat {
-            background: #f8f9fa;
+            background: rgba(30,136,229,0.05);
+            border: 1px solid rgba(30,136,229,0.2);
             border-radius: var(--radius-md);
-            padding: 16px;
-            min-height: 240px;
-            max-height: 400px;
-            overflow-y: auto;
-            margin-bottom: 16px;
-            border: 1px solid var(--border);
+            padding: 14px;
+            font-size: 13px; color: var(--text-secondary);
+        }
+        .recommend-box strong { color: var(--primary); display: block; margin-bottom: 8px; }
+        .recommend-box ul { padding-left: 18px; }
+        .recommend-box li { margin: 4px 0; }
+
+        /* 工作流 */
+        .workflow-chat {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            max-height: 300px; overflow-y: auto;
+            margin-bottom: 14px;
         }
         .workflow-msg {
-            margin-bottom: 12px;
-            padding: 10px 14px;
-            border-radius: 12px;
-            font-size: 13px;
-            max-width: 80%;
+            padding: 8px 0; border-bottom: 1px solid var(--border-color);
+            font-size: 13px; color: var(--text-secondary);
         }
-        .workflow-msg.user {
-            background: var(--primary);
-            color: white;
-            margin-left: auto;
-            border-bottom-right-radius: 4px;
-        }
-        .workflow-msg.system {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-bottom-left-radius: 4px;
-        }
-        .workflow-msg.error {
-            background: #ffebee;
-            border: 1px solid #ef9a9a;
-            color: #b71c1c;
-        }
+        .workflow-msg:last-child { border-bottom: none; }
+        .workflow-msg.user { color: var(--accent); }
+        .workflow-msg.error { color: var(--danger); }
         .workflow-input-row {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 12px;
+            display: flex; gap: 10px; margin-bottom: 12px;
         }
         .workflow-input-row input {
             flex: 1;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
             padding: 10px 14px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            font-size: 14px;
+            color: var(--text-primary);
+            font-size: 14px; outline: none;
+        }
+        .workflow-input-row input:focus { border-color: var(--primary); }
+        .workflow-actions { display: flex; gap: 10px; }
+
+        /* 按钮通用 */
+        .btn {
+            padding: 10px 20px;
+            border: none; border-radius: var(--radius-md);
+            font-size: 13px; font-weight: 600; cursor: pointer;
             transition: var(--transition);
         }
-        .workflow-input-row input:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(21,101,192,0.1);
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), #0d47a1);
+            color: #fff;
+            box-shadow: 0 4px 14px rgba(30,136,229,0.3);
         }
-        .workflow-actions {
-            display: flex;
-            gap: 10px;
-        }
-        .btn { padding: 10px 20px; border: none; border-radius: var(--radius-sm); cursor: pointer; font-size: 14px; transition: var(--transition); font-weight: 500; }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); }
-        .btn-success { background: var(--success); color: white; }
-        .btn-success:hover { background: #1b5e20; }
-        .btn-secondary { background: #f5f5f5; color: var(--text-secondary); border: 1px solid var(--border); }
-        .btn-secondary:hover { background: #eeeeee; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(30,136,229,0.4); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-success { background: linear-gradient(135deg, var(--success), #00a344); color: #fff; }
+        .btn-secondary { background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-secondary); }
+        .btn-secondary:hover { border-color: var(--primary); color: var(--text-primary); }
+        .btn-block { width: 100%; margin-top: 14px; }
 
-        /* ===== Toast ===== */
+        /* 表单 */
+        .comparison-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+        }
+        .form-field { display: flex; flex-direction: column; gap: 6px; }
+        .form-field label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+        .form-field select, .form-field input {
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            color: var(--text-primary);
+            font-size: 13px; outline: none;
+        }
+        .form-field select:focus, .form-field input:focus { border-color: var(--primary); }
+
+        /* 加载 */
+        .loading-overlay {
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            padding: 40px; gap: 14px;
+        }
+        .loading-overlay.visible { display: flex; }
+        .spinner-ring {
+            width: 40px; height: 40px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-dots::after {
+            content: '';
+            animation: dots 1.5s infinite;
+        }
+        @keyframes dots {
+            0% { content: '.'; }
+            33% { content: '..'; }
+            66% { content: '...'; }
+        }
+
+        /* Toast */
         #toastContainer {
-            position: fixed;
-            top: 20px;
-            right: 20px;
+            position: fixed; top: 70px; right: 20px;
             z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+            display: flex; flex-direction: column; gap: 8px;
         }
         .toast {
-            padding: 12px 18px;
-            border-radius: var(--radius-sm);
-            font-size: 13px;
-            box-shadow: var(--shadow-lg);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            min-width: 240px;
-            max-width: 380px;
-            animation: toastIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-            color: white;
+            display: flex; align-items: center; gap: 10px;
+            padding: 12px 16px;
+            border-radius: var(--radius-md);
+            font-size: 13px; color: #fff;
+            min-width: 240px; max-width: 360px;
+            box-shadow: var(--shadow-md);
+            animation: slideIn 0.3s ease;
+            backdrop-filter: blur(10px);
         }
-        @keyframes toastIn { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
-        .toast.toast-info { background: var(--primary); }
-        .toast.toast-success { background: var(--success); }
-        .toast.toast-warning { background: var(--accent); }
-        .toast.toast-error { background: var(--danger); }
-        .toast-close { margin-left: auto; cursor: pointer; opacity: 0.7; font-size: 16px; }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .toast-info { background: rgba(30,136,229,0.9); }
+        .toast-success { background: rgba(0,200,83,0.9); }
+        .toast-warning { background: rgba(255,171,0,0.9); }
+        .toast-error { background: rgba(255,82,82,0.9); }
+        .toast-close { cursor: pointer; font-size: 14px; opacity: 0.7; margin-left: auto; }
         .toast-close:hover { opacity: 1; }
 
-        /* ===== Footer ===== */
+        /* 页脚 */
         .main-footer {
-            text-align: center;
-            padding: 28px;
-            color: var(--text-muted);
-            font-size: 12px;
-            border-top: 1px solid var(--border);
-            margin-top: 40px;
-            background: var(--bg-card);
+            text-align: center; padding: 20px;
+            color: var(--text-muted); font-size: 12px;
+            border-top: 1px solid var(--border-color);
+            margin-top: 20px;
         }
 
-        /* ===== 响应式 ===== */
-        @media (max-width: 1200px) {
-            .dispatch-layout { grid-template-columns: 1fr; }
-            .dashboard-stack { flex-direction: row; flex-wrap: wrap; }
-            .dashboard-stack > .panel-card { flex: 1; min-width: 280px; }
-            .comparison-form { grid-template-columns: repeat(2, 1fr); }
+        /* 对比页图表容器 */
+        #comparisonChart { background: var(--bg-secondary); border-radius: var(--radius-md); padding: 14px; }
+
+        /* 线路态势 tooltip */
+        .line-tooltip {
+            position: absolute;
+            background: var(--bg-card);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius-md);
+            padding: 10px 14px;
+            font-size: 12px;
+            color: var(--text-primary);
+            box-shadow: var(--shadow-glow);
+            pointer-events: none;
+            z-index: 200;
+            min-width: 160px;
+            display: none;
+            backdrop-filter: blur(8px);
         }
-        @media (max-width: 768px) {
-            .main-header h1 { font-size: 20px; }
-            .nav-tab { padding: 12px 16px; font-size: 13px; }
-            .nav-tab .tab-icon { display: none; }
-            .comparison-form { grid-template-columns: 1fr; }
-            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+        .line-tooltip .tt-title {
+            font-weight: 700; color: var(--accent);
+            margin-bottom: 6px; font-size: 13px;
         }
+        .line-tooltip .tt-row {
+            display: flex; justify-content: space-between;
+            margin: 3px 0; color: var(--text-secondary);
+        }
+        .line-tooltip .tt-row span:last-child {
+            color: var(--text-primary); font-weight: 500;
+        }
+        .line-tooltip .tt-status-normal { color: var(--success); }
+        .line-tooltip .tt-status-delay { color: var(--danger); }
+        .line-tooltip .tt-status-warn { color: var(--warning); }
+        /* 运行图 */
+        #diagramContainer {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            text-align: center;
+            min-height: 200px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #diagramContainer img { max-width: 100%; border-radius: var(--radius-sm); box-shadow: var(--shadow-md); }
     </style>
 </head>
 <body>
 
     <!-- 顶部状态栏 -->
-    <div class="topbar">
-        <div class="topbar-inner">
-            <div class="topbar-left">
-                <div class="topbar-item">
-                    <span class="dot dot-online" id="statusDot"></span>
-                    <span id="statusText">服务正常</span>
-                </div>
-                <div class="topbar-item">京广高铁 | 北京西 - 安阳东</div>
-                <div class="topbar-item">13站 · 147列</div>
-            </div>
-            <div class="live-clock" id="liveClock">--:--:--</div>
+    <div class="top-status-bar">
+        <div class="system-title">
+            <div class="logo">LLM</div>
+            <div class="title-text">京广高铁调度辅助系统</div>
         </div>
+        <div class="status-metrics">
+            <div class="status-item">
+                <span class="status-dot green" id="statusDot"></span>
+                <span id="statusText">运行正常</span>
+            </div>
+            <div class="status-item">
+                <span class="status-icon">&#127970;</span>
+                <span class="status-value" id="onlineStations">13</span>
+                <span>在线车站</span>
+            </div>
+            <div class="status-item">
+                <span class="status-icon">&#128646;</span>
+                <span class="status-value" id="trainsRunning">147</span>
+                <span>在途列车</span>
+            </div>
+            <div class="status-item">
+                <span class="status-icon">&#9881;</span>
+                <span class="status-value">L2</span>
+                <span>策略规划中</span>
+            </div>
+        </div>
+        <div class="live-clock" id="liveClock">--:--:--</div>
     </div>
 
-    <!-- 主标题区（居中） -->
-    <header class="main-header">
-        <div class="main-header-content">
-            <h1>京广高铁调度辅助系统</h1>
-            <p class="subtitle">基于大语言模型与多目标优化的智能调度决策支持平台</p>
-            <div class="badge-bar">
-                <div class="header-badge">
-                    <span>13</span> 车站
-                </div>
-                <div class="header-badge">
-                    <span>147</span> 列车
-                </div>
-                <div class="header-badge">
-                    <span>L1-L4</span> 智能工作流
-                </div>
-            </div>
-        </div>
-    </header>
-
     <!-- 导航标签 -->
-    <div class="nav-tabs-wrap">
-        <div class="nav-tabs">
-            <button class="nav-tab active" onclick="showTab('smart_dispatch', event)">
-                <span class="tab-icon">&#128640;</span> 智能调度
-            </button>
-            <button class="nav-tab" onclick="showTab('comparison_tab', event)">
-                <span class="tab-icon">&#128200;</span> 调度器对比
-            </button>
-            <button class="nav-tab" onclick="showTab('workflow_tab', event)">
-                <span class="tab-icon">&#128736;</span> LLM工作流
-            </button>
-        </div>
+    <div class="nav-bar">
+        <button class="nav-tab active" onclick="showTab('smart_dispatch', event)">
+            <span class="tab-icon">&#9673;</span> 智能调度
+        </button>
+        <button class="nav-tab" onclick="showTab('comparison_tab', event)">
+            <span class="tab-icon">&#9635;</span> 调度器对比
+        </button>
+        <button class="nav-tab" onclick="showTab('workflow_tab', event)">
+            <span class="tab-icon">&#9881;</span> LLM工作流
+        </button>
     </div>
 
     <!-- 主内容区 -->
-    <div class="main-container">
+    <div class="main-content">
 
         <!-- 智能调度标签页 -->
         <div id="smart_dispatch" class="tab-panel active">
-            <div class="dispatch-layout">
-                <!-- 左侧：聊天与输入 -->
-                <div class="panel-card">
-                    <div class="card-header">
-                        <h3><span class="card-icon">&#128172;</span> 调度对话</h3>
-                    </div>
-                    <div class="card-body" style="padding:0;display:flex;flex-direction:column;">
-                        <div style="padding:16px 16px 0;">
+            <div class="dashboard-grid">
+                <!-- 左侧：调度方案生成 -->
+                <div class="left-panel">
+                    <div class="panel-card">
+                        <div class="card-header">
+                            <span class="card-icon">&#9673;</span>
+                            <span>调度方案生成</span>
+                        </div>
+                        <div class="card-body">
                             <div class="quick-actions-bar">
                                 <div class="quick-chip" onclick="fillQuickPrompt('query_train')">
-                                    <span>&#128270;</span> 查列车
+                                    <span>&#128270;</span> 查询车次
                                 </div>
                                 <div class="quick-chip" onclick="fillQuickPrompt('query_station')">
-                                    <span>&#128204;</span> 查车站
+                                    <span>&#128204;</span> 查询车站
                                 </div>
                                 <div class="quick-chip" onclick="fillQuickPrompt('limit_speed')">
                                     <span>&#9889;</span> 临时限速
@@ -952,52 +978,102 @@
                                     <span>&#128683;</span> 区间封锁
                                 </div>
                                 <div class="quick-chip" onclick="fillQuickPrompt('delay')">
-                                    <span>&#9200;</span> 发车延误
+                                    <span>&#9200;</span> 列车晚点
                                 </div>
                             </div>
-                        </div>
-                        <div class="chat-messages" id="chatMessages">
-                            <div class="msg msg-system">
-                                <div class="msg-bubble">
-                                    <strong>欢迎使用京广高铁智能助手</strong><br><br>
-                                    我可以帮您查询列车信息、车站时刻、处理调度场景，或解答高铁领域问题。<br><br>
-                                    <strong>示例：</strong><br>
-                                    查询G1563列车的运行情况<br>
-                                    G1563在石家庄站因大风临时限速，预计延误15分钟
+
+                            <div class="input-area">
+                                <textarea id="chatInput" class="chat-textarea" placeholder="请输入调度任务（如：G1563在石家庄站因大风临时限速，预计延误15分钟），或选择上方快捷操作..." rows="2"></textarea>
+                                <div class="input-actions">
+                                    <span class="char-count">0 / 200</span>
+                                    <div style="display:flex;gap:10px;">
+                                        <button class="btn-generate" id="sendBtn" onclick="sendChat()">
+                                            <span>&#10022;</span> 生成方案
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div class="chat-input-wrap">
-                            <textarea id="chatInput" class="chat-textarea" placeholder="请输入您的问题（查询车次、调度场景、高铁知识等）..." rows="1"></textarea>
-                            <button id="sendBtn" class="btn-send" onclick="sendChat()">发送</button>
+
+                            <div class="chat-area">
+                                <div class="chat-header">
+                                    智能助手 <span class="version">LLM-TTRA</span>
+                                </div>
+                                <div class="chat-messages" id="chatMessages">
+                                    <div class="msg msg-system">
+                                        <div class="msg-bubble">
+                                            <strong>欢迎使用京广高铁调度智能助手</strong><br><br>
+                                            当前管辖区段：<strong>北京西 — 安阳东</strong>（13站 · 147列）<br>
+                                            已接入实时运行图数据，可为您提供调度方案生成、列车状态查询、运行图分析、风险提示等服务。<br><br>
+                                            <strong>示例指令：</strong><br>
+                                            查询G1563列车的运行情况<br>
+                                            G1563在石家庄站因大风临时限速，预计延误15分钟
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="recommend-area" style="margin-top:16px;">
+                                <div class="recommend-header">
+                                    <span>&#128161;</span> 推荐调度方案
+                                </div>
+                                <div class="recommend-body">
+                                    <div class="recommend-card">
+                                        <div class="recommend-title">G1563 大风限速调整方案</div>
+                                        <div class="recommend-desc">
+                                            受大风天气影响，保定东至石家庄区间实施临时限速。建议调整G1563及关联列车运行计划，优化保定东、石家庄两站接发顺序，预计可将区段延误由25分钟缩短至12分钟。
+                                        </div>
+                                        <div class="recommend-tags">
+                                            <span class="recommend-tag">临时限速</span>
+                                            <span class="recommend-tag">接发调整</span>
+                                            <span class="recommend-tag">保定东—石家庄</span>
+                                        </div>
+                                    </div>
+                                    <div class="recommend-card">
+                                        <div class="recommend-title">石家庄站 接发车能力优化</div>
+                                        <div class="recommend-desc">
+                                            石家庄站作为区段最大枢纽（11道），当前上行高峰时段接发车压力较大。建议调整股道分配方案，优先保障G字头列车正线通过，缓解站台积压。
+                                        </div>
+                                        <div class="recommend-tags">
+                                            <span class="recommend-tag">股道分配</span>
+                                            <span class="recommend-tag">接发优化</span>
+                                            <span class="recommend-tag">枢纽疏解</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 右侧：仪表盘 -->
-                <div class="dashboard-stack">
+                <!-- 右侧：信息面板 -->
+                <div class="right-panel">
                     <!-- 处理进度 -->
                     <div class="panel-card">
                         <div class="card-header">
-                            <h3><span class="card-icon">&#128204;</span> 处理进度</h3>
+                            <span class="card-icon">&#128204;</span>
+                            <span>处理进度</span>
                         </div>
                         <div class="card-body">
                             <div class="progress-track" id="progressSteps">
                                 <div class="progress-step" id="step1">
                                     <div class="step-circle">L1</div>
                                     <div class="step-label">数据建模</div>
+                                    <div class="step-status"></div>
                                 </div>
                                 <div class="progress-step" id="step2">
                                     <div class="step-circle">L2</div>
                                     <div class="step-label">策略规划</div>
+                                    <div class="step-status"></div>
                                 </div>
                                 <div class="progress-step" id="step3">
                                     <div class="step-circle">L3</div>
                                     <div class="step-label">求解执行</div>
+                                    <div class="step-status"></div>
                                 </div>
                                 <div class="progress-step" id="step4">
                                     <div class="step-circle">L4</div>
                                     <div class="step-label">方案评估</div>
+                                    <div class="step-status"></div>
                                 </div>
                             </div>
                             <div class="progress-status" id="progressText">等待输入...</div>
@@ -1007,19 +1083,152 @@
                     <!-- 关键指标 -->
                     <div class="panel-card">
                         <div class="card-header">
-                            <h3><span class="card-icon">&#128202;</span> 关键指标</h3>
+                            <span class="card-icon">&#128202;</span>
+                            <span>关键指标（实时）</span>
                         </div>
                         <div class="card-body">
                             <div class="metrics-grid">
-                                <div class="metric-box" id="mb-total"><div class="metric-value" id="metricTotalDelay">-</div><div class="metric-label">总延误(分)</div></div>
-                                <div class="metric-box" id="mb-max"><div class="metric-value" id="metricMaxDelay">-</div><div class="metric-label">最大延误(分)</div></div>
-                                <div class="metric-box" id="mb-avg"><div class="metric-value" id="metricAvgDelay">-</div><div class="metric-label">平均延误(分)</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricOnTime">-</div><div class="metric-label">准点率</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricGrade">-</div><div class="metric-label">综合评级</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricAffected">-</div><div class="metric-label">受影响列车</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricTerminalOnTime">-</div><div class="metric-label">终点准点率</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricRecoveryRate">-</div><div class="metric-label">延误恢复率</div></div>
-                                <div class="metric-box"><div class="metric-value" id="metricStationPressure">-</div><div class="metric-label">最大车站压力</div></div>
+                                <div class="metric-box" id="mb-total">
+                                    <div class="metric-value" id="metricTotalDelay">-</div>
+                                    <div class="metric-label">总延误(分)</div>
+                                </div>
+                                <div class="metric-box" id="mb-max">
+                                    <div class="metric-value" id="metricMaxDelay">-</div>
+                                    <div class="metric-label">最大延误(分)</div>
+                                </div>
+                                <div class="metric-box" id="mb-avg">
+                                    <div class="metric-value" id="metricAvgDelay">-</div>
+                                    <div class="metric-label">平均延误(分)</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricOnTime">-</div>
+                                    <div class="metric-label">准点率</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricGrade">-</div>
+                                    <div class="metric-label">综合评级</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricAffected">-</div>
+                                    <div class="metric-label">受影响列车</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricTerminalOnTime">-</div>
+                                    <div class="metric-label">终点准点率</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricRecoveryRate">-</div>
+                                    <div class="metric-label">延误恢复率</div>
+                                </div>
+                                <div class="metric-box">
+                                    <div class="metric-value" id="metricStationPressure">-</div>
+                                    <div class="metric-label">最大车站压力</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 线路运行态势 -->
+                    <div class="panel-card">
+                        <div class="card-header">
+                            <span class="card-icon">&#127758;</span>
+                            <span>线路运行态势（北京西 — 安阳东）</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="line-map" id="lineMapContainer" style="position:relative;">
+                                <div class="line-tooltip" id="lineTooltip"></div>
+                                <svg viewBox="0 0 620 130" xmlns="http://www.w3.org/2000/svg" style="min-width:560px;">
+                                    <defs>
+                                        <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                                            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(30,136,229,0.05)" stroke-width="0.5"/>
+                                        </pattern>
+                                        <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                            <stop offset="0%" style="stop-color:#1e88e5"/>
+                                            <stop offset="50%" style="stop-color:#00d4ff"/>
+                                            <stop offset="100%" style="stop-color:#1e88e5"/>
+                                        </linearGradient>
+                                    </defs>
+                                    <rect width="620" height="130" fill="url(#grid)"/>
+
+                                    <!-- 方向标注 -->
+                                    <text x="18" y="18" fill="#5a6a7f" font-size="8">下行方向 →</text>
+
+                                    <!-- 主线路 -->
+                                    <line x1="25" y1="65" x2="601" y2="65" stroke="url(#lineGrad)" stroke-width="3" stroke-linecap="round"/>
+
+                                    <!-- 站点1: 北京西 (起点大站 7道) -->
+                                    <circle cx="25" cy="65" r="5" fill="#00c853" stroke="#0a0f1a" stroke-width="2"/>
+                                    <text x="25" y="90" text-anchor="middle" fill="#e0e6ed" font-size="9" font-weight="600">北京西</text>
+                                    <text x="25" y="100" text-anchor="middle" fill="#5a6a7f" font-size="7">7道</text>
+
+                                    <!-- 站点2: 杜家坎线路所 (line_post 4道) -->
+                                    <polygon points="74,61 78,65 74,69 70,65" fill="#ffab00" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="74" y="48" text-anchor="middle" fill="#8b9bb4" font-size="8">杜家坎</text>
+                                    <text x="74" y="40" text-anchor="middle" fill="#5a6a7f" font-size="7">线路所</text>
+
+                                    <!-- 站点3: 涿州东 (4道) -->
+                                    <circle cx="121" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="121" y="88" text-anchor="middle" fill="#8b9bb4" font-size="8">涿州东</text>
+
+                                    <!-- 站点4: 高碑店东 (4道) -->
+                                    <circle cx="169" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="169" y="48" text-anchor="middle" fill="#8b9bb4" font-size="8">高碑店东</text>
+
+                                    <!-- 站点5: 徐水东 (4道) -->
+                                    <circle cx="217" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="217" y="88" text-anchor="middle" fill="#8b9bb4" font-size="8">徐水东</text>
+
+                                    <!-- 站点6: 保定东 (大站 6道) -->
+                                    <circle cx="265" cy="65" r="4.5" fill="#00c853" stroke="#0a0f1a" stroke-width="2"/>
+                                    <text x="265" y="48" text-anchor="middle" fill="#e0e6ed" font-size="9" font-weight="600">保定东</text>
+                                    <text x="265" y="40" text-anchor="middle" fill="#5a6a7f" font-size="7">6道</text>
+
+                                    <!-- 站点7: 定州东 (4道) -->
+                                    <circle cx="313" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="313" y="88" text-anchor="middle" fill="#8b9bb4" font-size="8">定州东</text>
+
+                                    <!-- 站点8: 正定机场 (4道) -->
+                                    <circle cx="361" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="361" y="48" text-anchor="middle" fill="#8b9bb4" font-size="8">正定机场</text>
+
+                                    <!-- 站点9: 石家庄 (枢纽大站 11道) -->
+                                    <circle cx="409" cy="65" r="5.5" fill="#00c853" stroke="#0a0f1a" stroke-width="2"/>
+                                    <text x="409" y="90" text-anchor="middle" fill="#e0e6ed" font-size="9" font-weight="600">石家庄</text>
+                                    <text x="409" y="100" text-anchor="middle" fill="#5a6a7f" font-size="7">11道</text>
+
+                                    <!-- 站点10: 高邑西 (4道) -->
+                                    <circle cx="457" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="457" y="48" text-anchor="middle" fill="#8b9bb4" font-size="8">高邑西</text>
+
+                                    <!-- 站点11: 邢台东 (6道) -->
+                                    <circle cx="505" cy="65" r="4" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="505" y="88" text-anchor="middle" fill="#8b9bb4" font-size="8">邢台东</text>
+
+                                    <!-- 站点12: 邯郸东 (大站 7道) -->
+                                    <circle cx="553" cy="65" r="4.5" fill="#00c853" stroke="#0a0f1a" stroke-width="2"/>
+                                    <text x="553" y="48" text-anchor="middle" fill="#e0e6ed" font-size="9" font-weight="600">邯郸东</text>
+                                    <text x="553" y="40" text-anchor="middle" fill="#5a6a7f" font-size="7">7道</text>
+
+                                    <!-- 站点13: 安阳东 (终点 4道) -->
+                                    <circle cx="601" cy="65" r="3.5" fill="#1e88e5" stroke="#0a0f1a" stroke-width="1.5"/>
+                                    <text x="601" y="88" text-anchor="middle" fill="#8b9bb4" font-size="8">安阳东</text>
+
+                                    <!-- 动态列车标记容器 -->
+                                    <g id="trainMarkers"></g>
+
+                                    <!-- 方向箭头 -->
+                                    <polygon points="610,62 616,65 610,68" fill="#00d4ff"/>
+                                </svg>
+                            </div>
+                            <div class="line-legend" style="justify-content:space-between;">
+                                <div style="display:flex;gap:14px;">
+                                    <div class="line-legend-item"><span class="line-legend-dot" style="background:var(--success)"></span> 枢纽大站</div>
+                                    <div class="line-legend-item"><span class="line-legend-dot" style="background:var(--primary)"></span> 中间站</div>
+                                    <div class="line-legend-item"><span class="line-legend-dot" style="background:var(--warning)"></span> 线路所</div>
+                                </div>
+                                <div class="line-legend-item" style="color:var(--accent);font-weight:600;">
+                                    在途列车 <span id="activeTrainCount">--</span> 列
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1027,7 +1236,8 @@
                     <!-- 风险提示 -->
                     <div class="panel-card">
                         <div class="card-header">
-                            <h3><span class="card-icon">&#9888;</span> 风险提示</h3>
+                            <span class="card-icon">&#9888;</span>
+                            <span>风险提示</span>
                         </div>
                         <div class="card-body">
                             <div class="risk-list" id="riskWarnings">
@@ -1041,7 +1251,9 @@
             <!-- 详细方案 -->
             <div class="detail-section" id="detailSection">
                 <div class="detail-toggle" id="detailToggle" onclick="toggleDetail()">
-                    <h2><span>&#128221;</span> 详细方案</h2>
+                    <h2 style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;">
+                        <span>&#128221;</span> 详细方案
+                    </h2>
                     <span class="toggle-arrow" id="detailArrow">&#9660;</span>
                 </div>
                 <div class="detail-body" id="detailContent">
@@ -1054,13 +1266,13 @@
                         <div class="info-card-content" id="opsGuideContent"></div>
                     </div>
                     <div id="scheduleSection" style="margin-top:16px;">
-                        <h4 style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;">优化后时刻表</h4>
+                        <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;">优化后时刻表</h4>
                         <div id="scheduleTable"></div>
                     </div>
                     <div id="diagramSection" style="margin-top:20px;">
-                        <h4 style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;">运行图对比</h4>
-                        <div id="diagramContainer" style="text-align:center;padding:30px;background:#f8f9fa;border-radius:var(--radius-sm);border:1px solid var(--border);">
-                            <span style="color:var(--text-muted);font-size:14px;">等待生成运行图...</span>
+                        <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;">运行图对比</h4>
+                        <div id="diagramContainer">
+                            <span style="color:var(--text-muted);font-size:13px;">等待生成运行图...</span>
                         </div>
                     </div>
                 </div>
@@ -1071,7 +1283,8 @@
         <div id="comparison_tab" class="tab-panel">
             <div class="panel-card">
                 <div class="card-header">
-                    <h3><span class="card-icon">&#128200;</span> 多调度器对比评估</h3>
+                    <span class="card-icon">&#128200;</span>
+                    <span>多调度器对比评估</span>
                 </div>
                 <div class="card-body">
                     <p style="color:var(--text-secondary);margin-bottom:20px;font-size:13px;">
@@ -1109,7 +1322,7 @@
                             </select>
                         </div>
                     </div>
-                    <button class="btn-block" onclick="runComparison()">开始对比</button>
+                    <button class="btn btn-primary btn-block" onclick="runComparison()">开始对比</button>
                 </div>
             </div>
 
@@ -1121,7 +1334,8 @@
             <div id="comparisonResultDisplay" style="display:none;margin-top:20px;">
                 <div class="panel-card">
                     <div class="card-header">
-                        <h3><span class="card-icon">&#128221;</span> 对比报告</h3>
+                        <span class="card-icon">&#128221;</span>
+                        <span>对比报告</span>
                     </div>
                     <div class="card-body">
                         <div id="comparisonReport"></div>
@@ -1129,10 +1343,11 @@
                 </div>
                 <div class="panel-card" style="margin-top:20px;">
                     <div class="card-header">
-                        <h3><span class="card-icon">&#128202;</span> 可视化对比</h3>
+                        <span class="card-icon">&#128202;</span>
+                        <span>可视化对比</span>
                     </div>
                     <div class="card-body">
-                        <div id="comparisonChart" style="min-height:300px;"></div>
+                        <div id="comparisonChart" style="min-height:320px;"></div>
                     </div>
                 </div>
             </div>
@@ -1142,7 +1357,8 @@
         <div id="workflow_tab" class="tab-panel">
             <div class="panel-card">
                 <div class="card-header">
-                    <h3><span class="card-icon">&#128736;</span> LLM 四层工作流</h3>
+                    <span class="card-icon">&#9881;</span>
+                    <span>LLM 四层工作流</span>
                 </div>
                 <div class="card-body">
                     <p style="color:var(--text-secondary);margin-bottom:16px;font-size:13px;">
@@ -1160,8 +1376,8 @@
                         <button class="btn btn-secondary" id="resetWorkflowBtn" onclick="resetWorkflow()" disabled>重置会话</button>
                     </div>
                     <div id="workflowResult" style="display:none;margin-top:20px;">
-                        <h4 style="color:var(--success);font-size:15px;margin-bottom:10px;">执行结果</h4>
-                        <pre id="workflowResultContent" style="background:#f8f9fa;padding:14px;border-radius:var(--radius-sm);overflow-x:auto;white-space:pre-wrap;font-size:12px;border:1px solid var(--border);max-height:400px;overflow-y:auto;"></pre>
+                        <h4 style="color:var(--success);font-size:14px;margin-bottom:10px;">执行结果</h4>
+                        <pre id="workflowResultContent" style="background:var(--bg-secondary);padding:14px;border-radius:var(--radius-sm);overflow-x:auto;white-space:pre-wrap;font-size:12px;border:1px solid var(--border-color);max-height:400px;overflow-y:auto;color:var(--text-secondary);"></pre>
                     </div>
                 </div>
             </div>
